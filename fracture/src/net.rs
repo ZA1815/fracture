@@ -1,7 +1,7 @@
 #[cfg(feature = "simulation")]
 use turmoil;
 use std::io::{self, Result};
-use std::net::SocketAddr;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -15,7 +15,7 @@ pub struct TcpStream {
 
 #[cfg(feature = "simulation")]
 impl TcpStream {
-    pub async fn connect<A: tokio::net::ToSocketAddrs>(addr: A) -> Result<Self> {
+    pub async fn connect<A: ToSocketAddrs>(addr: A) -> Result<Self> {
         if crate::chaos::should_fail("tcp_connect") {
             return Err(io::Error::new(
                 io::ErrorKind::ConnectionRefused,
@@ -57,7 +57,9 @@ impl TcpStream {
                 "fracture: Read failed (chaos)"
             )));
         }
-        self.inner.poll_read_ready(cx)
+        else {
+            Poll::Ready(Ok(()))
+        }
     }
 
     pub fn poll_write_ready(&self, cx: &mut Context<'_>) -> Poll<Result<()>> {
@@ -67,7 +69,9 @@ impl TcpStream {
                 "fracture: Write failed (chaos)"
             )));
         }
-        self.inner.poll_write_ready(cx);
+        else {
+            Poll::Ready(Ok(()))
+        }
     }
 }
 
@@ -122,7 +126,7 @@ pub struct TcpListener {
 
 #[cfg(feature = "simulation")]
 impl TcpListener {
-    pub async fn bind<A: tokio::net::ToSocketAddrs>(addr: A) -> Result<Self> {
+    pub async fn bind<A: ToSocketAddrs>(addr: A) -> Result<Self> {
         let addr = addr.to_socket_addrs()?.next().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "fracture: No addresses"))?;
 
         let inner = turmoil::net::TcpListener::bind(addr).await?;
@@ -157,6 +161,47 @@ impl TcpListener {
         Ok(self.local_addr)
     }
 }
+
+#[cfg(feature = "simulation")]
+pub struct UdpSocket {
+    inner: turmoil::net::UdpSocket,
+    local_addr: SocketAddr
+}
+
+#[cfg(feature = "simulation")]
+impl UdpSocket {
+    pub async fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<Self> {
+        let addr = addr.to_socket_addrs()?.next().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "fracture: No addresses"))?;
+        let inner = turmoil::net::UdpSocket::bind(addr).await?;
+        let local_addr = inner.local_addr()?;
+        Ok(Self { inner, local_addr })
+    }
+
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        Ok(self.local_addr)
+    }
+
+    pub async fn send_to(&self, buf: &[u8], target: SocketAddr) -> io::Result<usize> {
+        if crate::chaos::should_fail("udp_send") {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "fracture: UDP send failed (chaos)"
+            ));
+        }
+        self.inner.send_to(buf, target).await
+    }
+
+    pub async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+        if crate::chaos::should_fail("udp_recv") {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "fracture: UDP recv failed (chaos)"
+            ));
+        }
+        self.inner.recv_from(buf).await
+    }
+}
+
 
 #[cfg(not(feature = "simulation"))]
 pub use tokio::net::{TcpStream, TcpListener, UdpSocket};
