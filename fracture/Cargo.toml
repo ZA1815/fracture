@@ -32,13 +32,13 @@ anyhow = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
-# fracture-macro = { path = "fracture-macro", optional = true }
+fracture-macros = { path = "../fracture-macros", optional = true }
 
 dashmap = "5.5"
 arc-swap = "1.6"
 
 [features]
-default = []
+default = ["simulation"]
 simulation = ["turmoil"] # "fracture-macro" ADD LATER
 full-chaos = ["simulation"]
 
@@ -46,6 +46,3 @@ full-chaos = ["simulation"]
 pretty_assertions = "1.4"
 proptest = "1.4"
 criterion = "0.5"
-
-[workspace]
-members = ["."] # "../fracture-macro" ADD LATER

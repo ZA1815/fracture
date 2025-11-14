@@ -1,0 +1,15 @@
+[package]
+name = "fracture-macros"
+version = "0.1.0"
+edition = "2024"
+authors = ["Zaid Ahmed <zaahme18@gmail.com>"]
+description = "Proc macros for the Fracture chaos testing framework"
+license = "MIT"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2.0", features = ["full"] }
+quote = "1.0"
+proc-macro2 = "1.0"

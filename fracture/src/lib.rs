@@ -13,19 +13,34 @@ pub mod task;
 pub mod sync;
 #[cfg(feature = "simulation")]
 pub mod io;
+#[cfg(feature = "simulation")]
+pub mod chaos;
 
 pub mod chaos;
 
 #[cfg(feature = "simulation")]
 pub mod runtime;
 
+#[cfg(not(feature = "simulation"))]
 pub use tokio::main;
+#[cfg(not(feature = "simulation"))]
 pub use tokio::test;
 
 #[cfg(feature = "simulation")]
-pub use fracture_macro::test as fracture_test;
+pub use fracture_macros::test;
+#[cfg(feature = "simulation")]
+pub use feature_macros::main;
 
 pub mod prelude {
+    #[cfg(not(feature = "simulation"))]
+    pub use tokio::{
+        net::{TcpListener, TcpStream, UdpSocket},
+        time::{sleep, timeout, interval},
+        fs::{File, read, write},
+        task::{spawn, spawn_blocking, yield_now},
+        io::{AsyncReadExt, AsyncWriteExt}
+    };
+
     #[cfg(feature = "simulation")]
     pub use crate::{
         net::{TcpListener, TcpStream, UdpSocket},
@@ -35,5 +50,28 @@ pub mod prelude {
         io::{AsyncReadExt, AsyncWriteExt}
     };
 
-    pub use crate::chaos::{inject, should_fail};
+    pub use crate::chaos::{
+        inject,
+        should_fail,
+        partition,
+        partition_oneway,
+        heal_partition,
+        set_packet_loss,
+        set_delay,
+        set_reordering,
+        clear,
+        Scenario,
+        ScenarioBuilder
+    };
+
+    #[cfg(feature = "simulation")]
+    pub use crate::chaos::invariants::{
+        Invariant,
+        InvariantChecker,
+        CommonInvariants,
+        register as register_invariant,
+        check_all as check_invariants
+    };
+
+    pub use std::time::Duration;
 }
