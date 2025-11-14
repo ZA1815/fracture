@@ -1,8 +1,6 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 use std::sync::LazyLock;
 use dashmap::DashMap;
-use futures::future::Lazy;
 
 pub struct ChaosState {
     pub enabled: AtomicBool,
@@ -88,8 +86,8 @@ pub fn init_from_env() {
             else {
                 let seed = rand::random::<u64>();
                 CHAOS.seed.store(seed, Ordering::Relaxed);
-                eprintln!("🎲 Fracture seed: {}", seed_val);
-                eprintln!("   Reproduce with: FRACTURE_SEED={}", seed_val);
+                eprintln!("🎲 Fracture seed: {}", seed);
+                eprintln!("   Reproduce with: FRACTURE_SEED={}", seed);
             }
 
             if let Ok(val) = std::env::var("FRACTURE_AUTO") {
