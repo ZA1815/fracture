@@ -112,16 +112,16 @@ pub fn test(attr: TokenStream, item: TokenStream) -> TokenStream {
 
                 checker_handle.abort();
 
-                if ::fracture::chaos::invariants::has_violations() {
-                    let violations = ::fracture::chaos::invariants::get_violations();
+                let violations = ::fracture::chaos::invariants::get_violations();
+                let bugs = ::fracture::chaos::trace::find_bugs();
+                let seed = ::fracture::chaos::get_seed();
+
+                if !violations.is_empty() || !bugs.is_empty() {
                     let trace = ::fracture::chaos::trace::get_trace();
+                    let report = ::fracture::chaos::visualization::generate_report(seed, violations, bugs, trace);
 
-                    let trace_log = trace.iter()
-                        .map(|entry| format!("  - {:?} at {:?}", entry.event, entry.timestamp))
-                        .collect::<Vec<String>>()
-                        .join("\n");
-
-                    panic!("\n\n❌ Invariant Violation(s) Detected: {:?}\n\nChaos Trace:\n{}\n\n", violations, trace_log)
+                    let report_string = report.generate_report_string();
+                    panic!("\n\n{}\n\n", report_string);
                 }
 
                 test_result
