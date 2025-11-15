@@ -5,15 +5,13 @@ use dashmap::DashMap;
 use rand::{SeedableRng, Rng};
 use rand_chacha::ChaCha8Rng;
 
-pub mod topology;
+mod topology;
 pub mod scenario;
 pub mod invariants;
+mod trace;
 
-pub use topology::{Topology, NetworkTopology};
-pub use scenario::{Scenario, ScenarioBuilder};
-pub use invariants::{Invariant, InvariantChecker};
+use trace::TraceEvent;
 
-#[cfg(feature = "simulation")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureType {
     ConnectionRefused,
@@ -26,21 +24,18 @@ pub enum FailureType {
     Reorder
 }
 
-#[cfg(feature = "simulation")]
 #[derive(Debug, Clone)]
 pub struct FailureConfig {
     pub rate: f64,
     pub duration: Option<Duration>
 }
 
-#[cfg(feature = "simulation")]
 #[derive(Debug, Clone)]
 pub struct DelayConfig {
     pub min: Duration,
     pub max: Duration
 }
 
-#[cfg(feature = "simulation")]
 pub struct ChaosState {
     pub enabled: AtomicBool,
     pub seed: AtomicU64,
@@ -52,7 +47,6 @@ pub struct ChaosState {
     pub topology: parking_lot::RwLock<topology::NetworkTopology>
 }
 
-#[cfg(feature = "simulation")]
 static CHAOS: LazyLock<ChaosState> = LazyLock::new(|| ChaosState {
     enabled: AtomicBool::new(false),
     seed: AtomicU64::new(rand::random()),
@@ -66,149 +60,116 @@ static CHAOS: LazyLock<ChaosState> = LazyLock::new(|| ChaosState {
 
 #[inline]
 pub fn should_fail(operation: &str) -> bool {
-    #[cfg(not(feature = "simulation"))]
-    {
-        false
+    if !CHAOS.enabled.load(Ordering::Relaxed) {
+        return false;
     }
 
-    #[cfg(feature = "simulation")]
-    {
-        if !CHAOS.enabled.load(Ordering::Relaxed) {
-            return false;
-        }
+    let rate = CHAOS.failure_rates
+        .get(operation)
+        .map(|config| config.rate)
+        .unwrap_or(0.0);
 
-        CHAOS.failure_rates.get(operation).map(|config| {
-            let seed = CHAOS.seed.load(Ordering::Relaxed);
-            let hash = hash_operation(seed, operation);
-            let roll = (hash as f64 / u64::MAX as f64);
-            roll < config.rate
-        })
-        .unwrap_or(false)
-    }
+    let result = CHAOS.failure_rates.get(operation).map(|config| {
+        let seed = CHAOS.seed.load(Ordering::Relaxed);
+        let hash = hash_operation(seed, operation);
+        let roll = hash as f64 / u64::MAX as f64;
+        roll < config.rate
+    })
+    .unwrap_or(false);
+
+    trace::record(TraceEvent::ChaosInjected { operation: operation.to_string(), rate, result });
+    result
 }
 
 pub fn inject(operation: &str, failure_rate: f64) {
-    #[cfg(feature = "simulation")]
-    {
-        CHAOS.failure_rates.insert(operation.to_string(), FailureConfig { rate: failure_rate, duration: None });
-        CHAOS.enabled.store(true, Ordering::Relaxed);
-    }
+    CHAOS.failure_rates.insert(operation.to_string(), FailureConfig { rate: failure_rate, duration: None });
+    CHAOS.enabled.store(true, Ordering::Relaxed);
 }
 
 pub fn inject_temporary(operation: &str, failure_rate: f64, duration: Duration) {
-    #[cfg(feature = "simulation")]
-    {
-        CHAOS.failure_rates.insert(operation.to_string(), FailureConfig { rate: failure_rate, duration: Some(duration) });
-        CHAOS.enabled.store(true, Ordering::Relaxed);
-    }
+    CHAOS.failure_rates.insert(operation.to_string(), FailureConfig { rate: failure_rate, duration: Some(duration) });
+    CHAOS.enabled.store(true, Ordering::Relaxed);
 }
 
-#[cfg(feature = "simulation")]
 pub fn partition(from: &str, to: &str) {
     CHAOS.partitions.insert((from.to_string(), to.to_string()), true);
     CHAOS.partitions.insert((to.to_string(), from.to_string()), true);
     CHAOS.enabled.store(true, Ordering::Relaxed);
+
+    trace::record(TraceEvent::Partition { from: from.to_string(), to: to.to_string(), oneway: false });
 }
 
-#[cfg(feature = "simulation")]
 pub fn partition_oneway(from: &str, to: &str) {
     CHAOS.partitions.insert((from.to_string(), to.to_string()), true);
     CHAOS.enabled.store(true, Ordering::Relaxed);
+
+    trace::record(TraceEvent::Partition { from: from.to_string(), to: to.to_string(), oneway: true });
 }
 
-#[cfg(feature = "simulation")]
 pub fn heal_partition(from: &str, to: &str) {
     CHAOS.partitions.remove(&(from.to_string(), to.to_string()));
     CHAOS.partitions.remove(&(to.to_string(), from.to_string()));
+
+    trace::record(TraceEvent::PartitionHealed { from: from.to_string(), to: to.to_string() });
 }
 
 #[inline]
 pub fn is_partitioned(from: &str, to: &str) -> bool {
-    #[cfg(not(feature = "simulation"))]
-    {
-        false
-    }
-
-    #[cfg(feature = "simulation")]
-    {
-        CHAOS.partitions.get(&(from.to_string(), to.to_string())).map(|v| *v).unwrap_or(false)
-    }
+    CHAOS.partitions.get(&(from.to_string(), to.to_string())).map(|v| *v).unwrap_or(false)
 }
 
-#[cfg(feature = "simulation")]
 pub fn set_packet_loss(node: &str, rate: f64) {
     CHAOS.packet_loss.insert(node.to_string(), rate.clamp(0.0, 1.0));
     CHAOS.enabled.store(true, Ordering::Relaxed);
+
+    trace::record(TraceEvent::PacketLossSet { node: node.to_string(), rate });
 }
 
 #[inline]
 pub fn should_drop_packet(node: &str) -> bool {
-    #[cfg(not(feature = "simulation"))]
-    {
-        false
-    }
-
-    #[cfg(feature = "simulation")]
-    {
-        CHAOS.packet_loss.get(node).map(|rate| {
-            let seed = CHAOS.seed.load(Ordering::Relaxed);
-            let hash = hash_operation(seed, node);
-            (hash as f64 / u64::MAX as f64) < *rate
-        })
-        .unwrap_or(false)
-    }
+    CHAOS.packet_loss.get(node).map(|rate| {
+        let seed = CHAOS.seed.load(Ordering::Relaxed);
+        let hash = hash_operation(seed, node);
+        (hash as f64 / u64::MAX as f64) < *rate
+    })
+    .unwrap_or(false)
 }
 
-#[cfg(feature = "simulation")]
 pub fn set_delay(node: &str, min: Duration, max: Duration) {
     CHAOS.delays.insert(node.to_string(), DelayConfig { min, max });
     CHAOS.enabled.store(true, Ordering::Relaxed);
+
+    trace::record(TraceEvent::DelaySet { node: node.to_string(), min, max });
 }
 
 pub fn get_delay(node: &str) -> Option<Duration> {
-    #[cfg(not(feature = "simulation"))]
-    {
-        None
-    }
-
-    #[cfg(feature = "simulation")]
-    {
-        CHAOS.delays.get(node).map(|config| {
-            let seed = CHAOS.seed.load(Ordering::Relaxed);
-            let mut rng = ChaCha8Rng::seed_from_u64(seed);
-            let min_ms = config.min.as_millis() as u64;
-            let max_ms = config.max.as_millis() as u64;
-            let delay_ms = rng.gen_range(min_ms..=max_ms);
-            Duration::from_millis(delay_ms)
-        })
-    }
+    CHAOS.delays.get(node).map(|config| {
+        let seed = CHAOS.seed.load(Ordering::Relaxed);
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let min_ms = config.min.as_millis() as u64;
+        let max_ms = config.max.as_millis() as u64;
+        let delay_ms = rng.gen_range(min_ms..=max_ms);
+        Duration::from_millis(delay_ms)
+    })
 }
 
-#[cfg(feature = "simulation")]
 pub fn set_reordering(node: &str, rate: f64) {
     CHAOS.reordering.insert(node.to_string(), rate.clamp(0.0, 1.0));
     CHAOS.enabled.store(true, Ordering::Relaxed);
+
+    trace::record(TraceEvent::ReorderingSet { node: node.to_string(), rate });
 }
 
 #[inline]
 pub fn should_reorder(node: &str) -> bool {
-    #[cfg(not(feature = "simulation"))]
-    {
-        false
-    }
-
-    #[cfg(feature = "simulation")]
-    {
-        CHAOS.reordering.get(node).map(|rate| {
-            let seed = CHAOS.seed.load(Ordering::Relaxed);
-            let hash = hash_operation(seed, node);
-            (hash as f64 / u64::MAX as f64) < *rate
-        })
-        .unwrap_or(false)
-    }
+    CHAOS.reordering.get(node).map(|rate| {
+        let seed = CHAOS.seed.load(Ordering::Relaxed);
+        let hash = hash_operation(seed, node);
+        (hash as f64 / u64::MAX as f64) < *rate
+    })
+    .unwrap_or(false)
 }
 
-#[cfg(feature = "simulation")]
 pub fn clear() {
     CHAOS.failure_rates.clear();
     CHAOS.partitions.clear();
@@ -218,17 +179,14 @@ pub fn clear() {
     CHAOS.enabled.store(false, Ordering::Relaxed);
 }
 
-#[cfg(feature = "simulation")]
 pub fn get_seed() -> u64 {
     CHAOS.seed.load(Ordering::Relaxed)
 }
 
-#[cfg(feature = "simulation")]
 pub fn set_seed(seed: u64) {
     CHAOS.seed.store(seed, Ordering::Relaxed);
 }
 
-#[cfg(feature = "simulation")]
 fn hash_operation(seed: u64, s: &str) -> u64 {
     let mut hash = seed;
     for byte in s.bytes() {
@@ -237,7 +195,6 @@ fn hash_operation(seed: u64, s: &str) -> u64 {
     hash
 }
 
-#[cfg(feature = "simulation")]
 pub fn init_from_env() {
     if let Ok(seed_str) = std::env::var("FRACTURE_SEED") {
         if let Ok(seed_val) = seed_str.parse::<u64>() {

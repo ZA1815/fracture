@@ -1,8 +1,9 @@
-use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use dashmap::DashMap;
 use std::fmt;
+
+use crate::chaos::trace::{TraceEvent, record};
 
 pub struct Invariant {
     name: String,
@@ -27,6 +28,8 @@ impl Invariant {
             self.violated.store(true, Ordering::Relaxed);
             self.violation_count.fetch_add(1, Ordering::Relaxed);
         }
+
+        record(TraceEvent::InvariantChecked { name: self.name.clone(), holds });
 
         holds
     }

@@ -15,9 +15,6 @@ pub mod sync;
 pub mod io;
 #[cfg(feature = "simulation")]
 pub mod chaos;
-
-pub mod chaos;
-
 #[cfg(feature = "simulation")]
 pub mod runtime;
 
@@ -29,7 +26,7 @@ pub use tokio::test;
 #[cfg(feature = "simulation")]
 pub use fracture_macros::test;
 #[cfg(feature = "simulation")]
-pub use feature_macros::main;
+pub use fracture_macros::main;
 
 pub mod prelude {
     #[cfg(not(feature = "simulation"))]
@@ -60,8 +57,8 @@ pub mod prelude {
         set_delay,
         set_reordering,
         clear,
-        Scenario,
-        ScenarioBuilder
+        scenario::Scenario,
+        scenario::ScenarioBuilder
     };
 
     #[cfg(feature = "simulation")]

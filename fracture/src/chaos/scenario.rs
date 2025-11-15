@@ -1,6 +1,7 @@
 use std::time::Duration;
 use std::future::Future;
 use crate::chaos::{heal_partition, inject, partition, partition_oneway, set_delay, set_packet_loss, set_reordering};
+use crate::chaos::trace::{record, TraceEvent};
 
 #[derive(Debug, Clone)]
 pub struct Scenario {
@@ -91,6 +92,10 @@ impl Scenario {
     pub fn build(self) {
         if let Some(seed) = self.seed {
             crate::chaos::set_seed(seed);
+        }
+
+        for operation in &self.operations {
+            record(TraceEvent::ScenarioOp(format!("{:?}", operation)));
         }
 
         for operation in self.operations {

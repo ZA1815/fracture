@@ -37,6 +37,8 @@ fracture-macros = { path = "../fracture-macros", optional = true }
 dashmap = "5.5"
 arc-swap = "1.6"
 
+parking_lot = "0.12"
+
 [features]
 default = ["simulation"]
 simulation = ["turmoil"] # "fracture-macro" ADD LATER
