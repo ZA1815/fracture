@@ -29,15 +29,6 @@ pub use fracture_macros::test;
 pub use fracture_macros::main;
 
 pub mod prelude {
-    #[cfg(not(feature = "simulation"))]
-    pub use tokio::{
-        net::{TcpListener, TcpStream, UdpSocket},
-        time::{sleep, timeout, interval},
-        fs::{File, read, write},
-        task::{spawn, spawn_blocking, yield_now},
-        io::{AsyncReadExt, AsyncWriteExt}
-    };
-
     #[cfg(feature = "simulation")]
     pub use crate::{
         net::{TcpListener, TcpStream, UdpSocket},

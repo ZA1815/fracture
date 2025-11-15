@@ -9,6 +9,7 @@ mod topology;
 pub mod scenario;
 pub mod invariants;
 mod trace;
+mod visualization;
 
 use trace::TraceEvent;
 
@@ -36,10 +37,40 @@ pub struct DelayConfig {
     pub max: Duration
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChaosOperation {
+    TcpConnect,
+    TcpRead,
+    TcpWrite,
+    TcpReadBytes,
+    TcpWriteBytes,
+    TcpPartialWrite,
+    TcpAccept,
+    UdpSend,
+    UdpRecv,
+    TimeSkew,
+    TimeoutEarly,
+    TimeoutAtEarly, 
+    IntervalPeriodSkew,
+    IntervalStartShift,
+    SleepUntilShift,
+    FsRead,
+    FsWrite,
+    FsOpen,
+    FsCreate,
+    FsRemoveFile,
+    FsReadDir,
+    TaskSpawn,
+    TaskYield,
+    SyncMutexLock,
+    SyncRwLockRead,
+    SyncRwLockWrite
+}
+
 pub struct ChaosState {
     pub enabled: AtomicBool,
     pub seed: AtomicU64,
-    pub failure_rates: DashMap<String, FailureConfig>,
+    pub failure_rates: DashMap<ChaosOperation, FailureConfig>,
     pub partitions: DashMap<(String, String), bool>,
     pub packet_loss: DashMap<String, f64>,
     pub delays: DashMap<String, DelayConfig>,
@@ -59,35 +90,37 @@ static CHAOS: LazyLock<ChaosState> = LazyLock::new(|| ChaosState {
 });
 
 #[inline]
-pub fn should_fail(operation: &str) -> bool {
+pub fn should_fail(operation: ChaosOperation) -> bool {
     if !CHAOS.enabled.load(Ordering::Relaxed) {
         return false;
     }
 
+    let op_name = format!("{:?}", operation);
+
     let rate = CHAOS.failure_rates
-        .get(operation)
+        .get(&operation)
         .map(|config| config.rate)
         .unwrap_or(0.0);
 
-    let result = CHAOS.failure_rates.get(operation).map(|config| {
+    let result = CHAOS.failure_rates.get(&operation).map(|config| {
         let seed = CHAOS.seed.load(Ordering::Relaxed);
-        let hash = hash_operation(seed, operation);
+        let hash = hash_operation(seed, &op_name);
         let roll = hash as f64 / u64::MAX as f64;
         roll < config.rate
     })
     .unwrap_or(false);
 
-    trace::record(TraceEvent::ChaosInjected { operation: operation.to_string(), rate, result });
+    trace::record(TraceEvent::ChaosInjected { operation: op_name, rate, result });
     result
 }
 
-pub fn inject(operation: &str, failure_rate: f64) {
-    CHAOS.failure_rates.insert(operation.to_string(), FailureConfig { rate: failure_rate, duration: None });
+pub fn inject(operation: ChaosOperation, failure_rate: f64) {
+    CHAOS.failure_rates.insert(operation, FailureConfig { rate: failure_rate, duration: None });
     CHAOS.enabled.store(true, Ordering::Relaxed);
 }
 
-pub fn inject_temporary(operation: &str, failure_rate: f64, duration: Duration) {
-    CHAOS.failure_rates.insert(operation.to_string(), FailureConfig { rate: failure_rate, duration: Some(duration) });
+pub fn inject_temporary(operation: ChaosOperation, failure_rate: f64, duration: Duration) {
+    CHAOS.failure_rates.insert(operation, FailureConfig { rate: failure_rate, duration: Some(duration) });
     CHAOS.enabled.store(true, Ordering::Relaxed);
 }
 
@@ -211,9 +244,9 @@ pub fn init_from_env() {
 
     if let Ok(val) = std::env::var("FRACTURE_AUTO") {
         if val == "true" {
-            inject("tcp_connect", 0.01);
-            inject("tcp_read", 0.001);
-            inject("tcp_write", 0.001);
+            inject(ChaosOperation::TcpConnect, 0.01);
+            inject(ChaosOperation::TcpRead, 0.001);
+            inject(ChaosOperation::TcpWrite, 0.001);
             eprintln!("⚡ Auto-chaos enabled");
             eprintln!("   Configure: FRACTURE_AUTO=false to disable");
         }
@@ -242,11 +275,11 @@ mod tests {
     #[test]
     fn test_deterministic_failures() {
         set_seed(12345);
-        inject("test_op", 0.5);
-        let results: Vec<bool> = (0..10).map(|_| should_fail("test_op")).collect();
+        inject(ChaosOperation::TcpAccept, 0.5);
+        let results: Vec<bool> = (0..10).map(|_| should_fail(ChaosOperation::TcpAccept)).collect();
 
         set_seed(12345);
-        let results2: Vec<bool> = (0..10).map(|_| should_fail("test_op")).collect();
+        let results2: Vec<bool> = (0..10).map(|_| should_fail(ChaosOperation::TcpAccept)).collect();
 
         assert_eq!(results, results2, "Should be deterministic with the same seed");
     }

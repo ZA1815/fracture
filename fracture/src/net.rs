@@ -16,7 +16,7 @@ pub struct TcpStream {
 #[cfg(feature = "simulation")]
 impl TcpStream {
     pub async fn connect<A: ToSocketAddrs>(addr: A) -> Result<Self> {
-        if crate::chaos::should_fail("tcp_connect") {
+        if crate::chaos::should_fail(crate::chaos::ChaosOperation::TcpConnect) {
             return Err(io::Error::new(
                 io::ErrorKind::ConnectionRefused,
                 "fracture: Connection refused (chaos)"
@@ -51,7 +51,7 @@ impl TcpStream {
     }
 
     pub fn poll_read_ready(&self, cx: &mut Context<'_>) -> Poll<Result<()>> {
-        if crate::chaos::should_fail("tcp_read") {
+        if crate::chaos::should_fail(crate::chaos::ChaosOperation::TcpRead) {
             return Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 "fracture: Read failed (chaos)"
@@ -63,7 +63,7 @@ impl TcpStream {
     }
 
     pub fn poll_write_ready(&self, cx: &mut Context<'_>) -> Poll<Result<()>> {
-        if crate::chaos::should_fail("tcp_write") {
+        if crate::chaos::should_fail(crate::chaos::ChaosOperation::TcpWrite) {
             return Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 "fracture: Write failed (chaos)"
@@ -78,7 +78,7 @@ impl TcpStream {
 #[cfg(feature = "simulation")]
 impl AsyncRead for TcpStream {
     fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<Result<()>> {
-        if crate::chaos::should_fail("tcp_read_bytes") {
+        if crate::chaos::should_fail(crate::chaos::ChaosOperation::TcpReadBytes) {
             return Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 "fracture: Read failed (chaos)"
@@ -92,14 +92,14 @@ impl AsyncRead for TcpStream {
 #[cfg(feature = "simulation")]
 impl AsyncWrite for TcpStream {
     fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize>> {
-        if crate::chaos::should_fail("tcp_write_bytes") {
+        if crate::chaos::should_fail(crate::chaos::ChaosOperation::TcpWriteBytes) {
             return Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 "fracture: Write failed (chaos)"
             )));
         }
 
-        if crate::chaos::should_fail("tcp_partial_write") {
+        if crate::chaos::should_fail(crate::chaos::ChaosOperation::TcpPartialWrite) {
             let partial = buf.len() / 2;
             if partial > 0 {
                 return Pin::new(&mut self.inner).poll_write(cx, &buf[..partial]);
@@ -136,7 +136,7 @@ impl TcpListener {
     }
 
     pub async fn accept(&self) -> Result<(TcpStream, SocketAddr)> {
-        if crate::chaos::should_fail("tcp_accept") {
+        if crate::chaos::should_fail(crate::chaos::ChaosOperation::TcpAccept) {
             return Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 "fracture: Accept failed (chaos)"
@@ -182,7 +182,7 @@ impl UdpSocket {
     }
 
     pub async fn send_to(&self, buf: &[u8], target: SocketAddr) -> io::Result<usize> {
-        if crate::chaos::should_fail("udp_send") {
+        if crate::chaos::should_fail(crate::chaos::ChaosOperation::UdpSend) {
             return Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 "fracture: UDP send failed (chaos)"
@@ -192,7 +192,7 @@ impl UdpSocket {
     }
 
     pub async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
-        if crate::chaos::should_fail("udp_recv") {
+        if crate::chaos::should_fail(crate::chaos::ChaosOperation::UdpRecv) {
             return Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 "fracture: UDP recv failed (chaos)"

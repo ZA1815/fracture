@@ -1,20 +1,11 @@
 use std::time::Duration;
-
-#[cfg(feature = "simulation")]
 use std::future::Future;
-
-#[cfg(feature = "simulation")]
 use tokio::time::Instant;
-#[cfg(feature = "simulation")]
 use tokio::time::Interval;
-#[cfg(feature = "simulation")]
 use tokio::time::error;
-#[cfg(not(feature = "simulation"))]
-pub use tokio::time::sleep;
 
-#[cfg(feature = "simulation")]
 pub async fn sleep(duration: Duration) {
-    let actual_duration = if crate::chaos::should_fail("time_skew") {
+    let actual_duration = if crate::chaos::should_fail(crate::chaos::ChaosOperation::TimeSkew) {
         duration * 2
     }
     else {
@@ -24,12 +15,8 @@ pub async fn sleep(duration: Duration) {
     tokio::time::sleep(actual_duration).await;
 }
 
-#[cfg(not(feature = "simulation"))]
-pub use tokio::time::timeout;
-
-#[cfg(feature = "simulation")]
 pub async fn timeout<F: Future>(duration: Duration, future: F) -> Result<F::Output, error::Elapsed> {
-    let actual_duration = if crate::chaos::should_fail("timeout_early") {
+    let actual_duration = if crate::chaos::should_fail(crate::chaos::ChaosOperation::TimeoutEarly) {
         duration / 2
     }
     else {
@@ -39,12 +26,8 @@ pub async fn timeout<F: Future>(duration: Duration, future: F) -> Result<F::Outp
     tokio::time::timeout(actual_duration, future).await
 }
 
-#[cfg(not(feature = "simulation"))]
-pub use tokio::time::timeout_at;
-
-#[cfg(feature = "simulation")]
 pub async fn timeout_at<F: Future>(deadline: Instant, future: F) -> Result<F::Output, error::Elapsed> {
-    let actual_deadline = if crate::chaos::should_fail("timeout_at_early") {
+    let actual_deadline = if crate::chaos::should_fail(crate::chaos::ChaosOperation::TimeoutAtEarly) {
         deadline - Duration::from_millis(500)
     }
     else {
@@ -54,12 +37,8 @@ pub async fn timeout_at<F: Future>(deadline: Instant, future: F) -> Result<F::Ou
     tokio::time::timeout_at(actual_deadline, future).await
 }
 
-#[cfg(not(feature = "simulation"))]
-pub use tokio::time::interval;
-
-#[cfg(feature = "simulation")]
 pub fn interval(period: Duration) -> tokio::time::Interval {
-    let actual_period = if crate::chaos::should_fail("interval_period_skew") {
+    let actual_period = if crate::chaos::should_fail(crate::chaos::ChaosOperation::IntervalPeriodSkew) {
         period * 2
     }
     else {
@@ -69,19 +48,16 @@ pub fn interval(period: Duration) -> tokio::time::Interval {
     tokio::time::interval(actual_period)
 }
 
-#[cfg(not(feature = "simulation"))]
-pub use tokio::time::interval_at;
 
-#[cfg(feature = "simulation")]
 pub fn interval_at(start: Instant, period: Duration) -> Interval {
-    let actual_start = if crate::chaos::should_fail("interval_start_shift") {
+    let actual_start = if crate::chaos::should_fail(crate::chaos::ChaosOperation::IntervalStartShift) {
         start - Duration::from_millis(500)
     }
     else {
         start
     };
 
-    let actual_period = if crate::chaos::should_fail("interval_period_skew") {
+    let actual_period = if crate::chaos::should_fail(crate::chaos::ChaosOperation::IntervalPeriodSkew) {
         period * 2
     }
     else {
@@ -91,12 +67,8 @@ pub fn interval_at(start: Instant, period: Duration) -> Interval {
     tokio::time::interval_at(actual_start, actual_period)
 }
 
-#[cfg(not(feature = "simulation"))]
-pub use tokio::time::sleep_until;
-
-#[cfg(feature = "simulation")]
 pub async fn sleep_until(deadline: Instant) {
-    let actual_deadline = if crate::chaos::should_fail("sleep_until_shift") {
+    let actual_deadline = if crate::chaos::should_fail(crate::chaos::ChaosOperation::SleepUntilShift) {
         deadline + Duration::from_millis(500)
     }
     else {
