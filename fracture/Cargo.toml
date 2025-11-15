@@ -41,7 +41,7 @@ parking_lot = "0.12"
 
 [features]
 default = ["simulation"]
-simulation = ["turmoil"] # "fracture-macro" ADD LATER
+simulation = ["turmoil", "fracture-macros"]
 full-chaos = ["simulation"]
 
 [dev-dependencies]
