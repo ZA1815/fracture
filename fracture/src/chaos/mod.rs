@@ -8,7 +8,7 @@ use rand_chacha::ChaCha8Rng;
 mod topology;
 pub mod scenario;
 pub mod invariants;
-mod trace;
+pub mod trace;
 mod visualization;
 
 use trace::TraceEvent;
