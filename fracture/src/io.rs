@@ -334,15 +334,50 @@ pub struct WriteHalf<T> {
     inner: tokio::io::WriteHalf<T>
 }
 
-// impl<T> AsyncRead for ReadHalf<T>
-// where T: AsyncRead + AsyncWrite {
-    // Placeholder
-// }
+impl<T> ReadHalf<T> {
+    pub fn unsplit(self, write_half: WriteHalf<T>) -> T
+    where T: AsyncRead + AsyncWrite + Unpin {
+        self.inner.unsplit(write_half.inner)
+    }
+}
 
-// impl<T> AsyncWrite for WriteHalf<T>
-// where T: AsyncRead + AsyncWrite {
-    // Placeholder
-// }
+impl<T> AsyncRead for ReadHalf<T>
+where T: AsyncRead + AsyncWrite + Unpin {
+    fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+        if chaos::should_fail(ChaosOperation::IoSplitRead) {
+            return Poll::Ready(Err(Error::new(ErrorKind::BrokenPipe, "fracture: Split read failed (chaos)")));
+        }
+
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl<T> AsyncWrite for WriteHalf<T>
+where T: AsyncRead + AsyncWrite + Unpin {
+    fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::result::Result<usize, io::Error>> {
+        if chaos::should_fail(ChaosOperation::IoSplitWrite) {
+            return Poll::Ready(Err(Error::new(ErrorKind::BrokenPipe, "fracture: Split write failed (chaos)")));
+        }
+
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::result::Result<(), io::Error>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::result::Result<(), io::Error>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
 
 pub struct DuplexStream {
     inner: tokio::io::DuplexStream,
@@ -376,6 +411,62 @@ impl DuplexStream {
                 chaos_state: chaos_state_b
             }
         )
+    }
+}
+
+impl AsyncRead for DuplexStream {
+    fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+        if chaos::should_fail(ChaosOperation::IoRead) {
+            return Poll::Ready(Err(Error::new(ErrorKind::BrokenPipe, "fracture: Duplex read failed (chaos)")));
+        }
+
+        if self.chaos_state.corrupt_reads {
+            let filled_before = buf.filled().len();
+            let result = Pin::new(&mut self.inner).poll_read(cx, buf);
+
+            if let Poll::Ready(Ok(())) = result {
+                let filled_after = buf.filled().len();
+                if filled_after > filled_before {
+                    let filled_mut = buf.filled_mut();
+                    for i in filled_before..filled_after.min(filled_before + 4) {
+                        filled_mut[i] ^= 0xFF;
+                    }
+                }
+            }
+            return result;
+        }
+
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for DuplexStream {
+    fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::result::Result<usize, io::Error>> {
+        if self.chaos_state.drop_writes {
+            return Poll::Ready(Ok(buf.len()));
+        }
+
+        if chaos::should_fail(ChaosOperation::IoWrite) {
+            return Poll::Ready(Err(Error::new(ErrorKind::BrokenPipe, "fracture: Duplex write failed (chaos)")));
+        }
+
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::result::Result<(), io::Error>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::result::Result<(), io::Error>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
     }
 }
 

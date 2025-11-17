@@ -188,6 +188,8 @@ pub enum ChaosOperation {
     IoEof,
     IoPartialRead,
     IoPartialWrite,
+    IoSplitRead,
+    IoSplitWrite,
     IoCorruption,
     FsOpen,
     FsCreate,
