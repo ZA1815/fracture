@@ -1,6 +1,6 @@
 use std::time::Duration;
 use std::future::Future;
-use crate::chaos::{heal_partition, inject, partition, partition_oneway, set_delay, set_packet_loss, set_reordering};
+use crate::chaos::{ChaosOperation, heal_partition, inject, partition, partition_oneway, set_delay, set_packet_loss, set_reordering};
 use crate::chaos::trace::{record, TraceEvent};
 
 #[derive(Debug, Clone)]
@@ -13,7 +13,7 @@ pub struct Scenario {
 enum ScenarioOperation {
     Partition { from: String, to: String, oneway: bool },
     HealPartition { from: String, to: String },
-    FailureRate { operation: String, rate: f64 },
+    FailureRate { operation: ChaosOperation, rate: f64 },
     PacketLoss { node: String, rate: f64 },
     Delay { node: String, min: Duration, max: Duration },
     Reordering { node: String, rate: f64 },
@@ -48,21 +48,21 @@ impl Scenario {
         self
     }
 
-    pub fn fail(mut self, operation: impl Into<String>, rate: f64) -> Self {
-        self.operations.push(ScenarioOperation::FailureRate { operation: operation.into(), rate });
+    pub fn fail(mut self, operation: ChaosOperation, rate: f64) -> Self {
+        self.operations.push(ScenarioOperation::FailureRate { operation, rate });
         self
     }
 
     pub fn fail_connections(self, rate: f64) -> Self {
-        self.fail("tcp_connect", rate)
+        self.fail(ChaosOperation::TcpConnect, rate)
     }
 
     pub fn fail_reads(self, rate: f64) -> Self {
-        self.fail("tcp_read_bytes", rate)
+        self.fail(ChaosOperation::TcpRead, rate)
     }
 
     pub fn fail_writes(self, rate: f64) -> Self {
-        self.fail("tcp_write_bytes", rate)
+        self.fail(ChaosOperation::TcpWrite, rate)
     }
 
     pub fn packet_loss(mut self, node: impl Into<String>, rate: f64) -> Self {
@@ -112,7 +112,7 @@ impl Scenario {
                     heal_partition(&from, &to);
                 }
                 ScenarioOperation::FailureRate { operation, rate } => {
-                    inject(&operation, rate);
+                    inject(operation, rate);
                 }
                 ScenarioOperation::PacketLoss { node, rate } => {
                     set_packet_loss(&node, rate);
@@ -124,7 +124,7 @@ impl Scenario {
                     set_reordering(&node, rate);
                 }
                 ScenarioOperation::Wait { .. } => {
-
+                    // Placeholder
                 }
             }
         }
@@ -176,9 +176,9 @@ impl ScenarioBuilder {
     pub fn cascading_failure(nodes: Vec<impl Into<String>>) -> Scenario {
         let mut scenario = Scenario::new();
 
-        for (i, node) in nodes.into_iter().enumerate() {
+        for (i, _) in nodes.into_iter().enumerate() {
             let delay = Duration::from_millis(100 * (i as u64 + 1));
-            scenario = scenario.wait(delay).fail(node.into(), 1.0);
+            scenario = scenario.wait(delay).fail(ChaosOperation::TcpConnect, 1.0); // Add node specific variant
         }
 
         scenario
@@ -208,9 +208,8 @@ impl ScenarioBuilder {
     pub fn rolling_restart(nodes: Vec<impl Into<String>>, restart_duration: Duration) -> Scenario {
         let mut scenario = Scenario::new();
 
-        for node in nodes {
-            let node = node.into();
-            scenario = scenario.fail(node.clone(), 1.0).wait(restart_duration).fail(node, 0.0);
+        for _ in nodes {
+            scenario = scenario.fail(ChaosOperation::TcpConnect, 1.0).wait(restart_duration).fail(ChaosOperation::TcpConnect, 0.0);
         }
 
         scenario

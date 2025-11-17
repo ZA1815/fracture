@@ -469,7 +469,7 @@ impl PatternDetector {
         }
     }
 
-    fn process(&mut self, entry: &TraceEntry) {
+    fn process(&mut self, _index: usize, entry: &TraceEntry) {
         use TraceEvent::*;
         
         match &entry.event {
