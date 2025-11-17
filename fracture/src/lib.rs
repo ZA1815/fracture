@@ -17,6 +17,10 @@ pub mod io;
 pub mod chaos;
 #[cfg(feature = "simulation")]
 pub mod runtime;
+#[cfg(feature = "simulation")]
+pub mod process;
+#[cfg(feature = "simulation")]
+pub mod signal;
 
 #[cfg(not(feature = "simulation"))]
 pub use tokio::main;
@@ -60,5 +64,13 @@ pub mod prelude {
             check_all as check_invariants
         }
     };
-    pub use std::time::Duration;
+
+    pub use crate::process::{Command, Child, Stdio, ExitStatus};
+    pub use crate::signal::{ctrl_c, SignalKind};
+    
+    #[cfg(unix)]
+    pub use crate::signal::unix;
+    
+    #[cfg(windows)]
+    pub use crate::signal::windows;
 }
