@@ -1,12 +1,11 @@
 use turmoil;
 use std::io::{self, Result};
-use std::net::{SocketAddr, ToSocketAddrs, Shutdown};
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use std::ops::BitOr;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
-use bytes::{Buf, BufMut};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::chaos::{self, ChaosOperation};
 
