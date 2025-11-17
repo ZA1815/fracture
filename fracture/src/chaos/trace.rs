@@ -79,7 +79,7 @@ pub enum TraceEvent {
         to: String,
         bytes: usize
     },
-    DataRecieved {
+    DataReceived {
         from: String,
         to: String,
         bytes: usize
@@ -213,7 +213,7 @@ impl fmt::Display for TraceEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceEntry {
-    pub timestamp: Instant, // FIX
+    pub timestamp: Duration,
     pub system_time: SystemTime,
     pub thread_id: String,
     pub event: TraceEvent
@@ -233,7 +233,6 @@ struct ChromeTraceEvent {
     args: Option<serde_json::Value>,
 }
 
-#[derive(Default)]
 pub struct Tracer {
     log: RwLock<Vec<TraceEntry>>,
     enabled: RwLock<bool>,
@@ -244,29 +243,31 @@ pub struct Tracer {
 #[derive(Debug, Clone)]
 pub enum BugPattern {
     SplitBrain {
-        timestamp: Instant,
-        active_partitions: HashSet<String>
+        timestamp: Duration,
+        active_partitions: HashSet<String>,
+        details: String
     },
     CascadingFailure {
-        timestamp: Instant,
+        timestamp: Duration,
         failure_count: usize,
         duration: Duration
     },
     DataRace {
-        timestamp: Instant,
-        conflicting_operations: Vec<String>
+        timestamp: Duration,
+        conflicting_operations: Vec<String>,
+        details: String
     },
     Livelock {
-        timestamp: Instant,
+        timestamp: Duration,
         repeated_operations: Vec<String>,
         cycle_count: usize
     },
     ThunderingHerd {
-        timestamp: Instant,
+        timestamp: Duration,
         simultaneous_requests: usize
     },
     PoisonPillPropagation {
-        timestamp: Instant,
+        timestamp: Duration,
         origin: String,
         affected_nodes: Vec<String>
     }
@@ -324,7 +325,10 @@ impl Tracer {
 
         let thread_id = format!("{:?}", std::thread::current().id());
 
-        self.log.write().push(TraceEntry { timestamp: Instant::now(), system_time: SystemTime::now(), thread_id, event });
+        let now = Instant::now();
+        let time_offset = now.duration_since(self.start_time);
+
+        self.log.write().push(TraceEntry { timestamp: time_offset, system_time: SystemTime::now(), thread_id, event });
     }
 
     pub fn mark(&self, label: impl Into<String>, data: impl Into<String>) {
@@ -352,7 +356,7 @@ impl Tracer {
         let mut events = Vec::new();
 
         for entry in log.iter() {
-            let ts = entry.timestamp.duration_since(self.start_time).as_micros() as f64;
+            let ts = entry.timestamp.as_micros() as f64;
 
             let (name, cat, args) = match &entry.event {
                 TraceEvent::ChaosInjected { operation, rate, result } => {
@@ -423,7 +427,7 @@ impl Tracer {
         writeln!(file)?;
 
         for entry in log.iter() {
-            let elapsed = entry.timestamp.duration_since(self.start_time);
+            let elapsed = entry.timestamp;
             writeln!(file, "[{:>8.3}s] {}", elapsed.as_secs_f64(), entry.event)?;
         }
 
@@ -438,20 +442,20 @@ impl Tracer {
             detector.process(i, entry);
         }
 
-        detector.get_patterns();
+        detector.get_patterns()
     }
 }
 
 struct PatternDetector {
     patterns: Vec<BugPattern>,
     active_partitions: HashSet<String>,
-    partition_times: HashMap<String, Instant>,
-    recent_failures: Vec<(Instant, String)>,
+    partition_times: HashMap<String, Duration>,
+    recent_failures: Vec<(Duration, String)>,
     cascade_window: Duration,
-    operation_history: Vec<(String, Instant)>,
+    operation_history: Vec<(String, Duration)>,
     livelock_window: Duration,
-    concurrent_operations: HashMap<String, Vec<(String, Instant)>>,
-    request_bursts: Vec<(Instant, String)>
+    concurrent_operations: HashMap<String, Vec<(String, Duration)>>,
+    request_bursts: Vec<(Duration, String)>
 }
 
 impl PatternDetector {
@@ -507,7 +511,7 @@ impl PatternDetector {
         self.cleanup_old_state(entry.timestamp);
     }
 
-    fn handle_partition(&mut self, timestamp: Instant, from: &str, to: &str, oneway: bool) {
+    fn handle_partition(&mut self, timestamp: Duration, from: &str, to: &str, oneway: bool) {
         let key = if oneway {
             format!("{}→{}", from, to)
         }
@@ -525,28 +529,28 @@ impl PatternDetector {
         self.active_partitions.remove(&format!("{}→{}", to, from));
     }
 
-    fn handle_connection_failure(&mut self, timestamp: Instant, from: &str, to: &str, error: &str) {
+    fn handle_connection_failure(&mut self, timestamp: Duration, from: &str, to: &str, error: &str) {
         let failure_desc = format!("{}→{}: {}", from, to, error);
         self.recent_failures.push((timestamp, failure_desc));
 
         let recent_count = self.recent_failures
             .iter()
-            .filter(|(t, _)| timestamp.duration_since(*t) < self.cascade_window)
+            .filter(|_| timestamp < self.cascade_window)
             .count();
 
         if recent_count >= 3 {
             let oldest_in_cascade = self.recent_failures
                 .iter()
-                .filter(|(t, _)| timestamp.duration_since(*t) < self.cascade_window)
+                .filter(|_| timestamp < self.cascade_window)
                 .map(|(t, _)| *t)
                 .min()
                 .unwrap_or(timestamp);
 
-            self.patterns.push(BugPattern::CascadingFailure { timestamp, failure_count: recent_count, duration: timestamp.duration_since(oldest_in_cascade) });
+            self.patterns.push(BugPattern::CascadingFailure { timestamp, failure_count: recent_count, duration: timestamp + oldest_in_cascade });
 
             let error_groups = self.recent_failures
                 .iter()
-                .filter(|(t, _)| timestamp.duration_since(*t) < self.cascade_window)
+                .filter(|_| timestamp < self.cascade_window)
                 .fold(HashMap::new(), |mut acc, (_, desc)| {
                     let parts: Vec<_> = desc.split(": ").collect();
                     if parts.len() >= 2 {
@@ -572,36 +576,36 @@ impl PatternDetector {
         }
     }
 
-    fn handle_invariant_violation(&mut self, timestamp: Instant, name: &str, message: &str) {
+    fn handle_invariant_violation(&mut self, timestamp: Duration, name: &str, details: &str) {
         match name {
             n if n.contains("split_brain") || n.contains("multiple_leaders") => {
                 if !self.active_partitions.is_empty() {
-                    self.patterns.push(BugPattern::SplitBrain { timestamp, active_partitions: self.active_partitions.clone() });
+                    self.patterns.push(BugPattern::SplitBrain { timestamp, active_partitions: self.active_partitions.clone(), details: details.to_string() });
                 }
             }
             n if n.contains("data_race") || n.contains("concurrent") => {
                 let recent_ops: Vec<String> = self.concurrent_operations
                     .values()
                     .flat_map(|ops| ops.iter())
-                    .filter(|(_, t)| timestamp.duration_since(*t) < Duration::from_secs(1))
+                    .filter(|_| timestamp < Duration::from_secs(1))
                     .map(|(op, _)| op.clone())
                     .collect();
 
                 if recent_ops.len() >= 2 {
-                    self.patterns.push(BugPattern::DataRace { timestamp, conflicting_operations: recent_ops });
+                    self.patterns.push(BugPattern::DataRace { timestamp, conflicting_operations: recent_ops, details: details.to_string() });
                 }
             }
             _ => {}
         }
     }
 
-    fn check_thundering_herd(&mut self, timestamp: Instant, from: &str, to: &str) {
+    fn check_thundering_herd(&mut self, timestamp: Duration, from: &str, to: &str) {
         self.request_bursts.push((timestamp, format!("{}→{}", from, to)));
 
         let burst_window = Duration::from_millis(100);
         let simultaneous = self.request_bursts
             .iter()
-            .filter(|(t, _)| timestamp.duration_since(*t) < burst_window)
+            .filter(|_| timestamp < burst_window)
             .count();
 
         if simultaneous >= 10 {
@@ -609,7 +613,7 @@ impl PatternDetector {
         }
     }
 
-    fn check_data_race(&mut self, timestamp: Instant, from: &str, to: &str, bytes: usize) {
+    fn check_data_race(&mut self, timestamp: Duration, from: &str, to: &str, bytes: usize) {
         let resource = format!("{}:{}", to, bytes);
         let operation = format!("{}→{}", from, to);
 
@@ -619,7 +623,7 @@ impl PatternDetector {
             .push((operation, timestamp));
     }
 
-    fn track_operation(&mut self, timestamp: Instant, operation: &str) {
+    fn track_operation(&mut self, timestamp: Duration, operation: &str) {
         self.operation_history.push((operation.to_string(), timestamp));
 
         if self.operation_history.len() >= 10 {
@@ -652,13 +656,13 @@ impl PatternDetector {
         }
     }
 
-    fn cleanup_old_state(&mut self, current_time: Instant) {
-        self.recent_failures.retain(|(t, _)| current_time.duration_since(*t) < Duration::from_secs(30));
+    fn cleanup_old_state(&mut self, current_time: Duration) {
+        self.recent_failures.retain(|(t, _)| current_time.saturating_sub(*t) < Duration::from_secs(30));
 
-        self.request_bursts.retain(|(t, _)| current_time.duration_since(*t) < Duration::from_secs(1));
+        self.request_bursts.retain(|(t, _)| current_time.saturating_sub(*t) < Duration::from_secs(1));
 
         for ops in self.concurrent_operations.values_mut() {
-            ops.retain(|(_, t)| current_time.duration_since(*t) < Duration::from_secs(5));
+            ops.retain(|(_, t)| current_time.saturating_sub(*t) < Duration::from_secs(5));
         }
 
         if self.operation_history.len() > 100 {

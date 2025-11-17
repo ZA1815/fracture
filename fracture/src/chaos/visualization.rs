@@ -1,4 +1,3 @@
-use crate::chaos::invariants::Invariant;
 use crate::chaos::trace::{BugPattern, TraceEntry, TraceEvent};
 use std::time::Duration;
 use std::collections::HashMap;
@@ -21,7 +20,7 @@ impl TestReport {
         let total_events = trace.len();
 
         let total_duration = if let (Some(first), Some(last)) = (trace.first(), trace.last()) {
-            last.timestamp.duration_since(first.timestamp)
+            last.timestamp + first.timestamp
         }
         else {
             Duration::ZERO
