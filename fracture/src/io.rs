@@ -1,7 +1,7 @@
 use std::io::{self, Error, ErrorKind, Result, SeekFrom};
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncSeek, AsyncWrite, AsyncWriteExt, ReadBuf};
+pub use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncSeek, AsyncWrite, AsyncWriteExt, ReadBuf};
 use pin_project::pin_project;
 
 use crate::chaos::{self, ChaosOperation};
@@ -177,7 +177,7 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for ChaosWriter<W> {
 }
 
 #[pin_project]
-pub struct ChaosBufReader<R> {
+pub struct BufReader<R> {
     #[pin]
     inner: tokio::io::BufReader<R>,
     chaos_state: BufReaderChaosState
@@ -188,7 +188,7 @@ struct BufReaderChaosState {
     duplicate_lines: bool
 }
 
-impl<R: AsyncRead> ChaosBufReader<R> {
+impl<R: AsyncRead> BufReader<R> {
     pub fn new(inner: R) -> Self {
         Self {
             inner: tokio::io::BufReader::new(inner),
@@ -210,7 +210,7 @@ impl<R: AsyncRead> ChaosBufReader<R> {
     }
 }
 
-impl<R: AsyncRead + Unpin> AsyncRead for ChaosBufReader<R> {
+impl<R: AsyncRead + Unpin> AsyncRead for BufReader<R> {
     fn poll_read(
             mut self: Pin<&mut Self>,
             cx: &mut Context<'_>,
@@ -220,7 +220,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for ChaosBufReader<R> {
     }
 }
 
-impl<R: AsyncRead + Unpin> AsyncBufRead for ChaosBufReader<R> {
+impl<R: AsyncRead + Unpin> AsyncBufRead for BufReader<R> {
     fn poll_fill_buf(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<&[u8]>> {
         let this = self.project();
         this.inner.poll_fill_buf(cx)
@@ -231,7 +231,7 @@ impl<R: AsyncRead + Unpin> AsyncBufRead for ChaosBufReader<R> {
     }
 }
 
-pub struct ChaosBufWriter<W> {
+pub struct BufWriter<W> {
     inner: tokio::io::BufWriter<W>,
     chaos_state: BufWriterChaosState
 }
@@ -241,7 +241,7 @@ struct BufWriterChaosState {
     buffer_overflow: bool
 }
 
-impl<W: AsyncWrite> ChaosBufWriter<W> {
+impl<W: AsyncWrite> BufWriter<W> {
     pub fn new(inner: W) -> Self {
         Self {
             inner: tokio::io::BufWriter::new(inner),
@@ -263,7 +263,7 @@ impl<W: AsyncWrite> ChaosBufWriter<W> {
     }
 }
 
-impl<W: AsyncWrite + Unpin> AsyncWrite for ChaosBufWriter<W> {
+impl<W: AsyncWrite + Unpin> AsyncWrite for BufWriter<W> {
     fn poll_write(
             mut self: Pin<&mut Self>,
             cx: &mut Context<'_>,

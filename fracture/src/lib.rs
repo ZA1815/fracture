@@ -35,7 +35,7 @@ pub mod prelude {
         time::{sleep, timeout, interval, ChaosInstant},
         fs::{File, read, write, OpenOptions},
         task::{spawn, spawn_blocking, yield_now, JoinHandle},
-        io::{AsyncReadExt, AsyncWriteExt},
+        io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter, ChaosReader, ChaosWriter, ChaosSeeker},
         sync::{Mutex, RwLock, Semaphore, Notify}
     };
 
