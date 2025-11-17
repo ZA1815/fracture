@@ -28,14 +28,15 @@ pub use fracture_macros::test;
 #[cfg(feature = "simulation")]
 pub use fracture_macros::main;
 
+#[cfg(feature = "simulation")]
 pub mod prelude {
-    #[cfg(feature = "simulation")]
     pub use crate::{
         net::{TcpListener, TcpStream, UdpSocket},
-        time::{sleep, timeout, interval},
-        fs::{File, read, write},
-        task::{spawn, spawn_blocking, yield_now},
-        io::{AsyncReadExt, AsyncWriteExt}
+        time::{sleep, timeout, interval, ChaosInstant},
+        fs::{File, read, write, OpenOptions},
+        task::{spawn, spawn_blocking, yield_now, JoinHandle},
+        io::{AsyncReadExt, AsyncWriteExt},
+        sync::{Mutex, RwLock, Semaphore, Notify}
     };
 
     pub use crate::chaos::{
@@ -48,18 +49,16 @@ pub mod prelude {
         set_delay,
         set_reordering,
         clear,
+        ChaosOperation,
         scenario::Scenario,
-        scenario::ScenarioBuilder
+        scenario::ScenarioBuilder,
+        invariants::{
+            Invariant,
+            InvariantChecker,
+            CommonInvariants,
+            register as register_invariant,
+            check_all as check_invariants
+        }
     };
-
-    #[cfg(feature = "simulation")]
-    pub use crate::chaos::invariants::{
-        Invariant,
-        InvariantChecker,
-        CommonInvariants,
-        register as register_invariant,
-        check_all as check_invariants
-    };
-
     pub use std::time::Duration;
 }

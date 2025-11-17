@@ -1,11 +1,20 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::SystemTime;
 use tokio::time::{Duration, Instant, Interval, MissedTickBehavior};
 use tokio::time::error::Elapsed;
 use pin_project::pin_project;
 
 use crate::chaos::{self, ChaosOperation};
+
+pub fn deterministic_now() -> SystemTime {
+    let genesis = SystemTime::UNIX_EPOCH + Duration::from_secs(1735689600);
+
+    let elapsed = tokio::time::Instant::now().elapsed();
+
+    genesis + elapsed
+}
 
 pub async fn sleep(duration: Duration) {
     if chaos::should_fail(ChaosOperation::SleepNever) {
