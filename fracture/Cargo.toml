@@ -37,6 +37,7 @@ dashmap = "5.5"
 arc-swap = "1.6"
 
 parking_lot = "0.12"
+num_cpus = "1.17.0"
 
 [features]
 default = ["simulation"]

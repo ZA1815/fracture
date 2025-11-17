@@ -161,11 +161,11 @@ pub async fn yield_now() {
 }
 
 pub struct JoinHandle<T> {
-    inner: Option<tokio::task::JoinHandle<T>>,
-    chaos_state: JoinHandleChaos
+    pub inner: Option<tokio::task::JoinHandle<T>>,
+    pub chaos_state: JoinHandleChaos
 }
 
-enum JoinHandleChaos {
+pub enum JoinHandleChaos {
     None,
     AlwaysFail,
     AlwaysPanic,
