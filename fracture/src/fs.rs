@@ -6,8 +6,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::SystemTime;
 
-use parking_lot::lock_api::Mutex;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 use crate::chaos::{self, ChaosOperation};
@@ -143,14 +142,14 @@ impl FileEntry {
         self.metadata.len = self.data.len() as u64;
     }
 
-    fn update_acessed(&mut self) {
+    fn update_accessed(&mut self) {
         self.metadata.accessed = deterministic_now();
     }
 }
 
 #[derive(Clone)]
 enum Entry {
-    File(Arc<RwLock<HashMap<String, Entry>>>),
+    File(Arc<RwLock<FileEntry>>),
     Directory(Arc<RwLock<HashMap<String, Entry>>>)
 }
 
@@ -176,7 +175,7 @@ impl FsRegistry {
         }
 
         let mut root = self.root.write();
-        let mut current_map = &mut *root;
+        let current_map = &mut *root;
 
         for (i, component) in components.iter().enumerate() {
             let is_last = i == components.len() - 1;
@@ -321,9 +320,11 @@ impl File {
             Err(e) => return Err(e)
         };
 
-        let mut file_entry = entry.write();
-        file_entry.open_count += 1;
-        file_entry.update_accessed();
+        {
+            let mut file_entry = entry.write();
+            file_entry.open_count += 1;
+            file_entry.update_accessed();
+        }
 
         yield_now().await;
 
@@ -354,10 +355,12 @@ impl File {
                 Entry::Directory(_) => Err(Error::new(ErrorKind::IsADirectory, "fracture: Is a directory"))
             })?;
 
-        let mut file_entry = entry.write();
-        file_entry.data.clear();
-        file_entry.open_count += 1;
-        file_entry.update_modified();
+        {
+            let mut file_entry = entry.write();
+            file_entry.data.clear();
+            file_entry.open_count += 1;
+            file_entry.update_modified();
+        }
 
         yield_now().await;
 
@@ -548,7 +551,7 @@ impl AsyncWrite for File {
         };
 
         if write_size == 0 {
-            return Poll::Ready(Ok(()))
+            return Poll::Ready(Ok(0))
         }
 
         let mut entry = self.entry.write();
@@ -592,7 +595,6 @@ impl AsyncWrite for File {
             return Poll::Ready(Err(Error::new(ErrorKind::Other, "fracture: Flush failed (chaos)")));
         }
 
-        cx.waker().wake_by_ref();
         Poll::Ready(Ok(()))
     }
 
@@ -723,16 +725,18 @@ impl OpenOptions {
         let entry = match entry? {
             Entry::File(f) => f,
             Entry::Directory(_) => return Err(Error::new(ErrorKind::IsADirectory, "fracture: Is a directory")),
+        };
+
+        {
+            let mut file_entry = entry.write();
+
+            if self.truncate {
+                file_entry.data.clear();
+            }
+
+            file_entry.open_count += 1;
+            file_entry.update_modified();
         }
-
-        let mut file_entry = entry.write();
-
-        if self.truncate {
-            file_entry.data.clear();
-        }
-
-        file_entry.open_count += 1;
-        file_entry.update_accessed();
 
         yield_now().await;
 
@@ -753,6 +757,7 @@ impl Default for OpenOptions {
     }
 }
 
+#[derive(Clone)]
 pub struct DirEntry {
     path: PathBuf,
     file_name: String
@@ -768,7 +773,7 @@ impl DirEntry {
     }
 
     pub async fn metadata(&self) -> Result<Metadata> {
-        metadata(&self.path).await;
+        metadata(&self.path).await
     }
 
     pub async fn file_type(&self) -> Result<FileType> {
@@ -805,6 +810,7 @@ impl ReadDir {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct FileType {
     is_dir: bool,
     is_file: bool
@@ -878,7 +884,7 @@ pub async fn copy<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<u64>
 
     let data = read(from).await?;
     let len = data.len() as u64;
-    write(to, data).await?;
+    write(to, &data).await?;
 
     Ok(len)
 }
