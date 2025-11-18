@@ -1,3 +1,5 @@
+mod select;
+
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{Expr, ExprLit, ItemFn, Lit, Meta, ReturnType, parse_macro_input, punctuated::Punctuated, token::Comma, Token};
@@ -189,4 +191,24 @@ pub fn main(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     TokenStream::from(expanded)
+}
+
+#[proc_macro]
+pub fn select(input: TokenStream) -> TokenStream {
+    select::select(input)
+}
+
+#[proc_macro]
+pub fn join(input: TokenStream) -> TokenStream {
+    select::join(input).into()
+}
+
+#[proc_macro]
+pub fn try_join(input: TokenStream) -> TokenStream {
+    select::try_join(input)
+}
+
+#[proc_macro]
+pub fn pin(input: TokenStream) -> TokenStream {
+    select::pin(input)
 }
