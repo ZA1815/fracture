@@ -375,6 +375,20 @@ impl LocalSet {
             chaos_state: JoinHandleChaos::None
         }
     }
+
+    pub async fn run_until<F>(&self, future: F) -> F::Output
+    where F: Future {
+        if chaos::should_fail(ChaosOperation::LocalSetRun) {
+            std::future::pending::<()>().await;
+        }
+
+        self.inner.run_until(future).await
+    }
+
+    pub fn block_on<F>(&self, rt: &crate::runtime::Runtime, future: F) -> F::Output
+    where F: Future {
+        self.inner.block_on(&tokio::runtime::Runtime::new().unwrap(), future)
+    }
 }
 
 impl Default for LocalSet {
