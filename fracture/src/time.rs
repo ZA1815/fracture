@@ -2,7 +2,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::SystemTime;
-use tokio::time::{Duration, Instant, Interval, MissedTickBehavior};
+use tokio::time::{Duration, Instant, MissedTickBehavior};
+pub use tokio::time::Interval;
 use tokio::time::error::Elapsed;
 use pin_project::pin_project;
 
