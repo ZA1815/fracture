@@ -40,9 +40,38 @@ parking_lot = "0.12"
 num_cpus = "1.17.0"
 
 [features]
-default = ["simulation"]
+default = ["simulation", "full"]
 simulation = ["turmoil", "fracture-macros"]
-full-chaos = ["simulation"]
+
+rt = []
+rt-multi-thread = ["rt"]
+io-util = []
+io-std = []
+net = []
+time = []
+fs = []
+process = []
+signal = []
+sync = []
+macros = ["fracture-macros"]
+test-util = ["simulation"]
+stream = []
+
+full = [
+    "rt-multi-thread",
+    "io-util",
+    "io-std",
+    "net",
+    "time",
+    "fs",
+    "process",
+    "signal",
+    "sync",
+    "macros",
+    "stream"
+]
+
+full-chaos = ["simulation", "full"]
 
 [dev-dependencies]
 pretty_assertions = "1.4"

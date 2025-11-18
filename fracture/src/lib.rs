@@ -21,6 +21,8 @@ pub mod runtime;
 pub mod process;
 #[cfg(feature = "simulation")]
 pub mod signal;
+#[cfg(feature = "simulation")]
+pub mod stream;
 
 #[cfg(not(feature = "simulation"))]
 pub use tokio::main;
