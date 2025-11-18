@@ -2,6 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::SystemTime;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use tokio::time::{Duration, Instant, MissedTickBehavior};
 pub use tokio::time::Interval;
 use tokio::time::error::Elapsed;
@@ -134,6 +135,9 @@ pub struct ChaosInstant {
 
 impl ChaosInstant {
     pub fn now() -> Self {
+        let base = Instant::now();
+        let offset = get_time_offset();
+
         let skew = if chaos::should_fail(ChaosOperation::InstantSkew) {
             (rand::random::<i64>() % 1000) - 500
         }
@@ -145,7 +149,7 @@ impl ChaosInstant {
         };
 
         Self {
-            inner: Instant::now(),
+            inner: base + offset,
             skew
         }
     }
@@ -327,23 +331,44 @@ impl ChaosInterval {
     }
 }
 
+static TIME_PAUSED: AtomicBool = AtomicBool::new(false);
+static TIME_OFFSET: AtomicU64 = AtomicU64::new(0);
+
 pub fn pause() {
     if chaos::should_fail(ChaosOperation::TimePause) {
-        // Future impl
+        return;
     }
+
+    TIME_PAUSED.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 pub fn resume() {
-    // Future impl
+    TIME_PAUSED.store(false, std::sync::atomic::Ordering::SeqCst);
 }
 
 pub fn advance(duration: Duration) {
     if chaos::should_fail(ChaosOperation::TimeAcceleration) {
-        // Future impl
+        let offset = TIME_OFFSET.load(std::sync::atomic::Ordering::SeqCst);
+        TIME_OFFSET.store(offset + duration.as_millis() as u64 * 2, std::sync::atomic::Ordering::SeqCst);
+        return;
     }
-    else if chaos::should_fail(ChaosOperation::TimeTravel) {
-        // Future impl
+
+    if chaos::should_fail(ChaosOperation::TimeTravel) {
+        let offset = TIME_OFFSET.load(std::sync::atomic::Ordering::SeqCst);
+        TIME_OFFSET.store(offset.saturating_sub(duration.as_millis() as u64), std::sync::atomic::Ordering::SeqCst);
+        return;
     }
+
+    let offset = TIME_OFFSET.load(std::sync::atomic::Ordering::SeqCst);
+    TIME_OFFSET.store(offset + duration.as_millis() as u64, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub fn is_paused() -> bool {
+    TIME_PAUSED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+pub fn get_time_offset() -> Duration {
+    Duration::from_millis(TIME_OFFSET.load(std::sync::atomic::Ordering::SeqCst))
 }
 
 pub struct Throttle<T> {
