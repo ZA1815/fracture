@@ -1,3 +1,4 @@
+use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -127,6 +128,29 @@ pub struct OwnedMutexGuard<T> {
     chaos_state: Arc<std::sync::Mutex<MutexChaosState>>
 }
 
+impl<T> Deref for OwnedMutexGuard<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner.as_ref().unwrap()
+    }
+}
+
+impl<T> DerefMut for OwnedMutexGuard<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.inner.as_mut().unwrap()
+    }
+}
+
+impl<T> Drop for OwnedMutexGuard<T> {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.chaos_state.lock() {
+            let thread_id = std::thread::current().id();
+            state.lock_holders.retain(|&id| id != thread_id);
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum TryLockError {
     Poisoned,
@@ -252,6 +276,42 @@ impl<'a, T> Drop for RwLockReadGuard<'a, T> {
     }
 }
 
+impl<'a, T> Deref for RwLockReadGuard<'a, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner.as_ref().unwrap().deref()
+    }
+}
+
+impl<'a, T> RwLockReadGuard<'a, T> {
+    pub fn map<U, F>(mut this: Self, f: F) -> RwLockMappedReadGuard<'a, T, U>
+    where F: FnOnce(&T) -> &U, U: ?Sized {
+        let data = f(&*this) as *const U;
+
+        RwLockMappedReadGuard {
+            _inner: this.inner.take().unwrap(),
+            data,
+            _phantom: std::marker::PhantomData
+        }
+    }
+
+    pub fn try_map<U, F>(mut this: Self, f: F) -> Result<RwLockMappedReadGuard<'a, T, U>, Self>
+    where F: FnOnce(&T) -> Option<&U>, U: ?Sized {
+        match f(&*this) {
+            Some(data) => {
+                let data_ptr = data as *const U;
+                Ok(RwLockMappedReadGuard {
+                    _inner: this.inner.take().unwrap(),
+                    data: data_ptr,
+                    _phantom: std::marker::PhantomData
+                })
+            }
+            None => Err(this)
+        }
+    }
+}
+
 pub struct RwLockWriteGuard<'a, T> {
     inner: Option<sync::RwLockWriteGuard<'a, T>>,
     chaos_state: Arc<std::sync::Mutex<RwLockChaosState>>
@@ -263,6 +323,41 @@ impl<'a, T> Drop for RwLockWriteGuard<'a, T> {
             state.has_writer = false;
         }
     }
+}
+
+impl<'a, T> Deref for RwLockWriteGuard<'a, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner.as_ref().unwrap().deref()
+    }
+}
+
+impl<'a, T> RwLockWriteGuard<'a, T> {
+    pub fn map<U, F>(mut this: Self, f: F) -> RwLockMappedWriteGuard<'a, T, U>
+    where F: FnOnce(&mut T) -> &mut U, U: ?Sized {
+        let data = f(&mut *const_cast_mut(&*this)) as *mut U;
+
+        RwLockMappedWriteGuard {
+            _inner: this.inner.take().unwrap(),
+            data,
+            _phantom: std::marker::PhantomData
+        }
+    }
+
+    pub fn downgrade(mut this: Self) -> RwLockReadGuard<'a, T> {
+        let inner = this.inner.take().unwrap();
+        let downgraded = sync::RwLockWriteGuard::downgrade(inner);
+
+        RwLockReadGuard {
+            inner: Some(downgraded),
+            chaos_state: this.chaos_state.clone()
+        }
+    }
+}
+
+fn const_cast_mut<T: ?Sized>(reference: &T) -> &mut T {
+    unsafe { &mut *(reference as *const T as *mut T) }
 }
 
 pub struct Semaphore {
@@ -818,5 +913,39 @@ pub struct BarrierWaitResult {
 impl BarrierWaitResult {
     pub fn is_leader(&self) -> bool {
         self.is_leader
+    }
+}
+
+pub struct RwLockMappedReadGuard<'a, T: ?Sized, U: ?Sized> {
+    _inner: sync::RwLockReadGuard<'a, T>,
+    data: *const U,
+    _phantom: std::marker::PhantomData<&'a U>
+}
+
+impl<'a, T: ?Sized, U: ?Sized> Deref for RwLockMappedReadGuard<'a, T, U> {
+    type Target = U;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.data }
+    }
+}
+
+pub struct RwLockMappedWriteGuard<'a, T: ?Sized, U: ?Sized> {
+    _inner: sync::RwLockWriteGuard<'a, T>,
+    data: *mut U,
+    _phantom: std::marker::PhantomData<&'a mut U>
+}
+
+impl<'a, T: ?Sized, U: ?Sized> Deref for RwLockMappedWriteGuard<'a, T, U> {
+    type Target = U;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.data }
+    }
+}
+
+impl<'a, T: ?Sized, U: ?Sized> DerefMut for RwLockMappedWriteGuard<'a, T, U> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.data }
     }
 }
