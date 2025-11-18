@@ -2,7 +2,7 @@ mod select;
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{Expr, ExprLit, ItemFn, Lit, Meta, ReturnType, parse_macro_input, punctuated::Punctuated, token::Comma, Token};
+use syn::{Attribute, Expr, ExprLit, ItemFn, Lit, Meta, ReturnType, Token, parse_macro_input, punctuated::Punctuated, token::Comma};
 
 struct MacroArgs {
     duration: proc_macro2::TokenStream
@@ -211,4 +211,60 @@ pub fn try_join(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn pin(input: TokenStream) -> TokenStream {
     select::pin(input)
+}
+
+struct TaskLocalInput {
+    attrs: Vec<syn::Attribute>,
+    vis: syn::Visibility,
+    name: syn::Ident,
+    ty: syn::Type,
+    init: syn::Expr
+}
+
+impl syn::parse::Parse for TaskLocalInput {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let attrs = input.call(Attribute::parse_outer)?;
+        let vis = input.parse()?;
+        input.parse::<Token![static]>()?;
+        let name = input.parse()?;
+        input.parse::<Token![:]>()?;
+        let ty = input.parse()?;
+        input.parse::<Token![=]>()?;
+        let init = input.parse()?;
+
+        Ok(TaskLocalInput {
+            attrs,
+            vis,
+            name,
+            ty,
+            init
+        })
+    }
+}
+
+#[proc_macro]
+pub fn task_local(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as TaskLocalInput);
+
+    let vis = &input.vis;
+    let name = &input.name;
+    let ty = &input.ty;
+    let init = &input.init;
+    let attrs = &input.attrs;
+
+    let expanded = quote! {
+        #(#attrs)*
+        #vis static #name: ::fracture::task::LocalKey<#ty> = {
+            thread_local! {
+                static INNER: ::std::cell::RefCell<Option<#ty>> = ::std::cell::RefCell::new(None);
+            }
+
+            ::fracture::task::LocalKey {
+                inner: &INNER,
+                init: || #init
+            }
+        };
+    };
+
+    TokenStream::from(expanded)
 }
