@@ -534,8 +534,12 @@ impl Handle {
             std::thread::sleep(Duration::from_secs(60));
         }
 
-        // Placeholder
-        unimplemented!("block_on requires executor integration")
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("fracture: Failed to build runtime");
+
+        rt.block_on(future)
     }
 
     pub fn enter<F, R>(&self, f: F) -> R
@@ -576,15 +580,16 @@ impl Runtime {
     }
 
     pub fn block_on<F: Future>(&self, future: F) -> F::Output {
-        let future = Box::pin(future);
+        if chaos::should_fail(ChaosOperation::RuntimeBlock) {
+            std::thread::sleep(Duration::from_secs(60));
+        }
 
-        let mut scheduler = self.scheduler.borrow_mut();
-        scheduler.spawn_task(future, TaskPriority::High);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("fracture: Failed to build runtime");
 
-        scheduler.run_until_idle();
-
-        // Return result (needs proper implementation)
-        unimplemented!("block_on result extraction")
+        rt.block_on(future)
     }
 
     pub fn enter<F, R>(&self, future: F) -> R
