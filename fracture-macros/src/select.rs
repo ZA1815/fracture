@@ -370,7 +370,7 @@ pub fn try_join(input: TokenStream) -> TokenStream {
             ::std::future::poll_fn(|__cx| {
                 #(#poll_all)*
 
-                if__remaining == 0 {
+                if __remaining == 0 {
                     Poll::Ready(Ok((#(#result_tuple),*)))
                 }
                 else {
