@@ -150,7 +150,8 @@ impl FileEntry {
 #[derive(Clone)]
 enum Entry {
     File(Arc<RwLock<FileEntry>>),
-    Directory(Arc<RwLock<HashMap<String, Entry>>>)
+    Directory(Arc<RwLock<HashMap<String, Entry>>>),
+    Symlink(PathBuf)
 }
 
 struct FsRegistry {
@@ -293,6 +294,20 @@ impl FsRegistry {
             Some(Entry::File(_)) => Err(Error::new(ErrorKind::NotADirectory, "fracture: Not a directory")),
             None => Err(Error::new(ErrorKind::NotFound, "fracture: Directory not found"))
         }
+    }
+
+    fn create_symlink(&self, link_path: PathBuf, target_path: PathBuf) -> Result<()> {
+        let link_str = link_path.to_string_lossy().to_string();
+        let mut root = self.root.write();
+
+        if root.contains_key(&link_str) {
+            return Err(Error::new(ErrorKind::AlreadyExists, "fracture: Link already exists"));
+        }
+
+        let entry = Entry::Symlink(target_path);
+        root.insert(link_str, entry);
+
+        Ok(())
     }
 }
 
@@ -975,7 +990,25 @@ pub async fn set_permissions<P: AsRef<Path>>(path: P, perm: Permissions) -> Resu
     Ok(())
 }
 
+pub async fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(src: P, dst: Q) -> Result<()> {
+    if chaos::should_fail(ChaosOperation::FsSymlink) {
+        return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Symlink failed (chaos)"));
+    }
+
+    let src_path = src.as_ref().to_path_buf();
+    let dst_path = dst.as_ref().to_path_buf();
+
+    FS.create_symlink(dst_path, src_path)?;
+    yield_now().await;
+
+    Ok(())
+}
+
 pub async fn symlink_metadata<P: AsRef<Path>>(path: P) -> Result<Metadata> {
+    if chaos::should_fail(ChaosOperation::FsSymlinkMetadata) {
+        return Err(Error::new(ErrorKind::Other, "fracture: Symlink metadata failed (chaos)"));
+    }
+
     metadata(path).await
 }
 
@@ -989,8 +1022,12 @@ pub async fn hard_link<P: AsRef<Path>, Q: AsRef<Path>>(src: P, dst: Q) -> Result
         return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Hard link failed (chaos)"));
     }
 
-    // Placeholder
-    Err(Error::new(ErrorKind::Other, "Hard links not supported"))
+    let data = read(src).await?;
+    write(dst, data).await?;
+
+    yield_now().await;
+    
+    Ok(())
 }
 
 pub fn set_chunk_size(size: usize) {
