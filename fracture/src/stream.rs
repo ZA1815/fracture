@@ -768,21 +768,39 @@ impl Stream for IntervalStream {
 }
 
 pub struct TcpListenerStream {
-    listener: TcpListener
+    listener: TcpListener,
+    pending: Option<Pin<Box<dyn Future<Output = std::io::Result<(TcpStream, SocketAddr)>> + Send>>>
 }
 
 impl TcpListenerStream {
     pub fn new(listener: TcpListener) -> Self {
-        Self { listener }
+        Self { listener, pending: None }
     }
 }
 
 impl Stream for TcpListenerStream {
     type Item = std::io::Result<(TcpStream, SocketAddr)>;
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // Placeholder, need proper async handling
-        Poll::Pending
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if self.pending.is_none() {
+            let listener = self.listener.clone();
+            self.pending = Some(Box::pin(async move {
+                listener.accept().await
+            }));
+        }
+
+        if let Some(fut) = self.pending.as_mut() {
+            match fut.as_mut().poll(cx) {
+                Poll::Ready(result) => {
+                    self.pending = None;
+                    Poll::Ready(Some(result))
+                }
+                Poll::Pending => Poll::Pending
+            }
+        }
+        else {
+            Poll::Pending
+        }
     }
 }
 
