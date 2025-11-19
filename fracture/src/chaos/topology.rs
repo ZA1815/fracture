@@ -273,6 +273,6 @@ mod tests {
         assert!(topology.is_partitioned());
         assert!(topology.can_reach("node1", "node2"));
         assert!(topology.can_reach("node3", "node4"));
-        assert!(topology.can_reach("node1", "node3"));
+        assert!(!topology.can_reach("node1", "node3"));
     }
 }
