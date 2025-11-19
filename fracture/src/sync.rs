@@ -361,7 +361,7 @@ fn const_cast_mut<T: ?Sized>(reference: &T) -> &mut T {
 }
 
 pub struct Semaphore {
-    inner: tokio::sync::Semaphore,
+    inner: Arc<tokio::sync::Semaphore>,
     max_permits: usize
 }
 
@@ -377,10 +377,29 @@ impl<'a> SemaphorePermit<'a> {
     }
 }
 
+pub struct OwnedSemaphorePermit {
+    inner: Option<tokio::sync::OwnedSemaphorePermit>,
+    _semaphore: Arc<Semaphore>
+}
+
+impl OwnedSemaphorePermit {
+    pub fn forget(mut self) {
+        if let Some(permit) = self.inner.take() {
+            permit.forget();
+        }
+    }
+}
+
+impl Drop for OwnedSemaphorePermit {
+    fn drop(&mut self) {
+        
+    }
+}
+
 impl Semaphore {
     pub fn new(permits: usize) -> Self {
         Self {
-            inner: tokio::sync::Semaphore::new(permits),
+            inner: Arc::new(tokio::sync::Semaphore::new(permits)),
             max_permits: permits
         }
     }
@@ -436,6 +455,18 @@ impl Semaphore {
         }
 
         self.inner.add_permits(n);
+    }
+
+    pub async fn acquire_owned(self: Arc<Self>) -> OwnedSemaphorePermit {
+        if chaos::should_fail(ChaosOperation::SemaphoreAcquire) {
+            std::future::pending::<()>().await;
+        }
+
+        let permit = self.inner.clone().acquire_owned().await.unwrap();
+        OwnedSemaphorePermit {
+            inner: Some(permit),
+            _semaphore: self
+        }
     }
 }
 
@@ -865,6 +896,38 @@ impl Notify {
         }
 
         self.inner.notified().await;
+    }
+
+    pub fn enable() -> NotifyHandle {
+        NotifyHandle {
+            inner: Arc::new(Notify::new())
+        }
+    }
+}
+
+pub struct NotifyHandle {
+    inner: Arc<Notify>
+}
+
+impl NotifyHandle {
+    pub fn notify_one(&self) {
+        self.inner.notify_one();
+    }
+
+    pub fn notify_waiters(&self) {
+        self.inner.notify_waiters();
+    }
+
+    pub async fn notified(&self) {
+        self.inner.notified().await;
+    }
+}
+
+impl Clone for NotifyHandle {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner)
+        }
     }
 }
 
