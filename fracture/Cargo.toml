@@ -10,12 +10,8 @@ keywords = ["chaos", "testing", "distributed", "simulation", "deterministic", "f
 categories = ["development-tools::testing", "network-programming"]
 
 [dependencies]
-tokio = { version = "1.41", features = ["full"] }
-
-turmoil = { version = "0.6", optional = true }
-
-tokio-util = { version = "0.7", features = ["full"] }
 bytes = "1.5"
+
 futures = "0.3"
 pin-project = "1.1"
 
@@ -38,10 +34,16 @@ arc-swap = "1.6"
 
 parking_lot = "0.12"
 num_cpus = "1.17.0"
+slab = "0.4.11"
+
+[dependencies.tokio]
+version = "1.41"
+features = ["full"]
+optional = true
 
 [features]
 default = ["simulation", "full"]
-simulation = ["turmoil", "fracture-macros"]
+simulation = ["fracture-macros"]
 
 rt = []
 rt-multi-thread = ["rt"]
