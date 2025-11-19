@@ -1,108 +1,68 @@
+use std::path::{Path, PathBuf};
 use std::collections::HashMap;
-use std::io::{self, Error, ErrorKind, Result, SeekFrom};
-use std::path::{Path, PathBuf, Component};
+use std::sync::{Arc, Mutex};
+use std::io::{self, Result, Error, ErrorKind, SeekFrom};
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::SystemTime;
 
-use parking_lot::{Mutex, RwLock};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncWrite, AsyncWriteExt, ReadBuf};
+use crate::io::{AsyncRead, AsyncWrite, AsyncSeek, ReadBuf};
+use crate::runtime::Handle;
 
-use crate::chaos::{self, ChaosOperation};
-use crate::time::deterministic_now;
-use crate::task::yield_now;
-
-#[derive(Clone, Debug)]
-pub struct FsConfig {
-    pub chunk_size: usize,
-    pub yield_after_bytes: usize,
-    pub enable_torn_writes: bool,
-    pub enable_corruption: bool,
-    pub max_file_size: usize
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FileType {
+    is_dir: bool,
+    is_file: bool,
+    is_symlink: bool,
 }
 
-impl Default for FsConfig {
-    fn default() -> Self {
-        Self {
-            chunk_size: 256,
-            yield_after_bytes: 128,
-            enable_torn_writes: true,
-            enable_corruption: true,
-            max_file_size: 100 * 1024 * 1024
-        }
+impl FileType {
+    pub fn is_dir(&self) -> bool {
+        self.is_dir
+    }
+    pub fn is_file(&self) -> bool {
+        self.is_file
+    }
+    pub fn is_symlink(&self) -> bool {
+        self.is_symlink
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct Metadata {
-    pub len: u64,
-    pub is_dir: bool,
-    pub is_file: bool,
-    pub is_symlink: bool,
-    pub modified: SystemTime,
-    pub accessed: SystemTime,
-    pub created: SystemTime,
-    pub permissions: Permissions
+    len: u64,
+    file_type: FileType,
+    readonly: bool,
+    created: SystemTime,
+    modified: SystemTime,
+    accessed: SystemTime,
 }
 
 impl Metadata {
-    fn new_file() -> Self {
-        let now = deterministic_now();
-        Self {
-            len: 0,
-            is_dir: false,
-            is_file: true,
-            is_symlink: false,
-            modified: now,
-            accessed: now,
-            created: now,
-            permissions: Permissions::default()
-        }
+    pub fn file_type(&self) -> FileType {
+        self.file_type
     }
 
-    fn new_dir() -> Self {
-        let now = deterministic_now();
-        Self {
-            len: 0,
-            is_dir: true,
-            is_file: false,
-            is_symlink: false,
-            modified: now,
-            accessed: now,
-            created: now,
-            permissions: Permissions::default()
-        }
+    pub fn is_dir(&self) -> bool {
+        self.file_type.is_dir()
     }
 
-    fn new_symlink(target: &Path) -> Self {
-        let now = deterministic_now();
+    pub fn is_file(&self) -> bool {
+        self.file_type.is_file()
+    }
 
-        let len = target.to_string_lossy().len() as u64;
-
-
-        Self {
-            len,
-            is_dir: false,
-            is_file: false,
-            is_symlink: true,
-            modified: now,
-            accessed: now,
-            created: now,
-            permissions: Permissions::default()
-        }
+    pub fn is_symlink(&self) -> bool {
+        self.file_type.is_symlink()
     }
 
     pub fn len(&self) -> u64 {
         self.len
     }
 
-    pub fn is_dir(&self) -> bool {
-        self.is_dir
-    }
-
-    pub fn is_file(&self) -> bool {
-        self.is_file
+    pub fn permissions(&self) -> Permissions {
+        Permissions {
+            readonly: self.readonly
+        }
     }
 
     pub fn modified(&self) -> Result<SystemTime> {
@@ -116,21 +76,11 @@ impl Metadata {
     pub fn created(&self) -> Result<SystemTime> {
         Ok(self.created)
     }
-
-    pub fn permissions(&self) -> Permissions {
-        self.permissions.clone()
-    }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub struct Permissions {
     readonly: bool
-}
-
-impl Default for Permissions {
-    fn default() -> Self {
-        Self { readonly: false }
-    }
 }
 
 impl Permissions {
@@ -143,602 +93,125 @@ impl Permissions {
     }
 }
 
+#[derive(Clone)]
 struct FileEntry {
-    data: Vec<u8>,
-    metadata: Metadata,
-    open_count: usize
+    content: Vec<u8>,
+    file_type: FileType,
+    readonly: bool,
+    created: SystemTime,
+    modified: SystemTime,
+    accessed: SystemTime
 }
 
 impl FileEntry {
-    fn new() -> Self {
+    fn new_file(now: SystemTime) -> Self {
         Self {
-            data: Vec::new(),
-            metadata: Metadata::new_file(),
-            open_count: 0
+            content: Vec::new(),
+            file_type: FileType { is_dir: false, is_file: true, is_symlink: false },
+            readonly: false,
+            created: now,
+            modified: now,
+            accessed: now,
         }
     }
 
-    fn update_modified(&mut self) {
-        self.metadata.modified = deterministic_now();
-        self.metadata.len = self.data.len() as u64;
-    }
-
-    fn update_accessed(&mut self) {
-        self.metadata.accessed = deterministic_now();
-    }
-}
-
-#[derive(Clone)]
-enum Entry {
-    File(Arc<RwLock<FileEntry>>),
-    Directory(Arc<RwLock<HashMap<String, Entry>>>),
-    Symlink(PathBuf, Metadata)
-}
-
-struct FsRegistry {
-    root: RwLock<HashMap<String, Entry>>,
-    config: FsConfig
-}
-
-impl FsRegistry {
-    fn new() -> Self {
+    fn new_dir(now: SystemTime) -> Self {
         Self {
-            root: RwLock::new(HashMap::new()),
-            config: FsConfig::default()
+            content: Vec::new(),
+            file_type: FileType { is_dir: true, is_file: false, is_symlink: false },
+            readonly: false,
+            created: now,
+            modified: now,
+            accessed: now,
         }
-    }
-
-    fn get_or_create_entry(&self, path: &Path, create: bool) -> Result<Entry> {
-        let path_str = path.to_string_lossy();
-        let components: Vec<&str> = path_str.trim_start_matches('/').split('/').filter(|s| !s.is_empty()).collect();
-
-        if components.is_empty() {
-            return Err(Error::new(ErrorKind::InvalidInput, "fracture: Invalid path"))
-        }
-
-        let mut root = self.root.write();
-        
-        let mut current_path = String::new();
-        for (i, component) in components.iter().enumerate() {
-            let is_last = i == components.len() - 1;
-            current_path = if current_path.is_empty() {
-                component.to_string()
-            }
-            else {
-                format!("{}/{}", current_path, component)
-            };
-
-            if is_last && create {
-                if !root.contains_key(&current_path) {
-                    let entry = Entry::File(Arc::new(RwLock::new(FileEntry::new())));
-                    root.insert(current_path.clone(), entry.clone());
-                    return Ok(entry)
-                }
-            }
-
-            if !root.contains_key(&current_path) {
-                if create {
-                    let dir = Entry::Directory(Arc::new(RwLock::new(HashMap::new())));
-                    root.insert(current_path.clone(), dir);
-                }
-                else {
-                    return Err(Error::new(ErrorKind::NotFound, "fracture: Path not found"));
-                }
-            }
-
-            match root.get(&current_path) {
-                Some(Entry::File(f)) if is_last => {
-                    return Ok(Entry::File(Arc::clone(f)));
-                }
-                Some(Entry::Directory(_)) if is_last => {
-                    return Err(Error::new(ErrorKind::IsADirectory, "fracture: Path is a directory"));
-                }
-                Some(Entry::File(_)) if !is_last => {
-                    return Err(Error::new(ErrorKind::NotADirectory, "fracture: Path component is a file"));
-                }
-                Some(Entry::Directory(_)) => {
-                    // Continue
-                }
-                None => {
-                    return Err(Error::new(ErrorKind::NotFound, "fracture: Path not found"));
-                }
-                _ => {}
-            }
-        }
-
-        Err(Error::new(ErrorKind::Other, "fracture: Failed to resolve path"))
-    }
-
-    fn get_entry_simple(&self, path: &Path) -> Result<Entry> {
-        let path_str = path.to_string_lossy().to_string();
-        let root = self.root.read();
-
-        root.get(&path_str).cloned().ok_or_else(|| Error::new(ErrorKind::NotFound, "fracture: File not found"))
-    }
-
-    fn create_entry(&self, path: &Path) -> Result<Entry> {
-        let path_str = path.to_string_lossy().to_string();
-        let mut root = self.root.write();
-
-        if root.contains_key(&path_str) {
-            return Err(Error::new(ErrorKind::AlreadyExists, "fracture: File already exists"));
-        }
-
-        let entry = Entry::File(Arc::new(RwLock::new(FileEntry::new())));
-        root.insert(path_str, entry.clone());
-        Ok(entry)
-    }
-
-    fn remove_entry(&self, path: &Path) -> Result<()> {
-        let path_str = path.to_string_lossy().to_string();
-        let mut root = self.root.write();
-
-        root.remove(&path_str).ok_or_else(|| Error::new(ErrorKind::NotFound, "fracture: File not found"));
-
-        Ok(())
-    }
-
-    fn rename_entry(&self, from: &Path, to: &Path) -> Result<()> {
-        let from_str = from.to_string_lossy().to_string();
-        let to_str = to.to_string_lossy().to_string();
-
-        let mut root = self.root.write();
-
-        let entry = root.remove(&from_str).ok_or_else(|| Error::new(ErrorKind::NotFound, "fracture: Source file not found"))?;
-
-        root.insert(to_str, entry);
-        Ok(())
-    }
-
-    fn create_dir(&self, path: &Path) -> Result<()> {
-        let path_str = path.to_string_lossy().to_string();
-        let mut root = self.root.write();
-
-        if root.contains_key(&path_str) {
-            return Err(Error::new(ErrorKind::AlreadyExists, "fracture: Directory already exists"));
-        }
-
-        let entry = Entry::Directory(Arc::new(RwLock::new(HashMap::new())));
-        root.insert(path_str, entry);
-
-        Ok(())
-    }
-
-    fn read_dir(&self, path: &Path) -> Result<Vec<DirEntry>> {
-        let resolved_path = self.resolve_path(path)?;
-        let path_str = resolved_path.to_string_lossy().to_string();
-        let root = self.root.read();
-
-        match root.get(&path_str) {
-            Some(Entry::Directory(dir)) => {
-                let dir_map = dir.read();
-                let entries = dir_map.keys()
-                    .map(|name| DirEntry {
-                        path: PathBuf::from(format!("{}/{}", path_str, name)),
-                        file_name: name.clone()
-                    })
-                    .collect();
-
-                Ok(entries)
-            }
-            Some(Entry::File(_)) => Err(Error::new(ErrorKind::NotADirectory, "fracture: Not a directory")),
-            Some(Entry::Symlink(..)) => unreachable!("fracture: resolve_path didn't correctly resolve path (report bug)"),
-            None => Err(Error::new(ErrorKind::NotFound, "fracture: Directory not found"))
-        }
-    }
-
-    fn create_symlink(&self, link_path: PathBuf, target_path: PathBuf) -> Result<()> {
-        let link_str = link_path.to_string_lossy().to_string();
-        let mut root = self.root.write();
-
-        if root.contains_key(&link_str) {
-            return Err(Error::new(ErrorKind::AlreadyExists, "fracture: Link already exists"));
-        }
-
-        let meta = Metadata::new_symlink(&target_path);
-
-        let entry = Entry::Symlink(target_path, meta);
-        root.insert(link_str, entry);
-
-        Ok(())
-    }
-
-    fn resolve_path(&self, path: &Path) -> Result<PathBuf> {
-        let mut current_path = path.to_path_buf();
-        let mut recursion_count = 0;
-        const MAX_SYMLINK_DEPTH: usize = 40;
-
-        loop {
-            if recursion_count > MAX_SYMLINK_DEPTH {
-                return Err(Error::new(ErrorKind::Other, "fracture: Too many levels of symbolic links"));
-            }
-
-            let path_str = current_path.to_string_lossy().to_string();
-            let root = self.root.read();
-
-            match root.get(&path_str) {
-                Some(Entry::Symlink(target, _)) => {
-                    recursion_count += 1;
-
-                    if target.is_absolute() {
-                        current_path = target.clone();
-                    }
-                    else {
-                        let parent = current_path.parent().unwrap_or(Path::new("/"));
-                        let joined = parent.join(target);
-                        current_path = self.normalize_path(&joined);
-                    }
-                }
-                _ => return Ok(current_path)
-            }
-        }
-    }
-
-    fn normalize_path(&self, path: &Path) -> PathBuf {
-        let mut stack = Vec::new();
-
-        for component in path.components() {
-            match component {
-                Component::RootDir => {
-                    stack.clear();
-                }
-                Component::CurDir => {}
-                Component::ParentDir => {
-                    stack.pop();
-                }
-                Component::Normal(c) => {
-                    stack.push(c);
-                }
-                Component::Prefix(_) => {}
-            }
-        }
-
-        let mut result = PathBuf::from("/");
-        for c in stack {
-            result.push(c);
-        }
-
-        result
     }
 }
 
-static FS: std::sync::LazyLock<FsRegistry> = std::sync::LazyLock::new(FsRegistry::new);
+pub struct FileSystemState {
+    files: HashMap<PathBuf, Arc<Mutex<FileEntry>>>,
+}
+
+impl FileSystemState {
+    pub fn new() -> Self {
+        Self { files: HashMap::new() }
+    }
+}
 
 pub struct File {
-    entry: Arc<RwLock<FileEntry>>,
-    cursor: Arc<Mutex<u64>>,
     path: PathBuf,
-    readable: bool,
-    writable: bool,
-    append: bool
+    entry: Arc<Mutex<FileEntry>>,
+    cursor: u64,
+    can_read: bool,
+    can_write: bool
 }
 
 impl File {
-    pub async fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        if chaos::should_fail(ChaosOperation::FsOpen) {
-            return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Open failed (chaos)"));
-        }
-
-        let resolved_path = FS.resolve_path(path.as_ref())?;
-        let entry = match FS.get_entry_simple(&resolved_path) {
-            Ok(Entry::File(f)) => f,
-            Ok(Entry::Directory(_)) => return Err(Error::new(ErrorKind::IsADirectory, "fracture: Is a directory")),
-            Ok(Entry::Symlink(..)) => unreachable!("fracture: resolve_path didn't correctly resolve path (report bug)"),
-            Err(e) => return Err(e)
-        };
-
-        {
-            let mut file_entry = entry.write();
-            file_entry.open_count += 1;
-            file_entry.update_accessed();
-        }
-
-        yield_now().await;
-
-        Ok(Self {
-            entry,
-            cursor: Arc::new(Mutex::new(0)),
-            path: resolved_path,
-            readable: true,
-            writable: false,
-            append: false
-        })
+    pub async fn open<P: AsRef<Path>>(path: P) -> Result<File> {
+        OpenOptions::new().read(true).open(path).await
     }
 
-    pub async fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
-        if chaos::should_fail(ChaosOperation::FsCreate) {
-            return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Create failed (chaos)"));
-        }
-
-        if chaos::should_fail(ChaosOperation::FsAlreadyExists) {
-            return Err(Error::new(ErrorKind::AlreadyExists, "fracture: File already exists (chaos)"));
-        }
-
-        let resolved_path = FS.resolve_path(path.as_ref())?;
-        let entry = FS.create_entry(&resolved_path)
-            .or_else(|_| FS.get_entry_simple(&resolved_path))
-            .and_then(|e| match e {
-                Entry::File(f) => Ok(f),
-                Entry::Directory(_) => Err(Error::new(ErrorKind::IsADirectory, "fracture: Is a directory")),
-                Entry::Symlink(..) => unreachable!("fracture: resolve_path didn't correctly resolve path (report bug)")
-            })?;
-
-        {
-            let mut file_entry = entry.write();
-            file_entry.data.clear();
-            file_entry.open_count += 1;
-            file_entry.update_modified();
-        }
-
-        yield_now().await;
-
-        Ok(Self {
-            entry,
-            cursor: Arc::new(Mutex::new(0)),
-            path: resolved_path,
-            readable: true,
-            writable: true,
-            append: false
-        })
+    pub async fn create<P: AsRef<Path>>(path: P) -> Result<File> {
+        OpenOptions::new().write(true).create(true).truncate(true).open(path).await
     }
 
-    pub async fn options() -> OpenOptions {
-        OpenOptions::new()
+    pub async fn sync_all(&self) -> Result<()> { 
+        // In memory, it's always synced
+        Ok(()) 
     }
 
-    pub async fn sync_all(&self) -> Result<()> {
-        if chaos::should_fail(ChaosOperation::FsSyncAll) {
-            return Err(Error::new(ErrorKind::Other, "fracture: Sync failed (chaos)"));
-        }
-
-        yield_now().await;
-
-        Ok(())
-    }
-
-    pub async fn sync_data(&self) -> Result<()> {
-        if chaos::should_fail(ChaosOperation::FsSyncData) {
-            return Err(Error::new(ErrorKind::Other, "fracture: Sync data failed (chaos)"));
-        }
-
-        yield_now().await;
-
-        Ok(())
+    pub async fn sync_data(&self) -> Result<()> { 
+        Ok(()) 
     }
 
     pub async fn set_len(&self, size: u64) -> Result<()> {
-        if chaos::should_fail(ChaosOperation::FsTruncate) {
-            return Err(Error::new(ErrorKind::Other, "fracture: Truncate failed (chaos)"));
+        if !self.can_write {
+            return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Not opened for write"));
         }
 
-        let mut entry = self.entry.write();
-        entry.data.resize(size as usize, 0);
-        entry.update_modified();
+        let mut locked = self.entry.lock().unwrap();
+        if locked.readonly {
+            return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Read-only file"))
+        }
 
-        yield_now().await;
+        locked.content.resize(size as usize, 0);
+
+        let handle = Handle::current();
+        if let Some(core_rc) = handle.core.upgrade() {
+            let core = core_rc.borrow();
+            locked.modified = core.sys_now();
+        }
 
         Ok(())
     }
 
     pub async fn metadata(&self) -> Result<Metadata> {
-        if chaos::should_fail(ChaosOperation::FsMetadata) {
-            return Err(Error::new(ErrorKind::Other, "fracture: Metadata failed (chaos)"));
-        }
+        let locked = self.entry.lock().unwrap();
 
-        let entry = self.entry.read();
-
-        Ok(entry.metadata.clone())
+        Ok(Metadata {
+            len: locked.content.len() as u64,
+            file_type: locked.file_type,
+            readonly: locked.readonly,
+            created: locked.created,
+            modified: locked.modified,
+            accessed: locked.accessed,
+        })
     }
 
-    pub async fn try_clone(&self) -> Result<Self> {
-        let mut entry = self.entry.write();
-        entry.open_count += 1;
-        drop(entry);
-
-        Ok(Self {
-            entry: Arc::clone(&self.entry),
-            cursor: Arc::new(Mutex::new(*self.cursor.lock())),
+    pub async fn try_clone(&self) -> Result<File> {
+        Ok(File {
             path: self.path.clone(),
-            readable: self.readable,
-            writable: self.writable,
-            append: self.append
+            entry: self.entry.clone(),
+            cursor: self.cursor,
+            can_read: self.can_read,
+            can_write: self.can_write,
         })
     }
 
     pub async fn set_permissions(&self, perm: Permissions) -> Result<()> {
-        if chaos::should_fail(ChaosOperation::FsSetPermissions) {
-            return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Set permissions failed (chaos)"));
-        }
-
-        let mut entry = self.entry.write();
-        entry.metadata.permissions = perm;
-        yield_now().await;
+        let mut locked = self.entry.lock().unwrap();
+        locked.readonly = perm.readonly();
 
         Ok(())
-    }
-}
-
-impl Drop for File {
-    fn drop(&mut self) {
-        let mut entry = self.entry.write();
-        entry.open_count = entry.open_count.saturating_sub(1);
-    }
-}
-
-impl AsyncRead for File {
-    fn poll_read(
-            self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-            buf: &mut ReadBuf<'_>,
-        ) -> Poll<io::Result<()>> {
-        if !self.readable {
-            return Poll::Ready(Err(Error::new(ErrorKind::PermissionDenied, "fracture: File not opened for reading")));
-        }
-
-        if chaos::should_fail(ChaosOperation::FsRead) {
-            return Poll::Ready(Err(Error::new(ErrorKind::BrokenPipe, "fracture: Read failed (chaos)")));
-        }
-
-        if chaos::should_fail(ChaosOperation::FsCorruption) {
-            let available = buf.remaining().min(4);
-            if available > 0 {
-                let unfilled = buf.initialize_unfilled_to(available);
-                for byte in unfilled {
-                    *byte = 0xFF;
-                }
-                buf.advance(available);
-            }
-            return Poll::Ready(Ok(()))
-        }
-
-        let config = &FS.config;
-        let cursor_pos = *self.cursor.lock();
-
-        let entry = self.entry.read();
-        let data_len = entry.data.len() as u64;
-
-        if cursor_pos >= data_len {
-            return Poll::Ready(Ok(()))
-        }
-
-        let chunk_size = config.chunk_size.min(buf.remaining());
-        let read_size = chunk_size.min((data_len - cursor_pos) as usize);
-
-        if read_size > 0 {
-            let start = cursor_pos as usize;
-            let end = start + read_size;
-
-            buf.put_slice(&entry.data[start..end]);
-            drop(entry);
-
-            *self.cursor.lock() = cursor_pos + read_size as u64;
-
-            if read_size >= config.yield_after_bytes {
-                cx.waker().wake_by_ref();
-                return Poll::Pending;
-            }
-        }
-
-        Poll::Ready(Ok(()))
-    }
-}
-
-impl AsyncWrite for File {
-    fn poll_write(
-            self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-            buf: &[u8],
-        ) -> Poll<std::result::Result<usize, io::Error>> {
-        if !self.writable {
-            return Poll::Ready(Err(Error::new(ErrorKind::PermissionDenied, "fracture: File not opened for writing")));
-        }
-
-        if chaos::should_fail(ChaosOperation::FsWrite) {
-            return Poll::Ready(Err(Error::new(ErrorKind::BrokenPipe, "fracture: Write failed (chaos)")));
-        }
-
-        if chaos::should_fail(ChaosOperation::FsQuotaExceeded) {
-            return Poll::Ready(Err(Error::new(ErrorKind::Other, "fracture: Disk full (chaos)")));
-        }
-
-        let config = &FS.config;
-        let mut cursor_pos = *self.cursor.lock();
-
-        if self.append {
-            let entry = self.entry.read();
-            cursor_pos = entry.data.len() as u64;
-            drop(entry);
-        }
-
-        let chunk_size = config.chunk_size.min(buf.len());
-        let write_size = if chaos::should_fail(ChaosOperation::IoPartialWrite) && config.enable_torn_writes {
-            chunk_size / 2
-        }
-        else {
-            chunk_size
-        };
-
-        if write_size == 0 {
-            return Poll::Ready(Ok(0))
-        }
-
-        let mut entry = self.entry.write();
-
-        let new_size = cursor_pos as usize + write_size;
-        if new_size > config.max_file_size {
-            return Poll::Ready(Err(Error::new(ErrorKind::Other, "fracture: File too large")));
-        }
-
-        if new_size > entry.data.len() {
-            entry.data.resize(new_size, 0);
-        }
-
-        let start = cursor_pos as usize;
-        let end = start + write_size;
-
-        if chaos::should_fail(ChaosOperation::FsCorruption) && config.enable_corruption {
-            for (i, byte) in buf[..write_size].iter().enumerate() {
-                entry.data[start + i] = byte ^ 0xAA;
-            }
-        }
-        else {
-            entry.data[start..end].copy_from_slice(&buf[..write_size]);
-        }
-
-        entry.update_modified();
-        drop(entry);
-
-        *self.cursor.lock() = cursor_pos + write_size as u64;
-
-        if write_size >= config.yield_after_bytes {
-            cx.waker().wake_by_ref();
-            return Poll::Pending;
-        }
-
-        Poll::Ready(Ok(write_size))
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::result::Result<(), io::Error>> {
-        if chaos::should_fail(ChaosOperation::FsSync) {
-            return Poll::Ready(Err(Error::new(ErrorKind::Other, "fracture: Flush failed (chaos)")));
-        }
-
-        Poll::Ready(Ok(()))
-    }
-
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::result::Result<(), io::Error>> {
-        Poll::Ready(Ok(()))
-    }
-}
-
-impl AsyncSeek for File {
-    fn start_seek(self: Pin<&mut Self>, position: SeekFrom) -> io::Result<()> {
-        if chaos::should_fail(ChaosOperation::FsSeek) {
-            return Err(Error::new(ErrorKind::Other, "fracture: Seek failed (chaos)"));
-        }
-
-        let entry = self.entry.read();
-        let file_len = entry.data.len() as u64;
-        drop(entry);
-
-        let mut cursor = self.cursor.lock();
-        let new_pos = match position {
-            SeekFrom::Start(pos) => pos as i64,
-            SeekFrom::Current(offset) => *cursor as i64 + offset,
-            SeekFrom::End(offset) => file_len as i64 + offset
-        };
-
-        if new_pos < 0 {
-            return Err(Error::new(ErrorKind::InvalidInput, "fracture: Invalid seek position"));
-        }
-
-        *cursor = new_pos as u64;
-
-        Ok(())
-    }
-
-    fn poll_complete(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<u64>> {
-        Poll::Ready(Ok(*self.cursor.lock()))
     }
 }
 
@@ -749,7 +222,7 @@ pub struct OpenOptions {
     append: bool,
     truncate: bool,
     create: bool,
-    create_new: bool
+    create_new: bool,
 }
 
 impl OpenOptions {
@@ -760,117 +233,198 @@ impl OpenOptions {
             append: false,
             truncate: false,
             create: false,
-            create_new: false,
+            create_new: false
         }
-    }
-
-    pub fn read(&mut self, read: bool) -> &mut Self {
-        self.read = read;
-        self
-    }
-
-    pub fn write(&mut self, write: bool) -> &mut Self {
-        self.write = write;
-        self
-    }
-
-    pub fn append(&mut self, append: bool) -> &mut Self {
-        self.append = append;
-        self
-    }
-
-    pub fn truncate(&mut self, truncate: bool) -> &mut Self {
-        self.truncate = truncate;
-        self
-    }
-
-    pub fn create(&mut self, create: bool) -> &mut Self {
-        self.create = create;
-        self
-    }
-
-    pub fn create_new(&mut self, create_new: bool) -> &mut Self {
-        self.create_new = create_new;
-        self
     }
 
     pub async fn open<P: AsRef<Path>>(&self, path: P) -> Result<File> {
-        if chaos::should_fail(ChaosOperation::FsOpen) {
-            return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Open failed (chaos)"));
+        let path = path.as_ref().to_path_buf();
+        let handle = Handle::current();
+        let core_rc = handle.core.upgrade().ok_or_else(|| Error::new(ErrorKind::Other, "fracture: Runtime dropped"))?;
+        let mut core = core_rc.borrow_mut();
+
+        let now = core.sys_now();
+
+        let exists = core.fs.files.contains_key(&path);
+
+        if self.create_new && exists {
+            return Err(Error::new(ErrorKind::AlreadyExists, "fracture: File exists"));
         }
 
-        let resolved_path = FS.resolve_path(path.as_ref())?;
+        if !exists && !self.create && !self.create_new {
+            return Err(Error::new(ErrorKind::NotFound, "fracture: File not found"));
+        }
 
-        if self.create_new {
-            let entry = FS.create_entry(&resolved_path)?;
-            match entry {
-                Entry::File(f) => {
-                    let mut file_entry = f.write();
-                    file_entry.open_count += 1;
-                    drop(file_entry);
+        let entry_ref = if exists {
+            let entry = core.fs.files.get(&path).unwrap().clone();
 
-                    yield_now().await;
-
-                    return Ok(File {
-                        entry: f,
-                        cursor: Arc::new(Mutex::new(0)),
-                        path: resolved_path,
-                        readable: self.read,
-                        writable: self.write || self.append,
-                        append: self.append
-                    });
-                }
-                Entry::Directory(_) => return Err(Error::new(ErrorKind::IsADirectory, "fracture: Is a directory")),
-                Entry::Symlink(..) => unreachable!("fracture: resolve_path didn't correctly resolve path (report bug)")
+            if entry.lock().unwrap().is_dir {
+                return Err(Error::new(ErrorKind::IsADirectory, "fracture: Is a directory"));
             }
-        }
-        let entry = if self.create {
-            FS.create_entry(&resolved_path).or_else(|_| FS.get_entry_simple(&resolved_path))
+
+            if self.truncate && self.write {
+                let mut locked = entry.lock().unwrap();
+
+                if locked.readonly {
+                    return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Read-only file"));
+                }
+
+                locked.content.clear();
+                locked.modified = now;
+            }
+
+            entry
         }
         else {
-            FS.get_entry_simple(&resolved_path)
-        };
+            if let Some(parent) = path.parent() {
+                if !parent.as_os_str().is_empty() && !core.fs.files.contains_key(parent) {
+                    return Err(Error::new(ErrorKind::NotFound, "fracture: Parent directory not found"));
+                }
 
-        let entry = match entry? {
-            Entry::File(f) => f,
-            Entry::Directory(_) => return Err(Error::new(ErrorKind::IsADirectory, "fracture: Is a directory")),
-            Entry::Symlink(..) => unreachable!("fracture: resolve_path didn't correctly resolve path (report bug)")
+                let entry = Arc::new(Mutex::new(FileEntry::new_file(now)));
+                core.fs.files.insert(path.clone(), entry.clone());
+
+                entry
+            }
         };
 
         {
-            let mut file_entry = entry.write();
-
-            if self.truncate {
-                file_entry.data.clear();
-            }
-
-            file_entry.open_count += 1;
-            file_entry.update_modified();
+            let mut locked = entry_ref.lock().unwrap();
+            locked.accessed = now;
         }
 
-        yield_now().await;
+        let cursor = if self.append {
+            entry_ref.lock().unwrap().content.len() as u64
+        }
+        else {
+            0
+        };
 
         Ok(File {
-            entry,
-            cursor: Arc::new(Mutex::new(0)),
-            path: resolved_path,
-            readable: self.read,
-            writable: self.write || self.append,
-            append: self.append
+            path,
+            entry: entry_ref,
+            cursor,
+            can_read: self.read,
+            can_write: self.write || self.append,
         })
     }
-}
 
-impl Default for OpenOptions {
-    fn default() -> Self {
-        Self::new()
+    pub fn read(&mut self, mode: bool) -> &mut Self {
+        self.read = mode;
+        self
+    }
+    pub fn write(&mut self, mode: bool) -> &mut Self {
+        self.write = mode;
+        self
+    }
+    pub fn append(&mut self, mode: bool) -> &mut Self {
+        self.append = mode;
+        self
+    }
+    pub fn truncate(&mut self, mode: bool) -> &mut Self {
+        self.truncate = mode;
+        self
+    }
+    pub fn create(&mut self, mode: bool) -> &mut Self {
+        self.create = mode;
+        self
+    }
+    pub fn create_new(&mut self, mode: bool) -> &mut Self {
+        self.create_new = mode;
+        self
     }
 }
 
-#[derive(Clone)]
+impl AsyncRead for File {
+    fn poll_read(self: Pin<&mut Self>, _cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<Result<()>> {
+        if !self.can_read {
+            return Poll::Ready(Err(Error::new(ErrorKind::PermissionDenied, "fracture: Not opened for reading")));
+        }
+
+        let mut locked = self.entry.lock().unwrap();
+
+        let handle = Handle::current();
+        if let Some(core_rc) = handle.core.upgrade() {
+            let core = core_rc.borrow();
+            locked.accessed = core.sys_now();
+        }
+
+        let pos = self.cursor as usize;
+
+        if pos >= locked.content.len() {
+            return Poll::Ready(Ok(()))
+        }
+
+        let available = &locked.content[pos..];
+        let to_copy = std::cmp::min(available.len(), buf.remaining());
+        buf.put_slice([&available]..to_copy);
+        self.cursor += to_copy as u64;
+
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncWrite for File {
+    fn poll_write(mut self: Pin<&mut Self>, _cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize>> {
+        if !self.can_write {
+            return Poll::Ready(Err(Error::new(ErrorKind::PermissionDenied, "fracture: Not opened for writing")));
+        }
+
+        let mut locked = self.entry.lock().unwrap();
+
+        if locked.readonly {
+            return Poll::Ready(Err(Error::new(ErrorKind::PermissionDenied, "fracture: Read-only file")));
+        }
+
+        let pos = self.cursor as usize;
+
+        if pos > locked.content.len() {
+            locked.content.resize(pos, 0);
+        }
+
+        let end = pos + buf.len();
+        if end > locked.content.len() {
+            locked.content.resize(end, 0);
+        }
+
+        locked.content[pos..end].copy_from_slice(buf);
+        self.cursor += buf.len() as u64;
+
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncSeek for File {
+    fn start_seek(mut self: Pin<&mut Self>, position: io::SeekFrom) -> Result<()> {
+        let len = self.entry.lock().unwrap().content.len() as u64;
+        let new_pos = match position {
+            SeekFrom::Start(n) => n,
+            SeekFrom::End(n) => (len as i64 + n) as u64,
+            SeekFrom::Current(n) => (self.cursor as i64 + n) as u64,
+        };
+
+        self.cursor = new_pos;
+
+        Ok(())
+    }
+
+    fn poll_complete(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<u64>> {
+        Poll::Ready(Ok(self.cursor))
+    }
+}
+
+#[derive(Debug)]
 pub struct DirEntry {
-    path: PathBuf,
-    file_name: String
+    pub path: PathBuf,
+    pub metadata: Metadata
 }
 
 impl DirEntry {
@@ -878,68 +432,224 @@ impl DirEntry {
         self.path.clone()
     }
 
-    pub fn file_name(&self) -> std::ffi::OsString {
-        self.file_name.clone().into()
+    pub fn file_name(&self) -> std::ffi::OsString { 
+        self.path.file_name().unwrap_or_default().to_os_string() 
     }
 
-    pub async fn metadata(&self) -> Result<Metadata> {
-        metadata(&self.path).await
+    pub async fn metadata(&self) -> Result<Metadata> { 
+        Ok(self.metadata.clone()) 
     }
 
     pub async fn file_type(&self) -> Result<FileType> {
-        let meta = self.metadata().await?;
-        
-        Ok(FileType {
-            is_dir: meta.is_dir,
-            is_file: meta.is_file,
-            is_symlink: meta.is_symlink
-        })
+        Ok(self.metadata.file_type)
     }
 }
 
 pub struct ReadDir {
-    entries: Vec<DirEntry>,
-    index: usize
+    entries: std::vec::IntoIter<DirEntry>,
 }
 
 impl ReadDir {
     pub async fn next_entry(&mut self) -> Result<Option<DirEntry>> {
-        if chaos::should_fail(ChaosOperation::FsReadDir) {
-            return Err(Error::new(ErrorKind::Other, "fracture: Read dir failed (chaos)"));
-        }
-
-        if self.index >= self.entries.len() {
-            return Ok(None);
-        }
-
-        let entry = self.entries[self.index].clone();
-        self.index += 1;
-
-        yield_now().await;
-
-        Ok(Some(entry))
+        Ok(self.entries.next())
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct FileType {
-    is_dir: bool,
-    is_file: bool,
-    is_symlink: bool
+pub async fn read_dir<P: AsRef<Path>>(path: P) -> Result<ReadDir> {
+    let path = path.as_ref().to_path_buf();
+    let handle = Handle::current();
+    let core = handle.core.upgrade().ok_or(Error::new(ErrorKind::Other, "fracture: Runtime dropped"))?;
+    let core = core.borrow();
+
+    if let Some(entry) = core.fs.files.get(&path) {
+        if !entry.lock().unwrap().file_type.is_dir() {
+            return Err(Error::new(ErrorKind::Other, "fracture: Not a directory"));
+        }
+    } else {
+        return Err(Error::new(ErrorKind::NotFound, "fracture: Directory not found"));
+    }
+
+    let mut entries = Vec::new();
+    for (key, val) in core.fs.files.iter() {
+        if key.parent() == Some(&path) {
+            let locked = val.lock().unwrap();
+            entries.push(DirEntry {
+                path: key.clone(),
+                metadata: Metadata {
+                    len: locked.content.len() as u64,
+                    file_type: locked.file_type,
+                    readonly: locked.readonly,
+                    created: locked.created,
+                    modified: locked.modified,
+                    accessed: locked.accessed,
+                }
+            });
+        }
+    }
+
+    Ok(ReadDir { entries: entries.into_iter() })
 }
 
-impl FileType {
-    pub fn is_dir(&self) -> bool {
-        self.is_dir
+pub async fn create_dir<P: AsRef<Path>>(path: P) -> Result<()> {
+    let path = path.as_ref().to_path_buf();
+    let handle = Handle::current();
+    let core_rc = handle.core.upgrade().unwrap();
+    let mut core = core_rc.borrow_mut();
+    
+    if core.fs.files.contains_key(&path) {
+        return Err(Error::new(ErrorKind::AlreadyExists, "fracture: File exists"));
+    }
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() && !core.fs.files.contains_key(parent) {
+             return Err(Error::new(ErrorKind::NotFound, "fracture: Parent directory not found"));
+        }
+    }
+    let now = core.sys_now();
+    let entry = Arc::new(Mutex::new(FileEntry::new_dir(now)));
+    core.fs.files.insert(path, entry);
+    Ok(())
+}
+
+pub async fn create_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            let components: Vec<_> = path.components().collect();
+            let mut current = PathBuf::new();
+            for component in components {
+                current.push(component);
+                create_dir(&current).await;
+            }
+            return Ok(());
+        }
     }
 
-    pub fn is_file(&self) -> bool {
-        self.is_file
+    match create_dir(path).await {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e),
     }
+}
 
-    pub fn is_symlink(&self) -> bool {
-        self.is_symlink
+pub async fn remove_file<P: AsRef<Path>>(path: P) -> Result<()> {
+    let handle = Handle::current();
+    let mut core = handle.core.upgrade().unwrap().borrow_mut();
+    let path = path.as_ref();
+    if let Some(entry) = core.fs.files.get(path) {
+        if entry.lock().unwrap().file_type.is_dir() {
+            return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Is a directory"));
+        }
+    } else {
+        return Err(Error::new(ErrorKind::NotFound, "fracture: File not found"));
     }
+    core.fs.files.remove(path);
+
+    Ok(())
+}
+
+pub async fn remove_dir<P: AsRef<Path>>(path: P) -> Result<()> {
+    let handle = Handle::current();
+    let mut core = handle.core.upgrade().unwrap().borrow_mut();
+    let path = path.as_ref();
+    match core.fs.files.get(path) {
+        Some(entry) => {
+            if !entry.lock().unwrap().file_type.is_dir() {
+                return Err(Error::new(ErrorKind::Other, "fracture: Not a directory"));
+            }
+        },
+        None => return Err(Error::new(ErrorKind::NotFound, "fracture: Directory not found")),
+    }
+    for key in core.fs.files.keys() {
+        if key.parent() == Some(path) {
+            return Err(Error::new(ErrorKind::Other, "fracture: Directory not empty"));
+        }
+    }
+    core.fs.files.remove(path);
+
+    Ok(())
+}
+
+pub async fn rename<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<()> {
+    let handle = Handle::current();
+    let mut core = handle.core.upgrade().unwrap().borrow_mut();
+    let entry = core.fs.files.remove(from.as_ref()).ok_or(Error::new(ErrorKind::NotFound, "fracture: File not found"))?;
+    core.fs.files.insert(to.as_ref().to_path_buf(), entry);
+
+    Ok(())
+}
+
+pub async fn copy<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<u64> {
+    let content = read(&from).await?;
+    write(&to, &content).await?;
+
+    Ok(content.len() as u64)
+}
+
+pub async fn hard_link<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
+    let handle = Handle::current();
+    let mut core = handle.core.upgrade().unwrap().borrow_mut();
+    let entry = core.fs.files.get(original.as_ref())
+        .ok_or(Error::new(ErrorKind::NotFound, "fracture: Original file not found"))?
+        .clone();
+    if core.fs.files.contains_key(link.as_ref()) {
+        return Err(Error::new(ErrorKind::AlreadyExists, "fracture: Link path exists"));
+    }
+    core.fs.files.insert(link.as_ref().to_path_buf(), entry);
+
+    Ok(())
+}
+
+pub async fn metadata<P: AsRef<Path>>(path: P) -> Result<Metadata> {
+    let path = path.as_ref().to_path_buf();
+    let handle = Handle::current();
+    let core_rc = handle.core.upgrade().ok_or(Error::new(ErrorKind::Other, "fracture: Runtime dropped"))?;
+    let core = core_rc.borrow();
+    let entry = core.fs.files.get(&path).ok_or(Error::new(ErrorKind::NotFound, "fracture: File not found"))?;
+    let locked = entry.lock().unwrap();
+
+    Ok(Metadata {
+        len: locked.content.len() as u64,
+        file_type: locked.file_type,
+        readonly: locked.readonly,
+        created: locked.created,
+        modified: locked.modified,
+        accessed: locked.accessed,
+    })
+}
+
+pub async fn set_permissions<P: AsRef<Path>>(path: P, perm: Permissions) -> Result<()> {
+    let path = path.as_ref().to_path_buf();
+    let handle = Handle::current();
+    let core_rc = handle.core.upgrade().ok_or(Error::new(ErrorKind::Other, "Runtime dropped"))?;
+    let core = core_rc.borrow();
+    let entry = core.fs.files.get(&path).ok_or(Error::new(ErrorKind::NotFound, "File not found"))?;
+    let mut locked = entry.lock().unwrap();
+    locked.readonly = perm.readonly();
+
+    Ok(())
+}
+
+pub async fn canonicalize<P: AsRef<Path>>(path: P) -> Result<PathBuf> {
+    let path = path.as_ref();
+
+    if path.is_absolute() {
+        Ok(path.to_path_buf())
+    }
+    else {
+        Ok(Path::new("/").join(path))
+    }
+}
+
+pub async fn symlink_metadata<P: AsRef<Path>>(path: P) -> Result<Metadata> {
+    metadata(path).await // Placeholder, need to fix after implementing symlinks
+}
+
+pub async fn read_link<P: AsRef<Path>>(_path: P) -> Result<PathBuf> {
+    Err(Error::new(ErrorKind::InvalidInput, "Not a symlink"))
+}
+
+pub async fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(_original: P, _link: Q) -> Result<()> {
+    Err(Error::new(ErrorKind::Unsupported, "Symlinks not supported in simulation")) // Placeholder
 }
 
 pub async fn read<P: AsRef<Path>>(path: P) -> Result<Vec<u8>> {
@@ -950,210 +660,14 @@ pub async fn read<P: AsRef<Path>>(path: P) -> Result<Vec<u8>> {
     Ok(buffer)
 }
 
-pub async fn read_to_string<P: AsRef<Path>>(path: P) -> Result<String> {
-    let bytes = read(path).await?;
-    String::from_utf8(bytes).map_err(|e| Error::new(ErrorKind::InvalidData, format!("fracture: {}", e)))
-}
-
 pub async fn write<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, contents: C) -> Result<()> {
     let mut file = File::create(path).await?;
-    file.write_all(contents.as_ref()).await?;
-    file.sync_all().await?;
 
-    Ok(())
+    file.write_all(contents.as_ref()).await
 }
 
-pub async fn remove_file<P: AsRef<Path>>(path: P) -> Result<()> {
-    if chaos::should_fail(ChaosOperation::FsRemoveFile) {
-        return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Remove failed (chaos)"));
-    }
+pub async fn read_to_string<P: AsRef<Path>>(path: P) -> Result<String> {
+    let bytes = read(path).await?;
 
-    FS.remove_entry(path.as_ref())?;
-    yield_now().await;
-
-    Ok(())
-}
-
-pub async fn rename<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<()> {
-    if chaos::should_fail(ChaosOperation::FsRename) {
-        return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Rename failed (chaos)"));
-    }
-
-    if chaos::should_fail(ChaosOperation::RaceCondition) {
-        yield_now().await;
-    }
-
-    FS.rename_entry(from.as_ref(), to.as_ref())?;
-    yield_now().await;
-
-    Ok(())
-}
-
-pub async fn copy<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<u64> {
-    if chaos::should_fail(ChaosOperation::FsCopy) {
-        return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Copy failed (chaos)"));
-    }
-
-    let data = read(from).await?;
-    let len = data.len() as u64;
-    write(to, &data).await?;
-
-    Ok(len)
-}
-
-pub async fn metadata<P: AsRef<Path>>(path: P) -> Result<Metadata> {
-    if chaos::should_fail(ChaosOperation::FsMetadata) {
-        return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Metadata failed (chaos)"));
-    }
-
-    let resolved_path = FS.resolve_path(path.as_ref())?;
-
-    let entry = FS.get_entry_simple(&resolved_path)?;
-    match entry {
-        Entry::File(f) => {
-            let file_entry = f.read();
-            Ok(file_entry.metadata.clone())
-        }
-        Entry::Directory(_) => Ok(Metadata::new_dir()),
-        Entry::Symlink(..) => unreachable!("fracture: resolve_path didn't correctly resolve path (report bug)")
-    }
-}
-
-pub async fn canonicalize<P: AsRef<Path>>(path: P) -> Result<PathBuf> {
-    if chaos::should_fail(ChaosOperation::FsCanonical) {
-        return Err(Error::new(ErrorKind::Other, "fracture: Canonicalize failed (chaos)"));
-    }
-
-    Ok(path.as_ref().to_path_buf())
-}
-
-pub async fn create_dir<P: AsRef<Path>>(path: P) -> Result<()> {
-    if chaos::should_fail(ChaosOperation::FsCreateDir) {
-        return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Create dir failed (chaos)"));
-    }
-
-    FS.create_dir(path.as_ref())?;
-    yield_now().await;
-
-    Ok(())
-}
-
-pub async fn create_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
-    create_dir(path).await
-}
-
-pub async fn remove_dir<P: AsRef<Path>>(path: P) -> Result<()> {
-    if chaos::should_fail(ChaosOperation::FsRemoveDir) {
-        return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Remove dir failed (chaos)"));
-    }
-
-    FS.remove_entry(path.as_ref())?;
-    yield_now().await;
-
-    Ok(())
-}
-
-pub async fn remove_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
-    remove_dir(path).await
-}
-
-pub async fn read_dir<P: AsRef<Path>>(path: P) -> Result<ReadDir> {
-    if chaos::should_fail(ChaosOperation::FsReadDir) {
-        return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Read dir failed (chaos)"));
-    }
-
-    let entries = FS.read_dir(path.as_ref())?;
-    yield_now().await;
-
-    Ok(ReadDir {
-        entries,
-        index: 0
-    })
-}
-
-pub async fn set_permissions<P: AsRef<Path>>(path: P, perm: Permissions) -> Result<()> {
-    if chaos::should_fail(ChaosOperation::FsSetPermissions) {
-        return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Set permissions failed (chaos)"));
-    }
-
-    let resolved_path = FS.resolve_path(path.as_ref())?;
-    let entry = FS.get_entry_simple(&resolved_path)?;
-
-    match entry {
-        Entry::File(f) => {
-            let mut file_entry = f.write();
-            file_entry.metadata.permissions = perm;
-        }
-        Entry::Directory(_) => {}
-        Entry::Symlink(..) => unreachable!("fracture: resolve_path didn't correctly resolve path (report bug)")
-    }
-
-    yield_now().await;
-
-    Ok(())
-}
-
-pub async fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(src: P, dst: Q) -> Result<()> {
-    if chaos::should_fail(ChaosOperation::FsSymlink) {
-        return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Symlink failed (chaos)"));
-    }
-
-    let src_path = src.as_ref().to_path_buf();
-    let dst_path = dst.as_ref().to_path_buf();
-
-    FS.create_symlink(dst_path, src_path)?;
-    yield_now().await;
-
-    Ok(())
-}
-
-pub async fn symlink_metadata<P: AsRef<Path>>(path: P) -> Result<Metadata> {
-    if chaos::should_fail(ChaosOperation::FsSymlinkMetadata) {
-        return Err(Error::new(ErrorKind::Other, "fracture: Symlink metadata failed (chaos)"));
-    }
-
-    let entry = FS.get_entry_simple(path.as_ref())?;
-
-    match entry {
-        Entry::File(f) => Ok(f.read().metadata.clone()),
-        Entry::Directory(_) => Ok(Metadata::new_dir()),
-        Entry::Symlink(_, meta) => Ok(meta)
-    }
-}
-
-pub async fn read_link<P: AsRef<Path>>(path: P) -> Result<PathBuf> {
-    let entry = FS.get_entry_simple(path.as_ref())?;
-
-    match entry {
-        Entry::Symlink(target, _) => Ok(target),
-        Entry::File(_) => Err(Error::new(ErrorKind::InvalidInput, "fracture: Not a symlink")),
-        Entry::Directory(_) => Err(Error::new(ErrorKind::InvalidInput, "fracture: Not a symlink"))
-    }
-}
-
-pub async fn hard_link<P: AsRef<Path>, Q: AsRef<Path>>(src: P, dst: Q) -> Result<()> {
-    if chaos::should_fail(ChaosOperation::FsHardLink) {
-        return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Hard link failed (chaos)"));
-    }
-
-    let data = read(src).await?;
-    write(dst, data).await?;
-
-    yield_now().await;
-    
-    Ok(())
-}
-
-pub fn set_chunk_size(size: usize) {
-    // Placeholder
-    // Currently, config set at init
-}
-
-pub fn set_corruption_enabled(enabled: bool) {
-    // Placeholder
-    // Currently, config set at init
-}
-
-pub fn get_config() -> FsConfig {
-    FS.config.clone()
+    String::from_utf8(bytes).map_err(|e| Error::new(ErrorKind::InvalidData, e))
 }
