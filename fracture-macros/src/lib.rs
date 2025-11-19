@@ -105,7 +105,7 @@ pub fn test(attr: TokenStream, item: TokenStream) -> TokenStream {
                         if !::fracture::chaos::invariants::check_all() {
                             break;
                         }
-                        ::fracture::time::sleep::(::std::time::Duration::from_millis(100)).await;
+                        ::fracture::time::sleep(::std::time::Duration::from_millis(100)).await;
                     }
                 });
 
