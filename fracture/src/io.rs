@@ -379,6 +379,89 @@ where T: AsyncRead + AsyncWrite + Unpin {
     }
 }
 
+pub struct ChaosReadBuf<'a> {
+    inner: &'a mut ReadBuf<'a>,
+    chaos_state: ReadBufChaosState
+}
+
+struct ReadBufChaosState {
+    corrupt_next: bool,
+    limit_capacity: Option<usize>
+}
+
+impl<'a> ChaosReadBuf<'a> {
+    pub fn new(inner: &'a mut ReadBuf<'a>) -> Self {
+        Self {
+            chaos_state: ReadBufChaosState {
+                corrupt_next: chaos::should_fail(ChaosOperation::IoCorruption),
+                limit_capacity: if chaos::should_fail(ChaosOperation::IoPartialRead) {
+                    Some(inner.capacity() / 2)
+                }
+                else {
+                    None
+                }
+            },
+            inner
+        }
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.chaos_state.limit_capacity.unwrap_or(self.inner.capacity())
+    }
+
+    pub fn filled(&self) -> &[u8] {
+        self.inner.filled()
+    }
+
+    pub fn filled_mut(&mut self) -> &mut [u8] {
+        let filled = self.inner.filled_mut();
+        if self.chaos_state.corrupt_next {
+            for byte in filled.iter_mut().take(4) {
+                *byte ^= 0xFF;
+            }
+            self.chaos_state.corrupt_next = false;
+        }
+
+        filled
+    }
+
+    pub fn initialize_unfilled(&mut self) -> &mut [u8] {
+        self.inner.initialize_unfilled()
+    }
+
+    pub fn initialize_unfilled_to(&mut self, n: usize) -> &mut [u8] {
+        let n = if let Some(limit) = self.chaos_state.limit_capacity {
+            n.min(limit)
+        }
+        else {
+            n
+        };
+
+        self.inner.initialize_unfilled_to(n)
+    }
+
+    pub fn remaining(&self) -> usize {
+        if let Some(limit) = self.chaos_state.limit_capacity {
+            self.inner.remaining().min(limit - self.inner.filled().len())
+        }
+        else {
+            self.inner.remaining()
+        }
+    }
+
+    pub fn advance(&mut self, n: usize) {
+        self.inner.advance(n);
+    }
+
+    pub fn set_filled(&mut self, n: usize) {
+        self.inner.set_filled(n);
+    }
+
+    pub fn put_slice(&mut self, buf: &[u8]) {
+        self.inner.put_slice(buf);
+    }
+}
+
 pub struct DuplexStream {
     inner: tokio::io::DuplexStream,
     chaos_state: DuplexChaosState
