@@ -385,9 +385,18 @@ impl LocalSet {
         self.inner.run_until(future).await
     }
 
-    pub fn block_on<F>(&self, rt: &crate::runtime::Runtime, future: F) -> F::Output
+    pub fn block_on<F>(&self, future: F) -> F::Output
     where F: Future {
-        self.inner.block_on(&tokio::runtime::Runtime::new().unwrap(), future)
+        if chaos::should_fail(ChaosOperation::LocalSetRun) {
+            panic!("fracture: LocalSet blocked (chaos)");
+        }
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("fracture: Failed to build runtime");
+
+        self.inner.block_on(&rt, future)
     }
 }
 
