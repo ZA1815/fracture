@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io::{self, Error, ErrorKind, Result, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::{Path, PathBuf, Component};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -39,6 +39,7 @@ pub struct Metadata {
     pub len: u64,
     pub is_dir: bool,
     pub is_file: bool,
+    pub is_symlink: bool,
     pub modified: SystemTime,
     pub accessed: SystemTime,
     pub created: SystemTime,
@@ -52,6 +53,7 @@ impl Metadata {
             len: 0,
             is_dir: false,
             is_file: true,
+            is_symlink: false,
             modified: now,
             accessed: now,
             created: now,
@@ -65,6 +67,25 @@ impl Metadata {
             len: 0,
             is_dir: true,
             is_file: false,
+            is_symlink: false,
+            modified: now,
+            accessed: now,
+            created: now,
+            permissions: Permissions::default()
+        }
+    }
+
+    fn new_symlink(target: &Path) -> Self {
+        let now = deterministic_now();
+
+        let len = target.to_string_lossy().len() as u64;
+
+
+        Self {
+            len,
+            is_dir: false,
+            is_file: false,
+            is_symlink: true,
             modified: now,
             accessed: now,
             created: now,
@@ -151,7 +172,7 @@ impl FileEntry {
 enum Entry {
     File(Arc<RwLock<FileEntry>>),
     Directory(Arc<RwLock<HashMap<String, Entry>>>),
-    Symlink(PathBuf)
+    Symlink(PathBuf, Metadata)
 }
 
 struct FsRegistry {
@@ -176,44 +197,52 @@ impl FsRegistry {
         }
 
         let mut root = self.root.write();
-        let current_map = &mut *root;
-
+        
+        let mut current_path = String::new();
         for (i, component) in components.iter().enumerate() {
             let is_last = i == components.len() - 1;
+            current_path = if current_path.is_empty() {
+                component.to_string()
+            }
+            else {
+                format!("{}/{}", current_path, component)
+            };
 
             if is_last && create {
-                if !current_map.contains_key(*component) {
+                if !root.contains_key(&current_path) {
                     let entry = Entry::File(Arc::new(RwLock::new(FileEntry::new())));
-                    current_map.insert(component.to_string(), entry.clone());
-                    return Ok(entry);
+                    root.insert(current_path.clone(), entry.clone());
+                    return Ok(entry)
+                }
+            }
+
+            if !root.contains_key(&current_path) {
+                if create {
+                    let dir = Entry::Directory(Arc::new(RwLock::new(HashMap::new())));
+                    root.insert(current_path.clone(), dir);
                 }
                 else {
-                    return match current_map.get(*component).unwrap() {
-                        Entry::File(f) => Ok(Entry::File(Arc::clone(f))),
-                        Entry::Directory(_) => Err(Error::new(ErrorKind::IsADirectory, "fracture: Path is a directory"))
-                    };
-                }
-            }
-
-            if !current_map.contains_key(*component) {
-                if !create {
                     return Err(Error::new(ErrorKind::NotFound, "fracture: Path not found"));
                 }
-                let dir = Entry::Directory(Arc::new(RwLock::new(HashMap::new())));
-                current_map.insert(component.to_string(), dir);
             }
 
-            match current_map.get_mut(*component).unwrap() {
-                Entry::Directory(dir) => {
-                    // Placeholder
-                    return Err(Error::new(ErrorKind::Other, "fracture: Path navigation not fully implemented"));
-                }
-                Entry::File(_) if !is_last => {
-                    return Err(Error::new(ErrorKind::NotADirectory, "fracture: Path component is a file"));
-                }
-                Entry::File(f) => {
+            match root.get(&current_path) {
+                Some(Entry::File(f)) if is_last => {
                     return Ok(Entry::File(Arc::clone(f)));
                 }
+                Some(Entry::Directory(_)) if is_last => {
+                    return Err(Error::new(ErrorKind::IsADirectory, "fracture: Path is a directory"));
+                }
+                Some(Entry::File(_)) if !is_last => {
+                    return Err(Error::new(ErrorKind::NotADirectory, "fracture: Path component is a file"));
+                }
+                Some(Entry::Directory(_)) => {
+                    // Continue
+                }
+                None => {
+                    return Err(Error::new(ErrorKind::NotFound, "fracture: Path not found"));
+                }
+                _ => {}
             }
         }
 
@@ -276,7 +305,8 @@ impl FsRegistry {
     }
 
     fn read_dir(&self, path: &Path) -> Result<Vec<DirEntry>> {
-        let path_str = path.to_string_lossy().to_string();
+        let resolved_path = self.resolve_path(path)?;
+        let path_str = resolved_path.to_string_lossy().to_string();
         let root = self.root.read();
 
         match root.get(&path_str) {
@@ -292,6 +322,7 @@ impl FsRegistry {
                 Ok(entries)
             }
             Some(Entry::File(_)) => Err(Error::new(ErrorKind::NotADirectory, "fracture: Not a directory")),
+            Some(Entry::Symlink(..)) => unreachable!("fracture: resolve_path didn't correctly resolve path (report bug)"),
             None => Err(Error::new(ErrorKind::NotFound, "fracture: Directory not found"))
         }
     }
@@ -304,10 +335,70 @@ impl FsRegistry {
             return Err(Error::new(ErrorKind::AlreadyExists, "fracture: Link already exists"));
         }
 
-        let entry = Entry::Symlink(target_path);
+        let meta = Metadata::new_symlink(&target_path);
+
+        let entry = Entry::Symlink(target_path, meta);
         root.insert(link_str, entry);
 
         Ok(())
+    }
+
+    fn resolve_path(&self, path: &Path) -> Result<PathBuf> {
+        let mut current_path = path.to_path_buf();
+        let mut recursion_count = 0;
+        const MAX_SYMLINK_DEPTH: usize = 40;
+
+        loop {
+            if recursion_count > MAX_SYMLINK_DEPTH {
+                return Err(Error::new(ErrorKind::Other, "fracture: Too many levels of symbolic links"));
+            }
+
+            let path_str = current_path.to_string_lossy().to_string();
+            let root = self.root.read();
+
+            match root.get(&path_str) {
+                Some(Entry::Symlink(target, _)) => {
+                    recursion_count += 1;
+
+                    if target.is_absolute() {
+                        current_path = target.clone();
+                    }
+                    else {
+                        let parent = current_path.parent().unwrap_or(Path::new("/"));
+                        let joined = parent.join(target);
+                        current_path = self.normalize_path(&joined);
+                    }
+                }
+                _ => return Ok(current_path)
+            }
+        }
+    }
+
+    fn normalize_path(&self, path: &Path) -> PathBuf {
+        let mut stack = Vec::new();
+
+        for component in path.components() {
+            match component {
+                Component::RootDir => {
+                    stack.clear();
+                }
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    stack.pop();
+                }
+                Component::Normal(c) => {
+                    stack.push(c);
+                }
+                Component::Prefix(_) => {}
+            }
+        }
+
+        let mut result = PathBuf::from("/");
+        for c in stack {
+            result.push(c);
+        }
+
+        result
     }
 }
 
@@ -328,10 +419,11 @@ impl File {
             return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Open failed (chaos)"));
         }
 
-        let path = path.as_ref();
-        let entry = match FS.get_entry_simple(path) {
+        let resolved_path = FS.resolve_path(path.as_ref())?;
+        let entry = match FS.get_entry_simple(&resolved_path) {
             Ok(Entry::File(f)) => f,
             Ok(Entry::Directory(_)) => return Err(Error::new(ErrorKind::IsADirectory, "fracture: Is a directory")),
+            Ok(Entry::Symlink(..)) => unreachable!("fracture: resolve_path didn't correctly resolve path (report bug)"),
             Err(e) => return Err(e)
         };
 
@@ -346,7 +438,7 @@ impl File {
         Ok(Self {
             entry,
             cursor: Arc::new(Mutex::new(0)),
-            path: path.to_path_buf(),
+            path: resolved_path,
             readable: true,
             writable: false,
             append: false
@@ -362,12 +454,13 @@ impl File {
             return Err(Error::new(ErrorKind::AlreadyExists, "fracture: File already exists (chaos)"));
         }
 
-        let path = path.as_ref();
-        let entry = FS.create_entry(path)
-            .or_else(|_| FS.get_entry_simple(path))
+        let resolved_path = FS.resolve_path(path.as_ref())?;
+        let entry = FS.create_entry(&resolved_path)
+            .or_else(|_| FS.get_entry_simple(&resolved_path))
             .and_then(|e| match e {
                 Entry::File(f) => Ok(f),
-                Entry::Directory(_) => Err(Error::new(ErrorKind::IsADirectory, "fracture: Is a directory"))
+                Entry::Directory(_) => Err(Error::new(ErrorKind::IsADirectory, "fracture: Is a directory")),
+                Entry::Symlink(..) => unreachable!("fracture: resolve_path didn't correctly resolve path (report bug)")
             })?;
 
         {
@@ -382,7 +475,7 @@ impl File {
         Ok(Self {
             entry,
             cursor: Arc::new(Mutex::new(0)),
-            path: path.to_path_buf(),
+            path: resolved_path,
             readable: true,
             writable: true,
             append: false
@@ -706,10 +799,10 @@ impl OpenOptions {
             return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Open failed (chaos)"));
         }
 
-        let path = path.as_ref();
+        let resolved_path = FS.resolve_path(path.as_ref())?;
 
         if self.create_new {
-            let entry = FS.create_entry(path)?;
+            let entry = FS.create_entry(&resolved_path)?;
             match entry {
                 Entry::File(f) => {
                     let mut file_entry = f.write();
@@ -721,25 +814,27 @@ impl OpenOptions {
                     return Ok(File {
                         entry: f,
                         cursor: Arc::new(Mutex::new(0)),
-                        path: path.to_path_buf(),
+                        path: resolved_path,
                         readable: self.read,
                         writable: self.write || self.append,
                         append: self.append
                     });
                 }
-                Entry::Directory(_) => return Err(Error::new(ErrorKind::IsADirectory, "fracture: Is a directory"))
+                Entry::Directory(_) => return Err(Error::new(ErrorKind::IsADirectory, "fracture: Is a directory")),
+                Entry::Symlink(..) => unreachable!("fracture: resolve_path didn't correctly resolve path (report bug)")
             }
         }
         let entry = if self.create {
-            FS.create_entry(path).or_else(|_| FS.get_entry_simple(path))
+            FS.create_entry(&resolved_path).or_else(|_| FS.get_entry_simple(&resolved_path))
         }
         else {
-            FS.get_entry_simple(path)
+            FS.get_entry_simple(&resolved_path)
         };
 
         let entry = match entry? {
             Entry::File(f) => f,
             Entry::Directory(_) => return Err(Error::new(ErrorKind::IsADirectory, "fracture: Is a directory")),
+            Entry::Symlink(..) => unreachable!("fracture: resolve_path didn't correctly resolve path (report bug)")
         };
 
         {
@@ -758,7 +853,7 @@ impl OpenOptions {
         Ok(File {
             entry,
             cursor: Arc::new(Mutex::new(0)),
-            path: path.to_path_buf(),
+            path: resolved_path,
             readable: self.read,
             writable: self.write || self.append,
             append: self.append
@@ -796,7 +891,8 @@ impl DirEntry {
         
         Ok(FileType {
             is_dir: meta.is_dir,
-            is_file: meta.is_file
+            is_file: meta.is_file,
+            is_symlink: meta.is_symlink
         })
     }
 }
@@ -828,7 +924,8 @@ impl ReadDir {
 #[derive(Clone, Copy)]
 pub struct FileType {
     is_dir: bool,
-    is_file: bool
+    is_file: bool,
+    is_symlink: bool
 }
 
 impl FileType {
@@ -841,7 +938,7 @@ impl FileType {
     }
 
     pub fn is_symlink(&self) -> bool {
-        false
+        self.is_symlink
     }
 }
 
@@ -909,13 +1006,16 @@ pub async fn metadata<P: AsRef<Path>>(path: P) -> Result<Metadata> {
         return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Metadata failed (chaos)"));
     }
 
-    let entry = FS.get_entry_simple(path.as_ref())?;
+    let resolved_path = FS.resolve_path(path.as_ref())?;
+
+    let entry = FS.get_entry_simple(&resolved_path)?;
     match entry {
         Entry::File(f) => {
             let file_entry = f.read();
             Ok(file_entry.metadata.clone())
         }
-        Entry::Directory(_) => Ok(Metadata::new_dir())
+        Entry::Directory(_) => Ok(Metadata::new_dir()),
+        Entry::Symlink(..) => unreachable!("fracture: resolve_path didn't correctly resolve path (report bug)")
     }
 }
 
@@ -976,13 +1076,16 @@ pub async fn set_permissions<P: AsRef<Path>>(path: P, perm: Permissions) -> Resu
         return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Set permissions failed (chaos)"));
     }
 
-    let entry = FS.get_entry_simple(path.as_ref())?;
+    let resolved_path = FS.resolve_path(path.as_ref())?;
+    let entry = FS.get_entry_simple(&resolved_path)?;
+
     match entry {
         Entry::File(f) => {
             let mut file_entry = f.write();
             file_entry.metadata.permissions = perm;
         }
         Entry::Directory(_) => {}
+        Entry::Symlink(..) => unreachable!("fracture: resolve_path didn't correctly resolve path (report bug)")
     }
 
     yield_now().await;
@@ -1009,12 +1112,23 @@ pub async fn symlink_metadata<P: AsRef<Path>>(path: P) -> Result<Metadata> {
         return Err(Error::new(ErrorKind::Other, "fracture: Symlink metadata failed (chaos)"));
     }
 
-    metadata(path).await
+    let entry = FS.get_entry_simple(path.as_ref())?;
+
+    match entry {
+        Entry::File(f) => Ok(f.read().metadata.clone()),
+        Entry::Directory(_) => Ok(Metadata::new_dir()),
+        Entry::Symlink(_, meta) => Ok(meta)
+    }
 }
 
 pub async fn read_link<P: AsRef<Path>>(path: P) -> Result<PathBuf> {
-    // Placeholder
-    Err(Error::new(ErrorKind::Other, "fracture: Symlinks not supported"))
+    let entry = FS.get_entry_simple(path.as_ref())?;
+
+    match entry {
+        Entry::Symlink(target, _) => Ok(target),
+        Entry::File(_) => Err(Error::new(ErrorKind::InvalidInput, "fracture: Not a symlink")),
+        Entry::Directory(_) => Err(Error::new(ErrorKind::InvalidInput, "fracture: Not a symlink"))
+    }
 }
 
 pub async fn hard_link<P: AsRef<Path>, Q: AsRef<Path>>(src: P, dst: Q) -> Result<()> {
