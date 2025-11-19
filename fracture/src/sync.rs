@@ -1,11 +1,14 @@
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 use std::sync::Arc;
 use tokio::sync;
 
 use crate::chaos::{self, ChaosOperation};
+
+static NEXT_GUARD_ID: AtomicU64 = AtomicU64::new(0);
 
 pub struct Mutex<T> {
     inner: Arc<sync::Mutex<T>>,
@@ -17,12 +20,13 @@ struct MutexChaosState {
     force_deadlock: bool,
     starve_next_lock: bool,
     poison_on_unlock: bool,
-    lock_holders: Vec<std::thread::ThreadId>
+    lock_holders: Vec<u64>
 }
 
 pub struct MutexGuard<'a, T> {
     inner: Option<sync::MutexGuard<'a, T>>,
-    chaos_state: Arc<std::sync::Mutex<MutexChaosState>>
+    chaos_state: Arc<std::sync::Mutex<MutexChaosState>>,
+    id: u64
 }
 
 impl<T> Mutex<T> {
@@ -34,17 +38,18 @@ impl<T> Mutex<T> {
     }
 
     pub async fn lock(&self) -> MutexGuard<'_, T> {
+        let guard_id = NEXT_GUARD_ID.fetch_add(1, Ordering::Relaxed);
+
         if chaos::should_fail(ChaosOperation::MutexLock) {
             std::future::pending::<()>().await;
         }
 
         if chaos::should_fail(ChaosOperation::MutexDeadlock) {
-            let thread_id = std::thread::current().id();
             if let Ok(mut state) = self.chaos_state.lock() {
-                if state.lock_holders.contains(&thread_id) {
+                if state.lock_holders.contains(&guard_id) {
                     std::future::pending::<()>().await;
                 }
-                state.lock_holders.push(thread_id);
+                state.lock_holders.push(guard_id);
             }
         }
 
@@ -60,39 +65,55 @@ impl<T> Mutex<T> {
         let guard = self.inner.lock().await;
         MutexGuard {
             inner: Some(guard),
-            chaos_state: Arc::clone(&self.chaos_state)
+            chaos_state: Arc::clone(&self.chaos_state),
+            id: guard_id
         }
     }
 
     pub fn try_lock(&self) -> Result<MutexGuard<'_, T>, TryLockError> {
+        let guard_id = NEXT_GUARD_ID.fetch_add(1, Ordering::Relaxed);
+
         if chaos::should_fail(ChaosOperation::MutexTryLock) {
             return Err(TryLockError::WouldBlock)
         }
 
         self.inner.try_lock().map(|guard| MutexGuard {
             inner: Some(guard),
-            chaos_state: Arc::clone(&self.chaos_state)
+            chaos_state: Arc::clone(&self.chaos_state),
+            id: guard_id
         })
         .map_err(|_| TryLockError::WouldBlock)
     }
 
     pub async fn lock_owned(self: Arc<Self>) -> OwnedMutexGuard<T> {
+        let guard_id = NEXT_GUARD_ID.fetch_add(1, Ordering::Relaxed);
+
         if chaos::should_fail(ChaosOperation::MutexLock) {
             std::future::pending::<()>().await;
+        }
+
+        if chaos::should_fail(ChaosOperation::MutexDeadlock) {
+            if let Ok(mut state) = self.chaos_state.lock() {
+                state.lock_holders.push(guard_id);
+            }
         }
 
         let guard = Arc::clone(&self.inner).lock_owned().await;
         OwnedMutexGuard {
             inner: Some(guard),
-            chaos_state: Arc::clone(&self.chaos_state)
+            chaos_state: Arc::clone(&self.chaos_state),
+            id: guard_id
         }
     }
 
     pub fn blocking_lock(&self) -> MutexGuard<'_, T> {
+        let guard_id = NEXT_GUARD_ID.fetch_add(1, Ordering::Relaxed);
+
         let guard = self.inner.blocking_lock();
         MutexGuard {
             inner: Some(guard),
-            chaos_state: Arc::clone(&self.chaos_state)
+            chaos_state: Arc::clone(&self.chaos_state),
+            id: guard_id
         }
     }
 }
@@ -100,8 +121,7 @@ impl<T> Mutex<T> {
 impl <'a, T> Drop for MutexGuard<'a, T> {
     fn drop(&mut self) {
         if let Ok(mut state) = self.chaos_state.lock() {
-            let thread_id = std::thread::current().id();
-            state.lock_holders.retain(|&id| id != thread_id);
+            state.lock_holders.retain(|&id| id != self.id);
 
             if state.poison_on_unlock {
                 // Placeholder
@@ -125,7 +145,8 @@ impl<'a, T> std::ops::DerefMut for MutexGuard<'a, T> {
 
 pub struct OwnedMutexGuard<T> {
     inner: Option<sync::OwnedMutexGuard<T>>,
-    chaos_state: Arc<std::sync::Mutex<MutexChaosState>>
+    chaos_state: Arc<std::sync::Mutex<MutexChaosState>>,
+    id: u64
 }
 
 impl<T> Deref for OwnedMutexGuard<T> {
@@ -145,8 +166,7 @@ impl<T> DerefMut for OwnedMutexGuard<T> {
 impl<T> Drop for OwnedMutexGuard<T> {
     fn drop(&mut self) {
         if let Ok(mut state) = self.chaos_state.lock() {
-            let thread_id = std::thread::current().id();
-            state.lock_holders.retain(|&id| id != thread_id);
+            state.lock_holders.retain(|&id| id != self.id);
         }
     }
 }
@@ -286,7 +306,7 @@ impl<'a, T> Deref for RwLockReadGuard<'a, T> {
 
 impl<'a, T> RwLockReadGuard<'a, T> {
     pub fn map<U, F>(mut this: Self, f: F) -> RwLockMappedReadGuard<'a, T, U>
-    where F: FnOnce(&T) -> &U, U: ?Sized {
+    where F: FnOnce(&T) -> &mut U, U: ?Sized {
         let data = f(&*this) as *const U;
 
         RwLockMappedReadGuard {
@@ -333,10 +353,16 @@ impl<'a, T> Deref for RwLockWriteGuard<'a, T> {
     }
 }
 
+impl<'a, T> DerefMut for RwLockWriteGuard<'a, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.inner.as_mut().unwrap().deref_mut()
+    }
+}
+
 impl<'a, T> RwLockWriteGuard<'a, T> {
     pub fn map<U, F>(mut this: Self, f: F) -> RwLockMappedWriteGuard<'a, T, U>
     where F: FnOnce(&mut T) -> &mut U, U: ?Sized {
-        let data = f(&mut *const_cast_mut(&*this)) as *mut U;
+        let data = f(&mut *this) as *mut U;
 
         RwLockMappedWriteGuard {
             _inner: this.inner.take().unwrap(),
@@ -354,10 +380,6 @@ impl<'a, T> RwLockWriteGuard<'a, T> {
             chaos_state: this.chaos_state.clone()
         }
     }
-}
-
-fn const_cast_mut<T: ?Sized>(reference: &T) -> &mut T {
-    unsafe { &mut *(reference as *const T as *mut T) }
 }
 
 pub struct Semaphore {
@@ -993,6 +1015,9 @@ impl<'a, T: ?Sized, U: ?Sized> Deref for RwLockMappedReadGuard<'a, T, U> {
     }
 }
 
+unsafe impl<'a, T: ?Sized + Sync, U: ?Sized + Sync> Sync for RwLockMappedReadGuard<'a, T, U> {}
+unsafe impl<'a, T: ?Sized + Send + Sync, U: ?Sized + Send> Send for RwLockMappedReadGuard<'a, T, U> {}
+
 pub struct RwLockMappedWriteGuard<'a, T: ?Sized, U: ?Sized> {
     _inner: sync::RwLockWriteGuard<'a, T>,
     data: *mut U,
@@ -1012,3 +1037,6 @@ impl<'a, T: ?Sized, U: ?Sized> DerefMut for RwLockMappedWriteGuard<'a, T, U> {
         unsafe { &mut *self.data }
     }
 }
+
+unsafe impl<'a, T: ?Sized + Sync, U: ?Sized + Sync> Sync for RwLockMappedWriteGuard<'a, T, U> {}
+unsafe impl<'a, T: ?Sized + Send + Sync, U: ?Sized + Send> Send for RwLockMappedWriteGuard<'a, T, U> {}
