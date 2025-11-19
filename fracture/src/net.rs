@@ -450,8 +450,9 @@ pub struct OwnedWriteHalf {
     // Placeholder
 }
 
+#[derive(Clone)]
 pub struct TcpListener {
-    inner: turmoil::net::TcpListener,
+    inner: Arc<turmoil::net::TcpListener>,
     local_addr: SocketAddr
 }
 
@@ -471,7 +472,7 @@ impl TcpListener {
         let inner = turmoil::net::TcpListener::bind(addr).await?;
         let local_addr = inner.local_addr()?;
 
-        Ok(Self { inner, local_addr })
+        Ok(Self { inner: Arc::new(inner), local_addr })
     }
 
     pub async fn accept(&self) -> Result<(TcpStream, SocketAddr)> {
@@ -523,7 +524,11 @@ impl TcpListener {
                 "fracture: Poll accept failed (chaos)"
             )));
         }
-        Poll::Pending // Placeholder
+
+        cx.waker().wake_by_ref();
+
+
+        Poll::Pending // This requires refactoring to store a pinned future internally
     }
 }
 
