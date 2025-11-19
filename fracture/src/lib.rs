@@ -30,9 +30,9 @@ pub use tokio::main;
 pub use tokio::test;
 
 #[cfg(feature = "simulation")]
-pub use fracture_macros::test;
-#[cfg(feature = "simulation")]
-pub use fracture_macros::main;
+pub use fracture_macros::{test, main, select, join, try_join, pin, task_local};
+#[cfg(not(feature = "simulation"))]
+pub use tokio::{main, test, select, join, try_join, pin};
 
 #[cfg(feature = "simulation")]
 pub mod prelude {
