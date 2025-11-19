@@ -1,9 +1,8 @@
 use std::net::SocketAddr;
-use std::pin::{self, Pin};
+use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 pub use futures::Stream;
-use futures::stream::Next;
 use pin_project::pin_project;
 use tokio::time::Instant;
 
@@ -78,7 +77,7 @@ pub trait StreamExt: Stream {
     fn fuse(self) -> Fuse<Self>
     where Self: Sized {
         Fuse {
-            stream: Self
+            stream: Some(self)
         }
     }
 
@@ -236,6 +235,7 @@ where S: Stream, F: FnMut(&S::Item) -> bool {
 
 #[pin_project]
 pub struct FilterMap<S, F> {
+    #[pin]
     stream: S,
     f: F
 }
@@ -245,7 +245,7 @@ where S: Stream, F: FnMut(S::Item) -> Option<T> {
     type Item = T;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.project();
+        let mut this = self.project();
         loop {
             match this.stream.as_mut().poll_next(cx) {
                 Poll::Ready(Some(item)) => {
@@ -429,8 +429,8 @@ impl<S: Stream> Stream for Fuse<S> {
     type Item = S::Item;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.project();
-        match this.stream.as_pin_mut() {
+        let mut this = self.project();
+        match this.stream.as_mut().as_pin_mut() {
             Some(stream) => match stream.poll_next(cx) {
                 Poll::Ready(None) => {
                     this.stream.set(None);
@@ -628,7 +628,7 @@ impl<S: Stream> Stream for Chunks<S> {
                 Poll::Ready(Some(item)) => {
                     this.items.push(item);
                     if this.items.len() >= *this.capacity {
-                        let items = std::mem::replace(this.items, Vec::with_capacity(**this.capacity));
+                        let items = std::mem::replace(this.items, Vec::with_capacity(*this.capacity));
                         return Poll::Ready(Some(items));
                     }
                 }
@@ -762,7 +762,7 @@ impl IntervalStream {
 impl Stream for IntervalStream {
     type Item = Instant;
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         Poll::Ready(Some(std::task::ready!(self.inner.poll_tick(cx))))
     }
 }
