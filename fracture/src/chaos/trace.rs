@@ -746,7 +746,12 @@ impl TimeTravel {
     pub fn step_backward(&mut self) -> Option<&TraceEntry> {
         if self.position > 0 {
             self.position -= 1;
-            Some(&self.trace[self.position])
+            if self.position > 0 {
+                Some(&self.trace[self.position - 1])
+            }
+            else {
+                None
+            }
         }
         else {
             None

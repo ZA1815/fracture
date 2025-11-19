@@ -2,6 +2,7 @@ use std::time::Duration;
 use std::future::Future;
 use crate::chaos::{ChaosOperation, heal_partition, inject, partition, partition_oneway, set_delay, set_packet_loss, set_reordering};
 use crate::chaos::trace::{record, TraceEvent};
+use crate::time::sleep;
 
 #[derive(Debug, Clone)]
 pub struct Scenario {
@@ -89,7 +90,7 @@ impl Scenario {
         self
     }
 
-    pub fn build(self) {
+    pub async fn execute_chaos(self) {
         if let Some(seed) = self.seed {
             crate::chaos::set_seed(seed);
         }
@@ -123,8 +124,8 @@ impl Scenario {
                 ScenarioOperation::Reordering { node, rate } => {
                     set_reordering(&node, rate);
                 }
-                ScenarioOperation::Wait { .. } => {
-                    // Placeholder
+                ScenarioOperation::Wait { duration } => {
+                    sleep(duration).await;
                 }
             }
         }
@@ -132,8 +133,10 @@ impl Scenario {
 
     pub async fn run<F, Fut>(self, test: F)
     where F: FnOnce() -> Fut, Fut: Future<Output = ()> {
-        self.build();
-        test().await;
+        let chaos_future = self.execute_chaos();
+        let test_future = test();
+
+        tokio::join!(chaos_future, test_future);
     }
 }
 
