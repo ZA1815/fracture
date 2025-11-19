@@ -476,10 +476,19 @@ pub struct Handle {
     metrics: Arc<Mutex<RuntimeMetrics>>
 }
 
+thread_local! {
+    static CURRENT_HANDLE: RefCell<Option<Handle>> = RefCell::new(None);
+}
+
 impl Handle {
     fn current() -> Self {
-        // Thread-local handle storage would go here
-        unimplemented!("Handle::current() requires thread-local storage")
+        CURRENT_HANDLE.with(|h| {
+            h.borrow().clone().expect("fracture: Must be called within a fracture runtime context")
+        })
+    }
+
+    pub(crate) fn set_current(handle: &Handle) {
+        CURRENT_HANDLE.with(|h| *h.borrow_mut() = Some(handle.clone()))
     }
 
     pub fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
