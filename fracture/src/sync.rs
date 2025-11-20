@@ -1,9 +1,11 @@
+use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
-use std::task::{Context, Poll, Waker};
 use std::sync::{Arc, Mutex as StdMutex};
-use std::cell::UnsafeCell;
+use std::task::{Context, Poll, Waker};
+
+use crate::chaos::{self, ChaosOperation};
 
 pub struct Mutex<T: ?Sized> {
     state: StdMutex<MutexState>,
@@ -29,10 +31,18 @@ impl<T> Mutex<T> {
 
 impl<T: ?Sized> Mutex<T> {
     pub async fn lock(&self) -> MutexGuard<'_, T> {
+        if chaos::should_fail(ChaosOperation::MutexDeadlock) {
+            std::future::pending::<()>().await;
+        }
+
         struct LockFuture<'a, T: ?Sized> { mutex: &'a Mutex<T> }
         impl<T: ?Sized> Future for LockFuture<'_, T> {
             type Output = ();
             fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+                if chaos::should_fail(ChaosOperation::MutexLockTimeout) {
+                    return Poll::Pending;
+                }
+
                 let mut state = self.mutex.state.lock().unwrap();
                 if !state.locked {
                     state.locked = true;
@@ -49,6 +59,10 @@ impl<T: ?Sized> Mutex<T> {
     }
 
     pub fn try_lock(&self) -> Result<MutexGuard<'_, T>, ()> {
+        if chaos::should_fail(ChaosOperation::MutexTryLock) {
+            return Err(());
+        }
+
         let mut state = self.state.lock().unwrap();
         if !state.locked {
             state.locked = true;
@@ -105,10 +119,18 @@ impl<T> RwLock<T> {
 
 impl<T: ?Sized> RwLock<T> {
     pub async fn read(&self) -> RwLockReadGuard<'_, T> {
+        if chaos::should_fail(ChaosOperation::RwLockDeadlock) {
+            std::future::pending::<()>().await;
+        }
+
         struct ReadFuture<'a, T: ?Sized> { lock: &'a RwLock<T> }
         impl<T: ?Sized> Future for ReadFuture<'_, T> {
             type Output = ();
             fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+                if chaos::should_fail(ChaosOperation::RwLockRead) {
+                    return Poll::Pending;
+                }
+
                 let mut state = self.lock.state.lock().unwrap();
                 if !state.writer {
                     state.readers += 1;
@@ -124,10 +146,18 @@ impl<T: ?Sized> RwLock<T> {
     }
 
     pub async fn write(&self) -> RwLockWriteGuard<'_, T> {
+        if chaos::should_fail(ChaosOperation::RwLockDeadlock) {
+            std::future::pending::<()>().await;
+        }
+
         struct WriteFuture<'a, T: ?Sized> { lock: &'a RwLock<T> }
         impl<T: ?Sized> Future for WriteFuture<'_, T> {
             type Output = ();
             fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+                if chaos::should_fail(ChaosOperation::RwLockWrite) {
+                    return Poll::Pending;
+                }
+
                 let mut state = self.lock.state.lock().unwrap();
                 if !state.writer && state.readers == 0 {
                     state.writer = true;
@@ -193,6 +223,10 @@ impl Notify {
         Self { waiters: StdMutex::new(VecDeque::new()), notified: StdMutex::new(false) }
     }
     pub fn notify_one(&self) {
+        if chaos::should_fail(ChaosOperation::NotifyMissed) {
+            return;
+        }
+
         let mut notified = self.notified.lock().unwrap();
         if let Some(waker) = self.waiters.lock().unwrap().pop_front() {
             waker.wake();
@@ -205,6 +239,11 @@ impl Notify {
         impl Future for NotifyFuture<'_> {
             type Output = ();
             fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+                if chaos::should_fail(ChaosOperation::NotifyNotifyWaitTimeout) {
+                    // Placeholder for chaos
+                    return Poll::Pending;
+                }
+
                 let mut notified = self.n.notified.lock().unwrap();
                 if *notified {
                     *notified = false;
@@ -234,11 +273,19 @@ impl Semaphore {
     }
 
     pub async fn acquire_many(&self, n: u32) -> Result<SemaphorePermit<'_>, ()> {
+        if chaos::should_fail(ChaosOperation::SemaphoreAcquire) {
+            return Err(());
+        }
+
         let n = n as usize;
         struct AcquireFuture<'a> { sem: &'a Semaphore, n: usize }
         impl Future for AcquireFuture<'_> {
             type Output = ();
             fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+                if chaos::should_fail(ChaosOperation::SemaphoreAcquireTimeout) {
+                    return Poll::Pending;
+                }
+
                 let mut permits = self.sem.permits.lock().unwrap();
                 if *permits >= self.n {
                     *permits -= self.n;
@@ -292,8 +339,13 @@ pub mod mpsc {
     struct State<T> { queue: VecDeque<T>, waker: Option<Waker>, closed: bool }
     
     pub struct Sender<T> { shared: Arc<StdMutex<State<T>>> }
+
     impl<T> Sender<T> {
         pub async fn send(&self, value: T) -> Result<(), T> {
+            if chaos::should_fail(ChaosOperation::MpscSend) {
+                return Err(value);
+            }
+
             let mut s = self.shared.lock().unwrap();
             if s.closed { return Err(value); }
             s.queue.push_back(value);
@@ -312,6 +364,10 @@ pub mod mpsc {
             impl<T> Future for RecvFuture<'_, T> {
                 type Output = Option<T>;
                 fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<T>> {
+                    if chaos::should_fail(ChaosOperation::MpscRecv) {
+                        return Poll::Ready(None);
+                    }
+
                     let mut s = self.rx.shared.lock().unwrap();
                     if let Some(v) = s.queue.pop_front() {
                         Poll::Ready(Some(v))
@@ -337,8 +393,13 @@ pub mod oneshot {
     struct State<T> { value: Option<T>, waker: Option<Waker>, closed: bool }
 
     pub struct Sender<T> { shared: Arc<StdMutex<State<T>>> }
+
     impl<T> Sender<T> {
         pub fn send(self, t: T) -> Result<(), T> {
+            if chaos::should_fail(ChaosOperation::OneshotSend) {
+                return Err(t);
+            }
+
             let mut s = self.shared.lock().unwrap();
             if s.closed { return Err(t); }
             s.value = Some(t);
@@ -351,6 +412,10 @@ pub mod oneshot {
     impl<T> Future for Receiver<T> {
         type Output = Result<T, ()>; // Error type simplified
         fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            if chaos::should_fail(ChaosOperation::OneshotRecv) {
+                return Poll::Ready(Err(()));
+            }
+
             let mut s = self.shared.lock().unwrap();
             if let Some(v) = s.value.take() {
                 Poll::Ready(Ok(v))

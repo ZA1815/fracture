@@ -1,15 +1,20 @@
 use core::fmt;
 use std::collections::{HashMap, VecDeque};
-use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
 use std::future::Future;
+use std::io::{Error, ErrorKind, Result};
+use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
-use std::io::{Result, Error, ErrorKind};
+use std::time::Duration;
+
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use futures::TryFutureExt;
+
+use crate::chaos::{self, ChaosOperation};
 use crate::io::{AsyncRead, AsyncWrite, ReadBuf};
 use crate::runtime::Handle;
+use crate::time::sleep;
 
 const DEFAULT_TCP_WINDOW_SIZE: usize = 65535;
 
@@ -85,8 +90,30 @@ impl TcpStream {
     }
 
     pub async fn connect(addr: SocketAddr) -> Result<Self> {
+        if chaos::should_fail(ChaosOperation::TcpConnect) {
+            return Err(Error::new(
+                ErrorKind::ConnectionRefused,
+                "fracture: Connection failed (chaos)",
+            ));
+        }
+
         let handle = Handle::current();
         let core_rc = handle.core.upgrade().ok_or_else(|| Error::new(ErrorKind::Other, "fracture: Runtime dropped"))?;
+
+        let local_addr = SocketAddr::from(([127, 0, 0, 1], 10000 + (rand::random::<u16>() % 50000)));
+
+        let local_addr_str = local_addr.to_string();
+        let peer_addr_str = addr.to_string();
+
+        if chaos::is_partitioned(&local_addr_str, &peer_addr_str) {
+            if chaos::should_fail(ChaosOperation::NetworkPartition) {
+                sleep(Duration::from_secs(60)).await;
+                return Err(Error::new(
+                    ErrorKind::TimedOut,
+                    "fracture: Connection timed out (partition)",
+                ));
+            }
+        }
 
         let listener_tx = {
             let core = core_rc.borrow();
@@ -95,10 +122,13 @@ impl TcpStream {
 
         let listener_tx = listener_tx.ok_or_else(|| Error::new(ErrorKind::ConnectionRefused, "fracture: Connection refused"))?;
 
+        let delay = chaos::get_delay(&peer_addr_str).unwrap_or(Duration::ZERO);
+        if !delay.is_zero() {
+            sleep(delay).await;
+        }
+        
         let (tx1, rx1) = channel(DEFAULT_TCP_WINDOW_SIZE);
         let (tx2, rx2) = channel(DEFAULT_TCP_WINDOW_SIZE);
-
-        let local_addr = SocketAddr::from(([127, 0, 0, 1], 10000 + (rand::random::<u16>() % 50000)));
 
         let server_conn = TcpConnection {
             remote_addr: local_addr,
@@ -132,6 +162,19 @@ impl AsyncRead for TcpStream {
         cx: &mut Context<'_>,
         mut buf: &mut ReadBuf<'_>
     ) -> Poll<Result<()>> {
+        if chaos::should_fail(ChaosOperation::TcpRead) {
+            return Poll::Ready(Err(Error::new(
+                ErrorKind::BrokenPipe,
+                "fracture: Read failed (chaos)",
+            )));
+        }
+
+        let local = self.local_addr.to_string();
+        let remote = self.peer_addr.to_string();
+        if chaos::is_partitioned(&remote, &local) {
+            return Poll::Pending;
+        }
+
         if !self.read_buffer.is_empty() {
             let to_copy = std::cmp::min(buf.remaining(), self.read_buffer.len());
             buf.put_slice(&self.read_buffer[..to_copy]);
@@ -164,15 +207,39 @@ impl AsyncWrite for TcpStream {
         cx: &mut Context<'_>,
         buf: &[u8]
     ) -> Poll<Result<usize>> {
+        if chaos::should_fail(ChaosOperation::TcpWrite) {
+            return Poll::Ready(Err(Error::new(
+                ErrorKind::BrokenPipe,
+                "fracture: Write failed (chaos)",
+            )));
+        }
+
+        let local = self.local_addr.to_string();
+        let remote = self.peer_addr.to_string();
+
+        if chaos::should_drop_packet(&remote) {
+            return Poll::Ready(Ok(buf.len()));
+        }
+
+        if chaos::is_partitioned(&local, &remote) {
+            // Simulate a timeout/error later
+            return Poll::Ready(Ok(buf.len()));
+        }
+
         if let Poll::Pending = self.tx.poll_reserve(cx, buf.len()) {
             return Poll::Pending;
         }
 
+        let delay = chaos::get_delay(&remote).unwrap_or(Duration::ZERO);
+
         let bytes = Bytes::copy_from_slice(buf);
 
-        match self.tx.send(bytes) {
+        match self.tx.try_send_delayed(bytes, delay) {
             Ok(_) => Poll::Ready(Ok(buf.len())),
-            Err(TrySendError::Closed(_)) => Poll::Ready(Err(Error::new(ErrorKind::BrokenPipe, "fracture: Connection reset"))),
+            Err(TrySendError::Closed(_)) => Poll::Ready(Err(Error::new(
+                ErrorKind::BrokenPipe,
+                "fracture: Connection reset",
+            ))),
             Err(TrySendError::Full(_)) => {
                 cx.waker().wake_by_ref();
                 Poll::Pending
@@ -214,8 +281,13 @@ impl<T> fmt::Display for TrySendError<T> {
     }
 }
 
+struct Envelope<T> {
+    data: T,
+    arrival_time: Duration
+}
+
 struct ChannelState<T> {
-    queue: VecDeque<T>,
+    queue: VecDeque<Envelope<T>>,
     capacity: usize,
     current_size: usize,
     closed: bool,
@@ -291,6 +363,53 @@ impl<T: Buf + Send> Sender<T> {
         Ok(())
     }
 
+    pub fn try_send(&self, item: T) -> std::result::Result<(), TrySendError<T>> {
+        self.try_send_delayed(item, Duration::ZERO)
+    }
+
+    pub fn try_send_delayed(
+        &self,
+        item: T,
+        delay: Duration,
+    ) -> std::result::Result<(), TrySendError<T>> {
+        let mut s = self.state.lock().unwrap();
+        if s.closed {
+            return Err(TrySendError::Closed(item));
+        }
+
+        let len = item.remaining();
+        if s.current_size + len > s.capacity && s.current_size > 0 {
+            return Err(TrySendError::Full(item));
+        }
+
+        let handle = Handle::current();
+        let core_rc = handle.core.upgrade().expect("fracture: Runtime dropped");
+        let now = core_rc.borrow().current_time;
+        let arrival_time = now + delay;
+
+        let envelope = Envelope {
+            data: item,
+            arrival_time,
+        };
+
+        // Optimization: if queue is empty or last item arrives before this one, push back.
+        let insert_idx =
+            if s.queue.is_empty() || s.queue.back().unwrap().arrival_time <= arrival_time {
+                s.queue.len()
+            } else {
+                s.queue.partition_point(|e| e.arrival_time <= arrival_time)
+            };
+
+        s.queue.insert(insert_idx, envelope);
+        s.current_size += len;
+
+        if let Some(w) = s.recv_waiters.pop_front() {
+            w.wake();
+        }
+
+        Ok(())
+    }
+
     pub fn close(&self) {
         let mut s = self.state.lock().unwrap();
         s.closed = true;
@@ -324,19 +443,40 @@ impl<T: Buf + Send> AsyncReceiver<T> {
     pub fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Option<T>> {
         let mut s = self.state.lock().unwrap();
 
-        if let Some(item) = s.queue.pop_front() {
-            s.current_size -= item.remaining();
+        let handle = Handle::current();
+        let core_rc = handle.core.upgrade().expect("fracture: Runtime dropped");
+        let now = core_rc.borrow().current_time;
 
-            if let Some(w) = s.send_waiters.pop_front() {
-                w.wake();
+        if let Some(envelope) = s.queue.front() {
+            if envelope.arrival_time <= now {
+                let envelope = s.queue.pop_front().unwrap();
+                s.current_size -= envelope.data.remaining();
+
+                if let Some(w) = s.send_waiters.pop_front() {
+                    w.wake();
+                }
+
+                return Poll::Ready(Some(envelope.data));
             }
+            else {
+                let waker = cx.waker().clone();
+                drop(s);
 
-            Poll::Ready(Some(item))
+                let mut core = core_rc.borrow_mut();
+                let entry = crate::runtime::core::TimerEntry {
+                    deadline: envelope.arrival_time,
+                    waker: waker,
+                    id: core.rng.rand_u64() as usize
+                };
+                core.timers.push(entry);
+
+                return Poll::Pending;
+            }
         }
-        else if s.closed {
+
+        if s.closed {
             Poll::Ready(None)
-        }
-        else {
+        } else {
             s.recv_waiters.push_back(cx.waker().clone());
             Poll::Pending
         }
