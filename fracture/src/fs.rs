@@ -5,9 +5,20 @@ use std::io::{self, Result, Error, ErrorKind, SeekFrom};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::SystemTime;
+use std::time::Duration;
 
 use crate::io::{AsyncRead, AsyncWrite, AsyncSeek, ReadBuf};
 use crate::runtime::Handle;
+use crate::chaos::{self, ChaosOperation};
+use crate::time::sleep;
+
+async fn simulate_io_latency() {
+    if let Some(delay) = chaos::get_delay("disk_io") {
+        sleep(delay).await;
+    } else {
+        sleep(Duration::from_micros(10)).await;
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FileType {
@@ -100,11 +111,12 @@ struct FileEntry {
     readonly: bool,
     created: SystemTime,
     modified: SystemTime,
-    accessed: SystemTime
+    accessed: SystemTime,
+    inode: u64
 }
 
 impl FileEntry {
-    fn new_file(now: SystemTime) -> Self {
+    fn new_file(now: SystemTime, inode: u64) -> Self {
         Self {
             content: Vec::new(),
             file_type: FileType { is_dir: false, is_file: true, is_symlink: false },
@@ -112,10 +124,12 @@ impl FileEntry {
             created: now,
             modified: now,
             accessed: now,
+            inode
+
         }
     }
 
-    fn new_dir(now: SystemTime) -> Self {
+    fn new_dir(now: SystemTime, inode: u64) -> Self {
         Self {
             content: Vec::new(),
             file_type: FileType { is_dir: true, is_file: false, is_symlink: false },
@@ -123,17 +137,28 @@ impl FileEntry {
             created: now,
             modified: now,
             accessed: now,
+            inode
         }
     }
 }
 
 pub struct FileSystemState {
     files: HashMap<PathBuf, Arc<Mutex<FileEntry>>>,
+    next_inode: u64
 }
 
 impl FileSystemState {
     pub fn new() -> Self {
-        Self { files: HashMap::new() }
+        Self {
+            files: HashMap::new(),
+            next_inode: 1
+        }
+    }
+
+    fn assign_inode(&mut self) -> u64 {
+        let id = self.next_inode;
+        self.next_inode += 1;
+        id
     }
 }
 
@@ -154,23 +179,42 @@ impl File {
         OpenOptions::new().write(true).create(true).truncate(true).open(path).await
     }
 
-    pub async fn sync_all(&self) -> Result<()> { 
-        // In memory, it's always synced
+    pub async fn sync_all(&self) -> Result<()> {
+        if chaos::should_fail(ChaosOperation::FsSyncAll) {
+             return Err(Error::new(ErrorKind::Other, "fracture: SyncAll failed (chaos)"));
+        }
+        simulate_io_latency().await;
+
         Ok(()) 
     }
 
-    pub async fn sync_data(&self) -> Result<()> { 
+    pub async fn sync_data(&self) -> Result<()> {
+        if chaos::should_fail(ChaosOperation::FsSyncData) {
+             return Err(Error::new(ErrorKind::Other, "fracture: SyncData failed (chaos)"));
+        }
+        simulate_io_latency().await;
+
         Ok(()) 
     }
 
     pub async fn set_len(&self, size: u64) -> Result<()> {
+        if chaos::should_fail(ChaosOperation::FsTruncate) {
+            return Err(Error::new(ErrorKind::Other, "fracture: Truncate failed (chaos)"));
+        }
+
         if !self.can_write {
             return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Not opened for write"));
         }
 
+        simulate_io_latency().await;
+
         let mut locked = self.entry.lock().unwrap();
         if locked.readonly {
             return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Read-only file"))
+        }
+
+        if size > locked.content.len() as u64 && chaos::should_fail(ChaosOperation::FsQuotaExceeded) {
+            return Err(Error::new(ErrorKind::Other, "fracture: No space left on device (chaos)"));
         }
 
         locked.content.resize(size as usize, 0);
@@ -185,6 +229,11 @@ impl File {
     }
 
     pub async fn metadata(&self) -> Result<Metadata> {
+        if chaos::should_fail(ChaosOperation::FsMetadata) {
+            return Err(Error::new(ErrorKind::Other, "fracture: Metadata failed (chaos)"));
+        }
+        simulate_io_latency().await;
+
         let locked = self.entry.lock().unwrap();
 
         Ok(Metadata {
@@ -208,6 +257,11 @@ impl File {
     }
 
     pub async fn set_permissions(&self, perm: Permissions) -> Result<()> {
+        if chaos::should_fail(ChaosOperation::FsSetPermissions) {
+             return Err(Error::new(ErrorKind::PermissionDenied, "fracture: SetPermissions failed (chaos)"));
+        }
+        simulate_io_latency().await;
+
         let mut locked = self.entry.lock().unwrap();
         locked.readonly = perm.readonly();
 
@@ -238,21 +292,36 @@ impl OpenOptions {
     }
 
     pub async fn open<P: AsRef<Path>>(&self, path: P) -> Result<File> {
+        if chaos::should_fail(ChaosOperation::FsOpen) {
+            return Err(Error::new(ErrorKind::Other, "fracture: Open failed (chaos)"));
+        }
+
         let path = path.as_ref().to_path_buf();
+        simulate_io_latency().await;
+
         let handle = Handle::current();
         let core_rc = handle.core.upgrade().ok_or_else(|| Error::new(ErrorKind::Other, "fracture: Runtime dropped"))?;
         let mut core = core_rc.borrow_mut();
 
         let now = core.sys_now();
-
         let exists = core.fs.files.contains_key(&path);
 
         if self.create_new && exists {
+            if chaos::should_fail(ChaosOperation::FsAlreadyExists) {
+                return Err(Error::new(ErrorKind::AlreadyExists, "fracture: File exists (chaos)"));
+            }
             return Err(Error::new(ErrorKind::AlreadyExists, "fracture: File exists"));
         }
 
         if !exists && !self.create && !self.create_new {
+            if chaos::should_fail(ChaosOperation::FsNotFound) {
+                 return Err(Error::new(ErrorKind::NotFound, "fracture: File not found (chaos)"));
+            }
             return Err(Error::new(ErrorKind::NotFound, "fracture: File not found"));
+        }
+
+        if chaos::should_fail(ChaosOperation::FsPermissionDenied) {
+            return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Permission denied (chaos)"));
         }
 
         let entry_ref = if exists {
@@ -280,8 +349,16 @@ impl OpenOptions {
                 if !parent.as_os_str().is_empty() && !core.fs.files.contains_key(parent) {
                     return Err(Error::new(ErrorKind::NotFound, "fracture: Parent directory not found"));
                 }
+                
+                let inode = core.fs.assign_inode();
+                let entry = Arc::new(Mutex::new(FileEntry::new_file(now, inode)));
+                core.fs.files.insert(path.clone(), entry.clone());
 
-                let entry = Arc::new(Mutex::new(FileEntry::new_file(now)));
+                entry
+            }
+            else {
+                let inode = core.fs.assign_inode();
+                let entry = Arc::new(Mutex::new(FileEntry::new_file(now, inode)));
                 core.fs.files.insert(path.clone(), entry.clone());
 
                 entry
@@ -337,6 +414,10 @@ impl OpenOptions {
 
 impl AsyncRead for File {
     fn poll_read(self: Pin<&mut Self>, _cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<Result<()>> {
+        if chaos::should_fail(ChaosOperation::FsRead) {
+             return Poll::Ready(Err(Error::new(ErrorKind::Other, "fracture: Read failed (chaos)")));
+        }
+
         if !self.can_read {
             return Poll::Ready(Err(Error::new(ErrorKind::PermissionDenied, "fracture: Not opened for reading")));
         }
@@ -355,9 +436,33 @@ impl AsyncRead for File {
             return Poll::Ready(Ok(()))
         }
 
+        let max_read = if chaos::should_fail(ChaosOperation::IoPartialRead) {
+            1.max(buf.remaining() / 2)
+        }
+        else {
+            buf.remaining()
+        };
+
         let available = &locked.content[pos..];
         let to_copy = std::cmp::min(available.len(), buf.remaining());
-        buf.put_slice([&available]..to_copy);
+
+        if chaos::should_fail(ChaosOperation::FsCorruption) {
+            let mut garbage = vec![0u8; to_copy];
+            
+            if let Some(core_rc) = handle.core.upgrade() {
+                let mut core = core_rc.borrow_mut();
+                core.rng.fill_bytes(&mut garbage);
+            }
+            else {
+                garbage.fill(0xAA); 
+            }
+            
+            buf.put_slice(&garbage);
+        }
+        else {
+            buf.put_slice(&available[..to_copy]);
+        }
+
         self.cursor += to_copy as u64;
 
         Poll::Ready(Ok(()))
@@ -366,6 +471,14 @@ impl AsyncRead for File {
 
 impl AsyncWrite for File {
     fn poll_write(mut self: Pin<&mut Self>, _cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize>> {
+        if chaos::should_fail(ChaosOperation::FsWrite) {
+             return Poll::Ready(Err(Error::new(ErrorKind::Other, "fracture: Write failed (chaos)")));
+        }
+
+        if chaos::should_fail(ChaosOperation::FsQuotaExceeded) {
+             return Poll::Ready(Err(Error::new(ErrorKind::Other, "fracture: Disk quota exceeded (chaos)")));
+        }
+
         if !self.can_write {
             return Poll::Ready(Err(Error::new(ErrorKind::PermissionDenied, "fracture: Not opened for writing")));
         }
@@ -382,6 +495,12 @@ impl AsyncWrite for File {
             locked.content.resize(pos, 0);
         }
 
+        let to_write_len = if chaos::should_fail(ChaosOperation::IoPartialWrite) && buf.len() > 1 {
+             1.max(buf.len() / 2)
+        } else {
+             buf.len()
+        };
+
         let end = pos + buf.len();
         if end > locked.content.len() {
             locked.content.resize(end, 0);
@@ -394,6 +513,10 @@ impl AsyncWrite for File {
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
+        if chaos::should_fail(ChaosOperation::FsSync) {
+             return Poll::Ready(Err(Error::new(ErrorKind::Other, "fracture: Flush failed (chaos)")));
+        }
+
         Poll::Ready(Ok(()))
     }
 
@@ -404,6 +527,10 @@ impl AsyncWrite for File {
 
 impl AsyncSeek for File {
     fn start_seek(mut self: Pin<&mut Self>, position: io::SeekFrom) -> Result<()> {
+        if chaos::should_fail(ChaosOperation::FsSeek) {
+             return Err(Error::new(ErrorKind::Other, "fracture: Seek failed (chaos)"));
+        }
+
         let len = self.entry.lock().unwrap().content.len() as u64;
         let new_pos = match position {
             SeekFrom::Start(n) => n,
@@ -456,6 +583,11 @@ impl ReadDir {
 }
 
 pub async fn read_dir<P: AsRef<Path>>(path: P) -> Result<ReadDir> {
+    if chaos::should_fail(ChaosOperation::FsReadDir) {
+         return Err(Error::new(ErrorKind::Other, "fracture: ReadDir failed (chaos)"));
+    }
+    simulate_io_latency().await;
+
     let path = path.as_ref().to_path_buf();
     let handle = Handle::current();
     let core = handle.core.upgrade().ok_or(Error::new(ErrorKind::Other, "fracture: Runtime dropped"))?;
@@ -491,10 +623,19 @@ pub async fn read_dir<P: AsRef<Path>>(path: P) -> Result<ReadDir> {
 }
 
 pub async fn create_dir<P: AsRef<Path>>(path: P) -> Result<()> {
+    if chaos::should_fail(ChaosOperation::FsCreateDir) {
+         return Err(Error::new(ErrorKind::Other, "fracture: CreateDir failed (chaos)"));
+    }
+    simulate_io_latency().await;
+
     let path = path.as_ref().to_path_buf();
     let handle = Handle::current();
     let core_rc = handle.core.upgrade().unwrap();
     let mut core = core_rc.borrow_mut();
+
+    if chaos::should_fail(ChaosOperation::FsPermissionDenied) {
+        return Err(Error::new(ErrorKind::PermissionDenied, "fracture: Permission denied (chaos)"));
+    }
     
     if core.fs.files.contains_key(&path) {
         return Err(Error::new(ErrorKind::AlreadyExists, "fracture: File exists"));
@@ -504,8 +645,10 @@ pub async fn create_dir<P: AsRef<Path>>(path: P) -> Result<()> {
              return Err(Error::new(ErrorKind::NotFound, "fracture: Parent directory not found"));
         }
     }
+
     let now = core.sys_now();
-    let entry = Arc::new(Mutex::new(FileEntry::new_dir(now)));
+    let inode = core.fs.assign_inode();
+    let entry = Arc::new(Mutex::new(FileEntry::new_dir(now, inode)));
     core.fs.files.insert(path, entry);
     Ok(())
 }
@@ -532,6 +675,11 @@ pub async fn create_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
 }
 
 pub async fn remove_file<P: AsRef<Path>>(path: P) -> Result<()> {
+    if chaos::should_fail(ChaosOperation::FsRemoveFile) {
+         return Err(Error::new(ErrorKind::Other, "fracture: RemoveFile failed (chaos)"));
+    }
+    simulate_io_latency().await;
+
     let handle = Handle::current();
     let mut core = handle.core.upgrade().unwrap().borrow_mut();
     let path = path.as_ref();
@@ -548,6 +696,11 @@ pub async fn remove_file<P: AsRef<Path>>(path: P) -> Result<()> {
 }
 
 pub async fn remove_dir<P: AsRef<Path>>(path: P) -> Result<()> {
+    if chaos::should_fail(ChaosOperation::FsRemoveDir) {
+         return Err(Error::new(ErrorKind::Other, "fracture: RemoveDir failed (chaos)"));
+    }
+    simulate_io_latency().await;
+
     let handle = Handle::current();
     let mut core = handle.core.upgrade().unwrap().borrow_mut();
     let path = path.as_ref();
@@ -570,6 +723,11 @@ pub async fn remove_dir<P: AsRef<Path>>(path: P) -> Result<()> {
 }
 
 pub async fn rename<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<()> {
+    if chaos::should_fail(ChaosOperation::FsRename) {
+         return Err(Error::new(ErrorKind::Other, "fracture: Rename failed (chaos)"));
+    }
+    simulate_io_latency().await;
+
     let handle = Handle::current();
     let mut core = handle.core.upgrade().unwrap().borrow_mut();
     let entry = core.fs.files.remove(from.as_ref()).ok_or(Error::new(ErrorKind::NotFound, "fracture: File not found"))?;
@@ -579,13 +737,23 @@ pub async fn rename<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<()
 }
 
 pub async fn copy<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<u64> {
+    if chaos::should_fail(ChaosOperation::FsCopy) {
+         return Err(Error::new(ErrorKind::Other, "fracture: Copy failed (chaos)"));
+    }
     let content = read(&from).await?;
+    simulate_io_latency().await;
+
     write(&to, &content).await?;
 
     Ok(content.len() as u64)
 }
 
 pub async fn hard_link<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
+    if chaos::should_fail(ChaosOperation::FsHardLink) {
+         return Err(Error::new(ErrorKind::Other, "fracture: HardLink failed (chaos)"));
+    }
+    simulate_io_latency().await;
+
     let handle = Handle::current();
     let mut core = handle.core.upgrade().unwrap().borrow_mut();
     let entry = core.fs.files.get(original.as_ref())
@@ -600,6 +768,11 @@ pub async fn hard_link<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> 
 }
 
 pub async fn metadata<P: AsRef<Path>>(path: P) -> Result<Metadata> {
+    if chaos::should_fail(ChaosOperation::FsMetadata) {
+         return Err(Error::new(ErrorKind::Other, "fracture: Metadata failed (chaos)"));
+    }
+    simulate_io_latency().await;
+
     let path = path.as_ref().to_path_buf();
     let handle = Handle::current();
     let core_rc = handle.core.upgrade().ok_or(Error::new(ErrorKind::Other, "fracture: Runtime dropped"))?;
@@ -618,6 +791,11 @@ pub async fn metadata<P: AsRef<Path>>(path: P) -> Result<Metadata> {
 }
 
 pub async fn set_permissions<P: AsRef<Path>>(path: P, perm: Permissions) -> Result<()> {
+    if chaos::should_fail(ChaosOperation::FsSetPermissions) {
+         return Err(Error::new(ErrorKind::Other, "fracture: SetPermissions failed (chaos)"));
+    }
+    simulate_io_latency().await;
+
     let path = path.as_ref().to_path_buf();
     let handle = Handle::current();
     let core_rc = handle.core.upgrade().ok_or(Error::new(ErrorKind::Other, "Runtime dropped"))?;
@@ -630,6 +808,10 @@ pub async fn set_permissions<P: AsRef<Path>>(path: P, perm: Permissions) -> Resu
 }
 
 pub async fn canonicalize<P: AsRef<Path>>(path: P) -> Result<PathBuf> {
+    if chaos::should_fail(ChaosOperation::FsCanonical) {
+         return Err(Error::new(ErrorKind::Other, "fracture: Canonicalize failed (chaos)"));
+    }
+
     let path = path.as_ref();
 
     if path.is_absolute() {
@@ -649,6 +831,10 @@ pub async fn read_link<P: AsRef<Path>>(_path: P) -> Result<PathBuf> {
 }
 
 pub async fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(_original: P, _link: Q) -> Result<()> {
+    if chaos::should_fail(ChaosOperation::FsSymlink) {
+         return Err(Error::new(ErrorKind::Other, "fracture: Symlink failed (chaos)"));
+    }
+    
     Err(Error::new(ErrorKind::Unsupported, "Symlinks not supported in simulation")) // Placeholder
 }
 
