@@ -1,75 +1,72 @@
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
+use rand::Rng;
 
 use crate::chaos::{self, ChaosOperation};
+use crate::runtime::Handle;
+use crate::runtime::task::TaskId;
+use crate::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
+use crate::sync::oneshot;
+use crate::time::sleep;
 
 pub fn spawn<F>(future: F) -> JoinHandle<F::Output>
 where F: Future + Send + 'static, F::Output: Send + 'static {
     if chaos::should_fail(ChaosOperation::TaskSpawn) {
         return JoinHandle {
-            inner: None,
-            chaos_state: JoinHandleChaos::AlwaysFail
+            rx: None,
+            chaos_state: JoinHandleChaos::AlwaysFail,
+            task_id: None
         };
     }
 
-    if chaos::should_fail(ChaosOperation::TaskScheduleDelay) {
-        let delayed_future = async move {
-            tokio::time::sleep(Duration::from_millis(rand::random::<u64>() % 100)).await;
-            future.await
-        };
+    let (tx, rx) = oneshot::channel();
 
-        return JoinHandle {
-            inner: Some(tokio::task::spawn(delayed_future)),
-            chaos_state: JoinHandleChaos::None
-        };
-    }
+    let wrapped_future = async move {
+        if chaos::should_fail(ChaosOperation::TaskScheduleDelay) {
+            let delay = {
+                let handle = Handle::current();
+                let core_rc = handle.core.upgrade().expect("fracture: Runtime dropped");
+                let mut core = core_rc.borrow_mut();
+                let ms = core.rng.gen_range(1..100);
 
-    if chaos::should_fail(ChaosOperation::TaskPanic) {
-        let panic_future = async move {
-            let result = future.await;
-            panic!("fracture: Task panic (chaos)");
-            #[allow(unreachable_code)]
-            result
-        };
+                Duration::from_millis(ms)
+            };
 
-        return JoinHandle {
-            inner: Some(tokio::task::spawn(panic_future)),
-            chaos_state: JoinHandleChaos::None
-        };
-    }
+            sleep(delay).await;
+        }
 
-    if chaos::should_fail(ChaosOperation::TaskDeadlock) {
-        let deadlock_future = async move {
-            std::future::pending::<()>().await;
-            #[allow(unreachable_code)]
-            future.await
-        };
-
-        return JoinHandle {
-            inner: Some(tokio::task::spawn(deadlock_future)),
-            chaos_state: JoinHandleChaos::None
-        };
-    }
-
-    if chaos::should_fail(ChaosOperation::TaskStarvation) {
-        let starved_future = async move {
+        if chaos::should_fail(ChaosOperation::TaskStarvation) {
             for _ in 0..10 {
-                tokio::task::yield_now().await;
+                yield_now().await;
             }
-            future.await
-        };
+        }
 
-        return JoinHandle {
-            inner: Some(tokio::task::spawn(starved_future)),
-            chaos_state: JoinHandleChaos::None
-        };
-    }
+        if chaos::should_fail(ChaosOperation::TaskPanic) {
+            panic!("fracture: Task panic injected (chaos)");
+        }
+
+        if chaos::should_fail(ChaosOperation::TaskDeadlock) {
+            std::future::pending::<()>().await;
+        }
+
+        let output = future.await;
+        
+        tx.send(output);
+    };
+
+    let handle = Handle::current();
+    let core_rc = handle.core.upgrade().expect("fracture: Runtime dropped");
+    let mut core = core_rc.borrow_mut();
+
+    let id = core.spawn(wrapped_future);
 
     JoinHandle {
-        inner: Some(tokio::task::spawn(future)),
-        chaos_state: JoinHandleChaos::None
+        rx: Some(rx),
+        chaos_state: JoinHandleChaos::None,
+        task_id: Some(id)
     }
 }
 
@@ -77,14 +74,29 @@ pub fn spawn_local<F>(future: F) -> JoinHandle<F::Output>
 where F: Future + 'static, F::Output: 'static {
     if chaos::should_fail(ChaosOperation::TaskSpawnLocal) {
         return JoinHandle {
-            inner: None,
-            chaos_state: JoinHandleChaos::AlwaysFail
+            rx: None,
+            chaos_state: JoinHandleChaos::AlwaysFail,
+            task_id: None
         };
     }
 
+    let (tx, rx) = oneshot::channel();
+
+    let wrapped_future = async move {
+        let output = future.await;
+        tx.send(output);
+    };
+
+    let handle = Handle::current();
+    let core_rc = handle.core.upgrade().expect("fracture: Runtime dropped");
+    let mut core = core_rc.borrow_mut();
+
+    let id = core.spawn(wrapped_future);
+
     JoinHandle {
-        inner: Some(tokio::task::spawn_local(future)),
-        chaos_state: JoinHandleChaos::None
+        rx: Some(rx),
+        chaos_state: JoinHandleChaos::None,
+        task_id: Some(id)
     }
 }
 
@@ -92,39 +104,55 @@ pub fn spawn_blocking<F, R>(f: F) -> JoinHandle<R>
 where F: FnOnce() -> R + Send + 'static, R: Send + 'static {
     if chaos::should_fail(ChaosOperation::TaskSpawnBlocking) {
         return JoinHandle {
-            inner: None,
-            chaos_state: JoinHandleChaos::AlwaysFail
+            rx: None,
+            chaos_state: JoinHandleChaos::AlwaysFail,
+            task_id: None
         };
     }
 
-    if chaos::should_fail(ChaosOperation::ThreadPoolExhaustion) {
-        let delayed_fn = move || {
-            std::thread::sleep(Duration::from_secs(10));
-            f()
-        };
+    let (tx, rx) = oneshot::channel();
 
-        return JoinHandle {
-            inner: Some(tokio::task::spawn_blocking(delayed_fn)),
-            chaos_state: JoinHandleChaos::None
-        };
+    std::thread::spawn(move || {
+        if chaos::should_fail(ChaosOperation::ThreadPoolExhaustion) {
+            std::thread::sleep(Duration::from_secs(1));
+        }
+
+        let result = f();
+        tx.send(result);
+    });
+
+    JoinHandle {
+        rx: Some(rx),
+        chaos_state: JoinHandleChaos::None,
+        task_id: None
+    }
+}
+
+pub async fn yield_now() {
+    if chaos::should_fail(ChaosOperation::TaskYieldNever) {
+        return;
     }
 
-    if chaos::should_fail(ChaosOperation::TaskBlock) {
-        let blocking_fn = move || {
-            std::thread::sleep(Duration::from_secs(60));
-            f()
-        };
+    struct YieldNow {
+        yielded: bool
+    }
 
-        return JoinHandle {
-            inner: Some(tokio::task::spawn_blocking(blocking_fn)),
-            chaos_state: JoinHandleChaos::None
+    impl Future for YieldNow {
+        type Output = ();
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            if self.yielded {
+                Poll::Ready(())
+            }
+            else {
+                self.yielded = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
         }
     }
 
-    JoinHandle {
-        inner: Some(tokio::task::spawn_blocking(f)),
-        chaos_state: JoinHandleChaos::None
-    }
+    YieldNow { yielded: false }.await;
 }
 
 pub fn block_in_place<F, R>(f: F) -> R
@@ -133,36 +161,13 @@ where F: FnOnce() -> R {
         std::thread::sleep(Duration::from_secs(1));
     }
 
-    tokio::task::block_in_place(f)
-}
-
-pub async fn yield_now() {
-    if chaos::should_fail(ChaosOperation::TaskYieldNever) {
-        return;
-    }
-
-    if chaos::should_fail(ChaosOperation::TaskYield) {
-        for _ in 0..5 {
-            tokio::task::yield_now().await;
-        }
-
-        return;
-    }
-
-    if chaos::should_fail(ChaosOperation::TaskStarvation) {
-        for _ in 0..100 {
-            tokio::task::yield_now().await;
-        }
-
-        return;
-    }
-
-    tokio::task::yield_now().await;
+    f()
 }
 
 pub struct JoinHandle<T> {
-    pub inner: Option<tokio::task::JoinHandle<T>>,
-    pub chaos_state: JoinHandleChaos
+    rx: Option<oneshot::Receiver<T>>,
+    chaos_state: JoinHandleChaos,
+    task_id: Option<crate::runtime::task::TaskId>
 }
 
 pub enum JoinHandleChaos {
@@ -178,8 +183,13 @@ impl<T> JoinHandle<T> {
             return;
         }
 
-        if let Some(ref inner) = self.inner {
-            inner.abort();
+        if let Some(id) = self.task_id {
+            let handle = Handle::current();
+            if let Some(core_rc) = handle.core.upgrade() {
+                let mut core = core_rc.borrow_mut();
+                // Implement a remove/abort in Core
+                core.tasks.remove(id.0);
+            }
         }
     }
 
@@ -188,19 +198,12 @@ impl<T> JoinHandle<T> {
             return true;
         }
 
-        self.inner.as_ref().map(|h| h.is_finished()).unwrap_or(true)
+        // Need a shared atomic flag
+        false
     }
 
-    pub async fn cancel(self) -> Option<T> {
-        if let Some(inner) = self.inner {
-            match inner.await {
-                Ok(value) => Some(value),
-                Err(_) => None
-            }
-        }
-        else {
-            None
-        }
+    pub fn id(&self) -> Option<TaskId> {
+        self.task_id
     }
 }
 
@@ -225,25 +228,15 @@ impl<T> Future for JoinHandle<T> {
             return Poll::Ready(Err(JoinError::Cancelled));
         }
 
-        if chaos::should_fail(ChaosOperation::TaskJoinTimeout) {
-            return Poll::Pending;
-        }
-
-        if let Some(ref mut inner) = self.inner {
-            Pin::new(inner).poll(cx).map(|result| result.map_err(|e| {
-                if e.is_cancelled() {
-                    JoinError::Cancelled
+        match self.rx.as_mut() {
+            Some(rx) => {
+                match Pin::new(rx).poll(cx) {
+                    Poll::Ready(Ok(val)) => Poll::Ready(Ok(val)),
+                    Poll::Ready(Err(_)) => Poll::Ready(Err(JoinError::Cancelled)),
+                    Poll::Pending => Poll::Pending
                 }
-                else if e.is_panic() {
-                    JoinError::Panic
-                }
-                else {
-                    JoinError::Cancelled
-                }
-            }))
-        }
-        else {
-            Poll::Ready(Err(JoinError::Cancelled))
+            }
+            None => Poll::Ready(Err(JoinError::Cancelled))
         }
     }
 }
@@ -264,23 +257,28 @@ impl JoinError {
     }
 }
 
-pub struct JoinSet<T> {
-    inner: tokio::task::JoinSet<T>,
-    chaos_state: JoinSetChaos
+impl std::fmt::Display for JoinError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JoinError::Cancelled => write!(f, "fracture: Task was cancelled"),
+            JoinError::Panic => write!(f, "fracture: Task panicked")
+        }
+    }
 }
 
-struct JoinSetChaos {
-    fail_rate: f32
+impl std::error::Error for JoinError {}
+
+pub struct JoinSet<T> {
+    tasks: HashMap<u64, TaskId>,
+    tx: UnboundedSender<(u64, Result<T, JoinError>)>,
+    rx: UnboundedReceiver<(u64, Result<T, JoinError>)>,
+    next_key: u64
 }
 
 impl<T> JoinSet<T> {
     pub fn new() -> Self {
-        Self {
-            inner: tokio::task::JoinSet::new(),
-            chaos_state: JoinSetChaos {
-                fail_rate: if chaos::should_fail(ChaosOperation::JoinError) { 0.1 } else { 0.0 }
-            }
-        }
+        let (tx, rx) = unbounded();
+        Self { tasks: HashMap::new(), tx, rx, next_key: 0 }
     }
 
     pub fn spawn<F>(&mut self, task: F)
@@ -289,134 +287,64 @@ impl<T> JoinSet<T> {
             return;
         }
 
-        if self.chaos_state.fail_rate > 0.0 && rand::random::<f32>() < self.chaos_state.fail_rate {
-            let failing_task = async move {
-                panic!("fracture: JoinSet task panic (chaos)");
-            };
-            self.inner.spawn(failing_task);
-            return;
+        let handle = spawn(task);
+
+        let key = self.next_key;
+        self.next_key += 1;
+
+        if let Some(task_id) = handle.id() {
+            self.tasks.insert(key, task_id);
         }
 
-        self.inner.spawn(task);
+        let tx = self.tx.clone();
+        spawn(async move {
+            let result = handle.await;
+            tx.send((key, result));
+        });
     }
 
-    pub fn spawn_local<F>(&mut self, task: F)
-    where F: Future<Output = T> + 'static, T: 'static {
-        self.inner.spawn_local(task);
-    }
-
-    pub async fn join_next(&mut self) -> Option<Result<T, JoinError>>
-    where T: 'static {
-        if chaos::should_fail(ChaosOperation::JoinError) {
-            return Some(Err(JoinError::Panic));
+    pub async fn join_next(&mut self) -> Option<Result<T, JoinError>> {
+        if self.tasks.is_empty() {
+            return None;
         }
 
-        self.inner.join_next().await.map(|result| result.map_err(|e| {
-            if e.is_cancelled() {
-                JoinError::Cancelled
+        match self.rx.recv().await {
+            Some((key, result)) => {
+                self.tasks.remove(&key);
+                Some(result)
             }
-            else {
-                JoinError::Panic
+            None => None
+        }
+    }
+
+    pub fn abort_all(&mut self) {
+        for task_id in self.tasks.values() {
+            let handle = Handle::current();
+            if let Some(core_rc) = handle.core.upgrade() {
+                let mut core = core_rc.borrow_mut();
+                if core.tasks.contains(task_id.0) {
+                    core.tasks.remove(task_id.0);
+                }
             }
-        }))
-    }
-
-    pub fn abort_all(&mut self) where T: 'static {
-        self.inner.abort_all();
-    }
-
-    pub fn detatch_all(&mut self) where T: 'static {
-        self.inner.detach_all();
-    }
-
-    pub async fn shutdown(&mut self) where T: 'static {
-        self.inner.shutdown().await;
+        }
     }
 
     pub fn len(&self) -> usize {
-        self.inner.len()
+        self.tasks.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
+        self.tasks.is_empty()
+    }
+    
+    pub fn shutdown(&mut self) {
+        self.abort_all();
     }
 }
 
 impl<T> Default for JoinSet<T> {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-pub struct LocalSet {
-    inner: tokio::task::LocalSet,
-    chaos_enabled: bool
-}
-
-impl LocalSet {
-    pub fn new() -> Self {
-        Self {
-            inner: tokio::task::LocalSet::new(),
-            chaos_enabled: chaos::should_fail(ChaosOperation::LocalSetRun)
-        }
-    }
-
-    pub fn spawn_local<F>(&self, future: F) -> JoinHandle<F::Output>
-    where F: Future + 'static, F::Output: 'static {
-        if self.chaos_enabled {
-            return JoinHandle {
-                inner: None,
-                chaos_state: JoinHandleChaos::AlwaysFail
-            }
-        }
-
-        JoinHandle {
-            inner: Some(self.inner.spawn_local(future)),
-            chaos_state: JoinHandleChaos::None
-        }
-    }
-
-    pub async fn run_until<F>(&self, future: F) -> F::Output
-    where F: Future {
-        if chaos::should_fail(ChaosOperation::LocalSetRun) {
-            std::future::pending::<()>().await;
-        }
-
-        self.inner.run_until(future).await
-    }
-
-    pub fn block_on<F>(&self, future: F) -> F::Output
-    where F: Future {
-        if chaos::should_fail(ChaosOperation::LocalSetRun) {
-            panic!("fracture: LocalSet blocked (chaos)");
-        }
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("fracture: Failed to build runtime");
-
-        self.inner.block_on(&rt, future)
-    }
-}
-
-impl Default for LocalSet {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-pub struct AbortHandle {
-    inner: tokio::task::AbortHandle
-}
-
-impl AbortHandle {
-    pub fn abort(&self) {
-        self.inner.abort();
-    }
-
-    pub fn is_finished(&self) -> bool {
-        self.inner.is_finished()
     }
 }
 
@@ -465,18 +393,37 @@ pub enum TaskPriority {
 }
 
 pub struct LocalKey<T: 'static> {
-    inner: tokio::task::LocalKey<T>
+    pub inner: &'static std::thread::LocalKey<std::cell::RefCell<Option<T>>>,
+    pub init: fn() -> T
 }
 
 impl<T: 'static> LocalKey<T> {
     pub async fn scope<F>(&'static self, value: T, f: F) -> F::Output
     where F: Future {
-        self.inner.scope(value, f).await
+        self.inner.with(|cell| {
+            *cell.borrow_mut() = Some(value);
+        });
+
+        let result = f.await;
+
+        self.inner.with(|cell| {
+            *cell.borrow_mut() = None;
+        });
+
+        result
     }
 
-    pub fn sync_scope<F, R>(&'static self, value: T, f: F) -> R
-    where F: FnOnce() -> R {
-        self.inner.sync_scope(value, f)
+    pub fn with<F, R>(&'static self, f: F) -> R
+    where F: FnOnce(&T) -> R {
+        self.inner.with(|cell| {
+            let borrow = cell.borrow();
+            if let Some(val) = &*borrow {
+                f(val)
+            }
+            else {
+                panic!("fracture: LocalKey accessed outside of scope")
+            }
+        })
     }
 }
 

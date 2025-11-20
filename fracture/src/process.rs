@@ -4,11 +4,11 @@ use std::io::{self, Result};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::{ExitStatus as StdExitStatus, Stdio as StdStdio};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use crate::io::{AsyncRead, AsyncWrite, ReadBuf};
 use parking_lot::RwLock;
 
 use crate::chaos::{self, ChaosOperation};
@@ -70,7 +70,7 @@ struct ProcessState {
     pid: u32,
     status: ProcessStatus,
     exit_code: Option<i32>,
-    start_time: tokio::time::Instant,
+    start_time: crate::time::ChaosInstant,
     command: String,
     args: Vec<String>,
     env: HashMap<String, String>,
@@ -86,7 +86,7 @@ impl ProcessState {
             pid: 0,
             status: ProcessStatus::Running,
             exit_code: None,
-            start_time: tokio::time::Instant::now(),
+            start_time: crate::time::ChaosInstant::now(),
             command,
             args,
             env,

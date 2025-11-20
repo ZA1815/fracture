@@ -4,6 +4,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use pin_project::pin_project;
+use rand::Rng;
 
 use crate::chaos::{self, ChaosOperation};
 use crate::runtime::Handle;
@@ -152,7 +153,7 @@ impl Interval {
             core.timers.push(crate::runtime::core::TimerEntry {
                 deadline: self.next_tick,
                 waker,
-                id: core.rng.rand_u64() as usize,
+                id: core.rng.r#gen() as usize,
             });
             Poll::Pending
         }
