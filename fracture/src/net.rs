@@ -17,14 +17,30 @@ use crate::runtime::Handle;
 use crate::time::sleep;
 
 const DEFAULT_TCP_WINDOW_SIZE: usize = 65535;
+const MAX_UDP_PACKET_SIZE: usize = 65507;
 
 pub(crate) struct NetworkState {
-    listeners: HashMap<SocketAddr, Sender<TcpConnection>>
+    listeners: HashMap<SocketAddr, Sender<TcpConnection>>,
+    udp_sockets: HashMap<SocketAddr, Sender<(Bytes, SocketAddr)>>
 }
 
 impl NetworkState {
     pub fn new() -> Self {
-        Self { listeners: HashMap::new() }
+        Self {
+            listeners: HashMap::new(),
+            udp_sockets: HashMap::new()
+        }
+    }
+
+    pub fn assign_ephemeral_port(&self, core_rng: &mut rand_chacha::ChaCha8Rng) -> u16 {
+        loop {
+             let port = core_rng.gen_range(49152..=65535);
+             // Improve logic here, make more realistic
+             let addr = SocketAddr::from(([127, 0, 0, 1], port));
+             if !self.listeners.contains_key(&addr) && !self.udp_sockets.contains_key(&addr) {
+                 return port;
+             }
+        }
     }
 }
 
@@ -100,7 +116,14 @@ impl TcpStream {
         let handle = Handle::current();
         let core_rc = handle.core.upgrade().ok_or_else(|| Error::new(ErrorKind::Other, "fracture: Runtime dropped"))?;
 
-        let local_addr = SocketAddr::from(([127, 0, 0, 1], 10000 + (rand::random::<u16>() % 50000)));
+        let (local_port, listener_tx) = {
+            let mut core = core_rc.borrow_mut();
+            let port = core.network.assign_ephemeral_port(&mut core.rng);
+            let listener = core.network.listeners.get(&addr).cloned();
+            (port, listener)
+        };
+
+        let local_addr = SocketAddr::from(([127, 0, 0, 1], local_port));
 
         let local_addr_str = local_addr.to_string();
         let peer_addr_str = addr.to_string();
@@ -494,4 +517,87 @@ pub fn channel<T>(capacity: usize) -> (Sender<T>, AsyncReceiver<T>) {
     }));
 
     (Sender { state: state.clone() }, AsyncReceiver { state })
+}
+
+pub struct UdpSocket {
+    local_addr: SocketAddr,
+    mailbox: AsyncReceiver<(Bytes, SocketAddr)>
+}
+
+impl UdpSocket {
+    pub async fn bind(addr: SocketAddr) -> Result<Self> {
+         if chaos::should_fail(ChaosOperation::UdpBind) {
+            return Err(Error::new(ErrorKind::Other, "fracture: UdpBind failed (chaos)"));
+        }
+        
+        let handle = Handle::current();
+        let core_rc = handle.core.upgrade().ok_or_else(|| Error::new(ErrorKind::Other, "fracture: Runtime dropped"))?;
+        let mut core = core_rc.borrow_mut();
+
+        if core.network.udp_sockets.contains_key(&addr) {
+            return Err(Error::new(ErrorKind::AddrInUse, "Address already in use"));
+        }
+
+        let (tx, rx) = channel(1024);
+        core.network.udp_sockets.insert(addr, tx);
+
+        Ok(Self { local_addr: addr, mailbox: rx })
+    }
+
+    pub fn local_addr(&self) -> Result<SocketAddr> {
+        Ok(self.local_addr)
+    }
+
+    pub async fn send_to(&self, buf: &[u8], target: SocketAddr) -> Result<usize> {
+        if chaos::should_fail(ChaosOperation::UdpSendTo) {
+            return Err(Error::new(ErrorKind::Other, "fracture: SendTo failed (chaos)"));
+        }
+
+        if buf.len() > MAX_UDP_PACKET_SIZE {
+            return Err(Error::new(ErrorKind::InvalidInput, "Packet too large"));
+        }
+
+        let local_str = self.local_addr.to_string();
+        let target_str = target.to_string();
+
+        if chaos::should_drop_packet(&local_str) || chaos::is_partitioned(&local_str, &target_str) {
+            return Ok(buf.len()); 
+        }
+
+        let handle = Handle::current();
+        let core_rc = handle.core.upgrade().unwrap();
+        
+        let target_mailbox = {
+            let core = core_rc.borrow();
+            core.network.udp_sockets.get(&target).cloned()
+        };
+
+        if let Some(mailbox) = target_mailbox {
+            let data = Bytes::copy_from_slice(buf);
+            let delay = chaos::get_delay(&target_str).unwrap_or(Duration::ZERO);
+            
+            mailbox.try_send_delayed((data, self.local_addr), delay);
+        }
+
+        Ok(buf.len())
+    }
+
+    pub async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
+        if chaos::should_fail(ChaosOperation::UdpRecvFrom) {
+            return Err(Error::new(ErrorKind::Other, "fracture: RecvFrom hang (chaos)"));
+        }
+
+        loop {
+            match self.mailbox.recv().await {
+                Some((data, src)) => {
+                    let n = std::cmp::min(buf.len(), data.len());
+                    buf[..n].copy_from_slice(&data[..n]);
+                    return Ok((n, src));
+                }
+                None => {
+                    return Err(Error::new(ErrorKind::BrokenPipe, "fracture: Socket closed"));
+                }
+            }
+        }
+    }
 }

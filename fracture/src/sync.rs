@@ -323,44 +323,259 @@ impl Drop for SemaphorePermit<'_> {
     }
 }
 
+pub struct Barrier {
+    state: StdMutex<BarrierState>
+}
+
+struct BarrierState {
+    n: usize,
+    count: usize,
+    generation: usize,
+    waiters: VecDeque<Waker>
+}
+
+#[derive(Debug, Clone)]
+pub struct BarrierWaitResult(bool);
+
+impl BarrierWaitResult {
+    pub fn is_leader(&self) -> bool { self.0 }
+}
+
+impl Barrier {
+    pub fn new(n: usize) -> Self {
+        Self {
+            state: StdMutex::new(BarrierState {
+                n,
+                count: 0,
+                generation: 0,
+                waiters: VecDeque::new(),
+            }),
+        }
+    }
+
+    pub async fn wait(&self) -> BarrierWaitResult {
+        if chaos::should_fail(ChaosOperation::BarrierWait) {
+            std::future::pending::<()>().await;
+        }
+
+        struct WaitFuture<'a> {
+            barrier: &'a Barrier,
+            my_generation: Option<usize>,
+        }
+
+        impl Future for WaitFuture<'_> {
+            type Output = BarrierWaitResult;
+
+            fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                let mut state = self.barrier.state.lock().unwrap();
+
+                if self.my_generation.is_none() {
+                    self.my_generation = Some(state.generation);
+                    state.count += 1;
+
+                    if state.count >= state.n {
+                        state.count = 0;
+                        state.generation += 1;
+                        for waker in state.waiters.drain(..) {
+                            waker.wake();
+                        }
+                        return Poll::Ready(BarrierWaitResult(true));
+                    }
+                }
+
+                if state.generation != self.my_generation.unwrap() {
+                    return Poll::Ready(BarrierWaitResult(false));
+                }
+
+                if chaos::should_fail(ChaosOperation::BarrierTimeout) {
+                     return Poll::Pending;
+                }
+
+                state.waiters.push_back(cx.waker().clone());
+                Poll::Pending
+            }
+        }
+
+        WaitFuture { barrier: self, my_generation: None }.await
+    }
+}
+
 
 pub mod mpsc {
     use super::*;
-    
-    pub fn channel<T>(buffer: usize) -> (Sender<T>, Receiver<T>) {
-        // Placeholder
-        unbounded()
-    }
-    pub fn unbounded<T>() -> (Sender<T>, Receiver<T>) {
-        let shared = Arc::new(StdMutex::new(State { queue: VecDeque::new(), waker: None, closed: false }));
-        (Sender { shared: shared.clone() }, Receiver { shared })
+
+    #[derive(Debug)]
+    pub struct SendError<T>(pub T);
+
+    #[derive(Debug)]
+    pub enum TrySendError<T> {
+        Full(T),
+        Closed(T),
     }
 
-    struct State<T> { queue: VecDeque<T>, waker: Option<Waker>, closed: bool }
-    
-    pub struct Sender<T> { shared: Arc<StdMutex<State<T>>> }
+    pub fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
+        let shared = Arc::new(StdMutex::new(UnboundedState {
+            queue: VecDeque::new(),
+            waker: None,
+            closed: false,
+            rx_count: 1,
+        }));
+        (UnboundedSender { shared: shared.clone() }, UnboundedReceiver { shared })
+    }
 
-    impl<T> Sender<T> {
-        pub async fn send(&self, value: T) -> Result<(), T> {
+    struct UnboundedState<T> { queue: VecDeque<T>, waker: Option<Waker>, closed: bool, rx_count: usize }
+    
+    pub struct UnboundedSender<T> { shared: Arc<StdMutex<UnboundedState<T>>> }
+    impl<T> UnboundedSender<T> {
+        pub fn send(&self, value: T) -> Result<(), SendError<T>> {
             if chaos::should_fail(ChaosOperation::MpscSend) {
-                return Err(value);
+                return Err(SendError(value));
             }
-
             let mut s = self.shared.lock().unwrap();
-            if s.closed { return Err(value); }
+            if s.closed { return Err(SendError(value)); }
             s.queue.push_back(value);
             if let Some(w) = s.waker.take() { w.wake(); }
             Ok(())
         }
     }
-    impl<T> Clone for Sender<T> {
+    impl<T> Clone for UnboundedSender<T> {
         fn clone(&self) -> Self { Self { shared: self.shared.clone() } }
     }
 
-    pub struct Receiver<T> { shared: Arc<StdMutex<State<T>>> }
+    pub struct UnboundedReceiver<T> { shared: Arc<StdMutex<UnboundedState<T>>> }
+    impl<T> UnboundedReceiver<T> {
+        pub async fn recv(&mut self) -> Option<T> {
+            struct RecvFuture<'a, T> { rx: &'a mut UnboundedReceiver<T> }
+            impl<T> Future for RecvFuture<'_, T> {
+                type Output = Option<T>;
+                fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<T>> {
+                    if chaos::should_fail(ChaosOperation::MpscRecv) {
+                        return Poll::Ready(None);
+                    }
+                    let mut s = self.rx.shared.lock().unwrap();
+                    if let Some(v) = s.queue.pop_front() { Poll::Ready(Some(v)) }
+                    else if s.closed { Poll::Ready(None) }
+                    else { s.waker = Some(cx.waker().clone()); Poll::Pending }
+                }
+            }
+            RecvFuture { rx: self }.await
+        }
+
+        pub fn close(&mut self) {
+            let mut s = self.shared.lock().unwrap();
+            s.closed = true;
+        }
+    }
+    impl<T> Drop for UnboundedReceiver<T> {
+        fn drop(&mut self) {
+            let mut s = self.shared.lock().unwrap();
+            s.rx_count -= 1;
+            if s.rx_count == 0 { s.closed = true; }
+        }
+    }
+    
+    pub fn channel<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
+        assert!(capacity > 0, "capacity must be > 0");
+        let state = Arc::new(StdMutex::new(BoundedState {
+            queue: VecDeque::with_capacity(capacity),
+            capacity,
+            tx_waiters: VecDeque::new(),
+            rx_waker: None,
+            closed: false,
+            sender_count: 1,
+        }));
+        (Sender { state: state.clone() }, Receiver { state })
+    }
+
+    struct BoundedState<T> {
+        queue: VecDeque<T>,
+        capacity: usize,
+        tx_waiters: VecDeque<Waker>,
+        rx_waker: Option<Waker>,
+        closed: bool,
+        sender_count: usize,
+    }
+
+    pub struct Sender<T> { state: Arc<StdMutex<BoundedState<T>>> }
+    
+    impl<T> Sender<T> {
+        pub async fn send(&self, value: T) -> Result<(), SendError<T>> {
+            struct SendFuture<'a, T> { sender: &'a Sender<T>, value: Option<T> }
+            
+            impl<T> Future for SendFuture<'_, T> {
+                type Output = Result<(), SendError<T>>;
+
+                fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                    if chaos::should_fail(ChaosOperation::MpscSend) {
+                        return Poll::Ready(Err(SendError(self.value.take().unwrap())));
+                    }
+
+                    let mut s = self.sender.state.lock().unwrap();
+                    
+                    if s.closed {
+                        return Poll::Ready(Err(SendError(self.value.take().unwrap())));
+                    }
+
+                    if s.queue.len() < s.capacity {
+                        s.queue.push_back(self.value.take().unwrap());
+                        if let Some(w) = s.rx_waker.take() { w.wake(); }
+                        Poll::Ready(Ok(()))
+                    }
+                    else {
+                        s.tx_waiters.push_back(cx.waker().clone());
+                        Poll::Pending
+                    }
+                }
+            }
+
+            SendFuture { sender: self, value: Some(value) }.await
+        }
+
+        pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
+            if chaos::should_fail(ChaosOperation::MpscTrySend) {
+                return Err(TrySendError::Full(value));
+            }
+
+            let mut s = self.state.lock().unwrap();
+            if s.closed {
+                return Err(TrySendError::Closed(value));
+            }
+
+            if s.queue.len() < s.capacity {
+                s.queue.push_back(value);
+                if let Some(w) = s.rx_waker.take() { w.wake(); }
+                Ok(())
+            }
+            else {
+                Err(TrySendError::Full(value))
+            }
+        }
+    }
+
+    impl<T> Clone for Sender<T> {
+        fn clone(&self) -> Self {
+            let mut s = self.state.lock().unwrap();
+            s.sender_count += 1;
+            Self { state: self.state.clone() }
+        }
+    }
+
+    impl<T> Drop for Sender<T> {
+        fn drop(&mut self) {
+            let mut s = self.state.lock().unwrap();
+            s.sender_count -= 1;
+            if s.sender_count == 0 {
+                s.closed = true;
+                if let Some(w) = s.rx_waker.take() { w.wake(); }
+            }
+        }
+    }
+
+    pub struct Receiver<T> { state: Arc<StdMutex<BoundedState<T>>> }
+
     impl<T> Receiver<T> {
         pub async fn recv(&mut self) -> Option<T> {
-            struct RecvFuture<'a, T> { rx: &'a mut Receiver<T> }
+             struct RecvFuture<'a, T> { rx: &'a mut Receiver<T> }
             impl<T> Future for RecvFuture<'_, T> {
                 type Output = Option<T>;
                 fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<T>> {
@@ -368,13 +583,16 @@ pub mod mpsc {
                         return Poll::Ready(None);
                     }
 
-                    let mut s = self.rx.shared.lock().unwrap();
+                    let mut s = self.rx.state.lock().unwrap();
                     if let Some(v) = s.queue.pop_front() {
+                        if let Some(w) = s.tx_waiters.pop_front() { w.wake(); }
                         Poll::Ready(Some(v))
-                    } else if s.closed {
+                    }
+                    else if s.closed && s.sender_count == 0 {
                         Poll::Ready(None)
-                    } else {
-                        s.waker = Some(cx.waker().clone());
+                    }
+                    else {
+                        s.rx_waker = Some(cx.waker().clone());
                         Poll::Pending
                     }
                 }
@@ -386,6 +604,10 @@ pub mod mpsc {
 
 pub mod oneshot {
     use super::*;
+    
+    #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+    pub struct RecvError;
+
     pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
         let shared = Arc::new(StdMutex::new(State { value: None, waker: None, closed: false }));
         (Sender { shared: shared.clone() }, Receiver { shared })
@@ -399,34 +621,290 @@ pub mod oneshot {
             if chaos::should_fail(ChaosOperation::OneshotSend) {
                 return Err(t);
             }
-
             let mut s = self.shared.lock().unwrap();
-            if s.closed { return Err(t); }
+            if s.closed {
+                return Err(t);
+            }
             s.value = Some(t);
-            if let Some(w) = s.waker.take() { w.wake(); }
+            if let Some(w) = s.waker.take() {
+                w.wake();
+            }
             Ok(())
         }
     }
 
     pub struct Receiver<T> { shared: Arc<StdMutex<State<T>>> }
     impl<T> Future for Receiver<T> {
-        type Output = Result<T, ()>; // Error type simplified
+        type Output = Result<T, RecvError>;
         fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
             if chaos::should_fail(ChaosOperation::OneshotRecv) {
-                return Poll::Ready(Err(()));
+                return Poll::Ready(Err(RecvError));
             }
-
             let mut s = self.shared.lock().unwrap();
-            if let Some(v) = s.value.take() {
-                Poll::Ready(Ok(v))
-            }
+            if let Some(v) = s.value.take() { Poll::Ready(Ok(v)) }
             else if s.closed {
-                Poll::Ready(Err(())) 
+                Poll::Ready(Err(RecvError))
             }
             else {
                 s.waker = Some(cx.waker().clone());
                 Poll::Pending
             }
+        }
+    }
+    impl<T> Drop for Receiver<T> {
+        fn drop(&mut self) {
+            let mut s = self.shared.lock().unwrap();
+            s.closed = true;
+        }
+    }
+}
+
+pub mod watch {
+    use super::*;
+
+    #[derive(Debug, Clone)]
+    pub struct SendError<T>(pub T);
+
+    #[derive(Debug, Clone)]
+    pub struct RecvError;
+
+    pub fn channel<T: Clone + Send + Sync + 'static>(init: T) -> (Sender<T>, Receiver<T>) {
+        let state = Arc::new(StdMutex::new(State {
+            value: init.clone(),
+            version: 0,
+            waiters: Vec::new(),
+            closed: false,
+        }));
+        (Sender { state: state.clone() }, Receiver { state, version: 0, value: init })
+    }
+
+    struct State<T> {
+        value: T,
+        version: u64,
+        waiters: Vec<Waker>,
+        closed: bool,
+    }
+
+    pub struct Sender<T> { state: Arc<StdMutex<State<T>>> }
+    
+    impl<T: Clone> Sender<T> {
+        pub fn send(&self, value: T) -> Result<(), SendError<T>> {
+            if chaos::should_fail(ChaosOperation::WatchSend) {
+                return Err(SendError(value));
+            }
+            
+            let mut s = self.state.lock().unwrap();
+            if s.closed { return Err(SendError(value)); }
+            
+            s.value = value;
+            s.version += 1;
+            for w in s.waiters.drain(..) { w.wake(); }
+            Ok(())
+        }
+
+        pub fn send_modify<F>(&self, modify: F) 
+        where F: FnOnce(&mut T) {
+            let mut s = self.state.lock().unwrap();
+            if s.closed { return; }
+            modify(&mut s.value);
+            s.version += 1;
+            for w in s.waiters.drain(..) { w.wake(); }
+        }
+
+        pub fn borrow(&self) -> Ref<'_, T> {
+            let s = self.state.lock().unwrap();
+            Ref { inner: std::sync::MutexGuard::map(s, |x| &mut x.value) } // Simplification
+        }
+    }
+
+    impl<T> Drop for Sender<T> {
+        fn drop(&mut self) {
+            let mut s = self.state.lock().unwrap();
+            s.closed = true;
+            for w in s.waiters.drain(..) { w.wake(); }
+        }
+    }
+
+    // Placeholder for Ref implementation simplification
+    pub struct Ref<'a, T> { inner: T } // Simplified, fix later
+
+    #[derive(Clone)]
+    pub struct Receiver<T> {
+        state: Arc<StdMutex<State<T>>>,
+        version: u64,
+        value: T,
+    }
+
+    impl<T: Clone> Receiver<T> {
+        pub fn borrow(&self) -> &T { &self.value }
+        
+        pub fn borrow_and_update(&mut self) -> &T {
+            let s = self.state.lock().unwrap();
+            self.value = s.value.clone();
+            self.version = s.version;
+            &self.value
+        }
+
+        pub async fn changed(&mut self) -> Result<(), RecvError> {
+            struct ChangedFuture<'a, T> { rx: &'a mut Receiver<T> }
+            impl<T: Clone> Future for ChangedFuture<'_, T> {
+                type Output = Result<(), RecvError>;
+                fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                    if chaos::should_fail(ChaosOperation::WatchChanged) {
+                        return Poll::Ready(Err(RecvError));
+                    }
+
+                    let mut s = self.rx.state.lock().unwrap();
+                    if s.version > self.rx.version {
+                        self.rx.value = s.value.clone();
+                        self.rx.version = s.version;
+                        return Poll::Ready(Ok(()));
+                    }
+                    if s.closed { return Poll::Ready(Err(RecvError)); }
+                    
+                    s.waiters.push(cx.waker().clone());
+                    Poll::Pending
+                }
+            }
+            ChangedFuture { rx: self }.await
+        }
+    }
+}
+
+pub mod broadcast {
+    use super::*;
+
+    #[derive(Debug, Clone)]
+    pub struct SendError<T>(pub T);
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum RecvError {
+        Closed,
+        Lagged(u64),
+    }
+
+    #[derive(Clone)]
+    struct Message<T> {
+        val: T,
+        seq: u64,
+    }
+
+    pub fn channel<T: Clone + Send + 'static>(capacity: usize) -> (Sender<T>, Receiver<T>) {
+        let state = Arc::new(StdMutex::new(State {
+            buffer: VecDeque::with_capacity(capacity),
+            capacity,
+            tail_seq: 0,
+            closed: false,
+            senders: 1,
+            waiters: Vec::new(),
+        }));
+        (Sender { state: state.clone() }, Receiver { state, next_seq: 0 })
+    }
+
+    struct State<T> {
+        buffer: VecDeque<Message<T>>,
+        capacity: usize,
+        tail_seq: u64,
+        closed: bool,
+        senders: usize,
+        waiters: Vec<Waker>,
+    }
+
+    pub struct Sender<T> { state: Arc<StdMutex<State<T>>> }
+
+    impl<T: Clone> Sender<T> {
+        pub fn send(&self, value: T) -> Result<usize, SendError<T>> {
+             if chaos::should_fail(ChaosOperation::BroadcastSend) {
+                return Err(SendError(value));
+            }
+
+             let mut s = self.state.lock().unwrap();
+             if s.closed { return Err(SendError(value)); }
+
+             if s.buffer.len() == s.capacity {
+                 s.buffer.pop_front();
+             }
+             
+             s.buffer.push_back(Message { val: value, seq: s.tail_seq });
+             s.tail_seq += 1;
+
+             for w in s.waiters.drain(..) { w.wake(); }
+             
+             Ok(1)
+        }
+    }
+
+    impl<T> Clone for Sender<T> {
+        fn clone(&self) -> Self {
+            let mut s = self.state.lock().unwrap();
+            s.senders += 1;
+            Self { state: self.state.clone() }
+        }
+    }
+
+    impl<T> Drop for Sender<T> {
+        fn drop(&mut self) {
+            let mut s = self.state.lock().unwrap();
+            s.senders -= 1;
+            if s.senders == 0 {
+                s.closed = true;
+                for w in s.waiters.drain(..) { w.wake(); }
+            }
+        }
+    }
+
+    pub struct Receiver<T> {
+        state: Arc<StdMutex<State<T>>>,
+        next_seq: u64,
+    }
+
+    impl<T: Clone> Receiver<T> {
+        pub async fn recv(&mut self) -> Result<T, RecvError> {
+            struct RecvFuture<'a, T> { rx: &'a mut Receiver<T> }
+            impl<T: Clone> Future for RecvFuture<'_, T> {
+                type Output = Result<T, RecvError>;
+                fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                    if chaos::should_fail(ChaosOperation::BroadcastRecv) {
+                        return Poll::Ready(Err(RecvError::Closed));
+                    }
+                    
+                    let mut s = self.rx.state.lock().unwrap();
+                    
+                    if let Some(head) = s.buffer.front() {
+                        if self.rx.next_seq < head.seq {
+                            let missed = head.seq - self.rx.next_seq;
+                            self.rx.next_seq = s.tail_seq;
+                            return Poll::Ready(Err(RecvError::Lagged(missed)));
+                        }
+                    }
+
+                    for msg in &s.buffer {
+                        if msg.seq == self.rx.next_seq {
+                            self.rx.next_seq += 1;
+                            return Poll::Ready(Ok(msg.val.clone()));
+                        }
+                    }
+
+                    if s.closed && s.senders == 0 {
+                        return Poll::Ready(Err(RecvError::Closed));
+                    }
+
+                    s.waiters.push(cx.waker().clone());
+                    Poll::Pending
+                }
+            }
+            RecvFuture { rx: self }.await
+        }
+
+        pub fn resubscribe(&self) -> Self {
+             let s = self.state.lock().unwrap();
+             Self { state: self.state.clone(), next_seq: s.tail_seq }
+        }
+    }
+    
+    impl<T> Clone for Receiver<T> {
+        fn clone(&self) -> Self {
+             Self { state: self.state.clone(), next_seq: self.next_seq }
         }
     }
 }
