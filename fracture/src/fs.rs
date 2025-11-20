@@ -12,6 +12,8 @@ use crate::runtime::Handle;
 use crate::chaos::{self, ChaosOperation};
 use crate::time::sleep;
 
+const MAX_SYMLINK_RECURSION: usize = 32;
+
 async fn simulate_io_latency() {
     if let Some(delay) = chaos::get_delay("disk_io") {
         sleep(delay).await;
@@ -108,6 +110,7 @@ impl Permissions {
 struct FileEntry {
     content: Vec<u8>,
     file_type: FileType,
+    target: Option<PathBuf>,
     readonly: bool,
     created: SystemTime,
     modified: SystemTime,
@@ -120,12 +123,12 @@ impl FileEntry {
         Self {
             content: Vec::new(),
             file_type: FileType { is_dir: false, is_file: true, is_symlink: false },
+            target: None,
             readonly: false,
             created: now,
             modified: now,
             accessed: now,
             inode
-
         }
     }
 
@@ -133,6 +136,20 @@ impl FileEntry {
         Self {
             content: Vec::new(),
             file_type: FileType { is_dir: true, is_file: false, is_symlink: false },
+            target: None,
+            readonly: false,
+            created: now,
+            modified: now,
+            accessed: now,
+            inode
+        }
+    }
+
+    fn new_symlink(now: SystemTime, inode: u64, target: PathBuf) -> Self {
+        Self {
+            content: Vec::new(),
+            file_type: FileType { is_dir: false, is_file: false, is_symlink: true },
+            target: Some(target),
             readonly: false,
             created: now,
             modified: now,
@@ -159,6 +176,33 @@ impl FileSystemState {
         let id = self.next_inode;
         self.next_inode += 1;
         id
+    }
+
+    fn resolve_symlink(&self, path: &Path, depth: usize) -> Result<PathBuf> {
+        if depth > MAX_SYMLINK_RECURSION {
+            return Err(Error::new(ErrorKind::Other, "fracture: Too many levels of symbolic links"));
+        }
+
+        if let Some(entry) = self.files.get(path) {
+            let locked = entry.lock().unwrap();
+            if locked.file_type.is_symlink() {
+                if let Some(target) = &locked.target {
+                    let resolved = if target.is_relative() {
+                        match path.parent() {
+                            Some(p) => p.join(target),
+                            None => target.clone()
+                        }
+                    }
+                    else {
+                        target.clone()
+                    };
+
+                    return self.resolve_symlink(&resolved, depth + 1);
+                }
+            }
+        }
+
+        Ok(path.to_path_buf())
     }
 }
 
@@ -296,7 +340,7 @@ impl OpenOptions {
             return Err(Error::new(ErrorKind::Other, "fracture: Open failed (chaos)"));
         }
 
-        let path = path.as_ref().to_path_buf();
+        let original_path = path.as_ref().to_path_buf();
         simulate_io_latency().await;
 
         let handle = Handle::current();
@@ -304,6 +348,8 @@ impl OpenOptions {
         let mut core = core_rc.borrow_mut();
 
         let now = core.sys_now();
+        let path = core.fs.resolve_symlink(&original_path, 0)?;
+
         let exists = core.fs.files.contains_key(&path);
 
         if self.create_new && exists {
@@ -826,16 +872,43 @@ pub async fn symlink_metadata<P: AsRef<Path>>(path: P) -> Result<Metadata> {
     metadata(path).await // Placeholder, need to fix after implementing symlinks
 }
 
-pub async fn read_link<P: AsRef<Path>>(_path: P) -> Result<PathBuf> {
-    Err(Error::new(ErrorKind::InvalidInput, "Not a symlink"))
+pub async fn read_link<P: AsRef<Path>>(path: P) -> Result<PathBuf> {
+    if chaos::should_fail(ChaosOperation::FsRead) {
+        return Err(Error::new(ErrorKind::Other, "fracture: ReadLink failed (chaos)"));
+    }
+
+    let handle = Handle::current();
+    let core =  handle.core.upgrade().unwrap().borrow();
+    let entry = core.fs.files.get(path.as_ref()).ok_or(Error::new(ErrorKind::NotFound, "fracture: File not found"))?;
+    let locked = entry.lock().unwrap();
+
+    if !locked.file_type.is_symlink() {
+        return Err(Error::new(ErrorKind::InvalidInput, "fracture: Not a symlink"));
+    }
+
+    locked.target.clone().ok_or(Error::new(ErrorKind::Other, "fracture: Corrupted symlink"))
 }
 
-pub async fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(_original: P, _link: Q) -> Result<()> {
+pub async fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
     if chaos::should_fail(ChaosOperation::FsSymlink) {
          return Err(Error::new(ErrorKind::Other, "fracture: Symlink failed (chaos)"));
     }
-    
-    Err(Error::new(ErrorKind::Unsupported, "Symlinks not supported in simulation")) // Placeholder
+    simulate_io_latency().await;
+
+    let handle = Handle::current();
+    let mut core = handle.core.upgrade().unwrap().borrow_mut();
+
+    let link = link.as_ref().to_path_buf();
+    if core.fs.files.contains_key(&link) {
+        return Err(Error::new(ErrorKind::AlreadyExists, "fracture: File already exists"));
+    }
+
+    let now = core.sys_now();
+    let inode = core.fs.assign_inode();
+    let entry = Arc::new(Mutex::new(FileEntry::new_symlink(now, inode, original.as_ref().to_path_buf())));
+    core.fs.files.insert(link, entry);
+
+    Ok(())
 }
 
 pub async fn read<P: AsRef<Path>>(path: P) -> Result<Vec<u8>> {
