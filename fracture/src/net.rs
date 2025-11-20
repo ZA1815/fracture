@@ -2,7 +2,7 @@ use core::fmt;
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::io::{Error, ErrorKind, Result};
-use std::net::SocketAddr;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::pin::Pin;
 #[cfg(unix)]
 use std::path::PathBuf;
@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use futures::TryFutureExt;
+use rand::Rng;
 
 use crate::chaos::{self, ChaosOperation};
 use crate::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -60,13 +61,89 @@ pub struct TcpConnection {
     pub rx: AsyncReceiver<Bytes>
 }
 
+pub struct TcpSocket {
+    ttl: Option<u32>,
+    nodelay: bool,
+    linger: Option<Option<Duration>>,
+    recv_buffer_size: Option<u32>,
+    send_buffer_size: Option<u32>,
+}
+
+impl TcpSocket {
+    pub fn new_v4() -> Result<TcpSocket> {
+        Ok(TcpSocket {
+            ttl: None,
+            nodelay: false,
+            linger: None,
+            recv_buffer_size: None,
+            send_buffer_size: None,
+        })
+    }
+
+    pub fn new_v6() -> Result<TcpSocket> {
+        // Simulation handles v4/v6 transparently mostly, but we adhere to API
+        Ok(TcpSocket {
+            ttl: None,
+            nodelay: false,
+            linger: None,
+            recv_buffer_size: None,
+            send_buffer_size: None,
+        })
+    }
+
+    pub fn set_reuseaddr(&mut self, _reuseaddr: bool) -> Result<()> {
+        Ok(()) // No-op in sim
+    }
+
+    pub fn set_reuseport(&mut self, _reuseport: bool) -> Result<()> {
+        Ok(()) // No-op in sim
+    }
+
+    pub fn set_nodelay(&mut self, nodelay: bool) -> Result<()> {
+        self.nodelay = nodelay;
+        Ok(())
+    }
+
+    pub fn nodelay(&self) -> Result<bool> {
+        Ok(self.nodelay)
+    }
+
+    pub fn set_linger(&mut self, dur: Option<Duration>) -> Result<()> {
+        self.linger = Some(dur);
+        Ok(())
+    }
+
+    pub fn linger(&self) -> Result<Option<Duration>> {
+        Ok(self.linger.flatten())
+    }
+
+    pub fn set_ttl(&mut self, ttl: u32) -> Result<()> {
+        self.ttl = Some(ttl);
+        Ok(())
+    }
+
+    pub fn ttl(&self) -> Result<u32> {
+        Ok(self.ttl.unwrap_or(64))
+    }
+
+    pub fn bind(&self, addr: SocketAddr) -> Result<TcpListener> {
+        TcpListener::bind(addr)
+    }
+
+    pub async fn connect(self, addr: SocketAddr) -> Result<TcpStream> {
+        TcpStream::connect(addr).await
+    }
+}
+
 pub struct TcpListener {
     local_addr: SocketAddr,
     accept_rx: AsyncReceiver<TcpConnection>
 }
 
 impl TcpListener {
-    pub async fn bind(addr: SocketAddr) -> Result<Self> {
+    pub async fn bind<A: ToSocketAddrs>(addr: A) -> Result<Self> {
+        let addr = addr.to_socket_addrs()?.next().ok_or_else(|| Error::new(ErrorKind::InvalidInput, "fracture: Invalid address"))?;
+
         let handle = Handle::current();
 
         let core_rc = handle.core.upgrade().ok_or_else(|| Error::new(ErrorKind::Other, "fracture: Runtime dropped"))?;
@@ -94,6 +171,13 @@ impl TcpListener {
     pub fn local_addr(&self) -> Result<SocketAddr> {
         Ok(self.local_addr)
     }
+
+    pub fn ttl(&self) -> Result<u32> {
+        Ok(64)
+    }
+    pub fn set_ttl(&self, _ttl: u32) -> Result<()> {
+        Ok(())
+    }
 }
 
 pub struct TcpStream {
@@ -101,7 +185,10 @@ pub struct TcpStream {
     rx: AsyncReceiver<Bytes>,
     read_buffer: BytesMut,
     local_addr: SocketAddr,
-    peer_addr: SocketAddr
+    peer_addr: SocketAddr,
+    nodelay: bool,
+    linger: Option<Duration>,
+    ttl: u32
 }
 
 impl TcpStream {
@@ -111,17 +198,22 @@ impl TcpStream {
             rx,
             read_buffer: BytesMut::new(),
             local_addr,
-            peer_addr
+            peer_addr,
+            nodelay: false,
+            linger: None,
+            ttl: 64
         }
     }
 
-    pub async fn connect(addr: SocketAddr) -> Result<Self> {
+    pub async fn connect<A: ToSocketAddrs>(addr: A) -> Result<Self> {
         if chaos::should_fail(ChaosOperation::TcpConnect) {
             return Err(Error::new(
                 ErrorKind::ConnectionRefused,
                 "fracture: Connection failed (chaos)",
             ));
         }
+
+        let addr = addr.to_socket_addrs()?.next().ok_or_else(|| Error::new(ErrorKind::InvalidInput, "fracture: Invalid address"))?;
 
         let handle = Handle::current();
         let core_rc = handle.core.upgrade().ok_or_else(|| Error::new(ErrorKind::Other, "fracture: Runtime dropped"))?;
@@ -148,11 +240,6 @@ impl TcpStream {
             }
         }
 
-        let listener_tx = {
-            let core = core_rc.borrow();
-            core.network.listeners.get(&addr).cloned()
-        };
-
         let listener_tx = listener_tx.ok_or_else(|| Error::new(ErrorKind::ConnectionRefused, "fracture: Connection refused"))?;
 
         let delay = chaos::get_delay(&peer_addr_str).unwrap_or(Duration::ZERO);
@@ -171,13 +258,7 @@ impl TcpStream {
 
         listener_tx.send(server_conn).map_err(|_| Error::new(ErrorKind::ConnectionRefused, "fracture: Remote backlog full"))?;
 
-        Ok(Self {
-            tx: tx1,
-            rx: rx2,
-            read_buffer: BytesMut::new(),
-            local_addr,
-            peer_addr: addr
-        })
+        Ok(Self::new(tx1, rx2, local_addr, addr))
     }
 
     pub async fn peek(&mut self, buf: &mut [u8]) -> Result<usize> {
@@ -203,6 +284,36 @@ impl TcpStream {
         }
     }
 
+    pub fn poll_peek(&mut self, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<Result<usize>> {
+        // Need direct access to rx queue, fix later
+        match self.rx.poll_peek(cx) {
+            Poll::Ready(Some(data)) => {
+                let len = std::cmp::min(buf.remaining(), data.len());
+                buf.put_slice(&data[..len]);
+                Poll::Ready(Ok(len))
+            }
+            Poll::Ready(None) => Poll::Ready(Ok(0)),
+            Poll::Pending => Poll::Pending
+        }
+    }
+
+    pub fn into_split(self) -> (OwnedReadHalf, OwnedWriteHalf) {
+        let stream = Arc::new(Mutex::new(self));
+        
+        (OwnedReadHalf { stream: stream.clone() }, OwnedWriteHalf { stream })
+    }
+
+    pub fn poll_read_ready(&self, cx: &mut Context<'_>) -> Poll<Result<()>> {
+        match self.rx.poll_peek(cx) {
+            Poll::Ready(_) => Poll::Ready(Ok(())),
+            Poll::Pending => Poll::Pending
+        }
+    }
+
+    pub fn poll_write_ready(&self, cx: &mut Context<'_>) -> Poll<Result<()>> {
+        self.tx.poll_reserve(cx, 1).map(|_| Ok(()))
+    }
+
     pub fn local_addr(&self) -> Result<SocketAddr> {
         Ok(self.local_addr)
     }
@@ -210,13 +321,42 @@ impl TcpStream {
     pub fn peer_addr(&self) -> Result<SocketAddr> {
         Ok(self.peer_addr)
     }
+
+    pub fn set_nodelay(&mut self, nodelay: bool) -> Result<()> {
+        self.nodelay = nodelay;
+
+        Ok(())
+    }
+
+    pub fn nodelay(&self) -> Result<bool> {
+        Ok(self.nodelay)
+    }
+    
+    pub fn set_linger(&mut self, dur: Option<Duration>) -> Result<()> {
+        self.linger = dur;
+
+        Ok(())
+    }
+
+    pub fn linger(&self) -> Result<Option<Duration>> {
+        Ok(self.linger)
+    }
+
+    pub fn set_ttl(&mut self, ttl: u32) -> Result<()> {
+        self.ttl = ttl;
+        Ok(())
+    }
+
+    pub fn ttl(&self) -> Result<u32> {
+        Ok(self.ttl)
+    }
 }
 
 impl AsyncRead for TcpStream {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        mut buf: &mut ReadBuf<'_>
+        buf: &mut ReadBuf<'_>
     ) -> Poll<Result<()>> {
         if chaos::should_fail(ChaosOperation::TcpRead) {
             return Poll::Ready(Err(Error::new(
@@ -310,6 +450,39 @@ impl AsyncWrite for TcpStream {
     fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
         self.tx.close();
         Poll::Ready(Ok(()))
+    }
+}
+
+pub struct OwnedReadHalf {
+    stream: Arc<Mutex<TcpStream>>
+}
+pub struct OwnedWriteHalf {
+    stream: Arc<Mutex<TcpStream>>
+}
+
+impl AsyncRead for OwnedReadHalf {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<Result<()>> {
+        let mut stream = self.stream.lock().unwrap();
+
+        Pin::new(&mut *stream).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for OwnedWriteHalf {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize>> {
+        let mut stream = self.stream.lock().unwrap();
+
+        Pin::new(&mut *stream).poll_write(cx, buf)
+    }
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
+        let mut stream = self.stream.lock().unwrap();
+
+        Pin::new(&mut *stream).poll_flush(cx)
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
+        let mut stream = self.stream.lock().unwrap();
+
+        Pin::new(&mut *stream).poll_shutdown(cx)
     }
 }
 
@@ -419,10 +592,6 @@ impl<T: Buf + Send> Sender<T> {
         Ok(())
     }
 
-    pub fn try_send(&self, item: T) -> std::result::Result<(), TrySendError<T>> {
-        self.try_send_delayed(item, Duration::ZERO)
-    }
-
     pub fn try_send_delayed(
         &self,
         item: T,
@@ -522,7 +691,7 @@ impl<T: Buf + Send> AsyncReceiver<T> {
                 let entry = crate::runtime::core::TimerEntry {
                     deadline: envelope.arrival_time,
                     waker: waker,
-                    id: core.rng.rand_u64() as usize
+                    id: core.rng.r#gen() as usize
                 };
                 core.timers.push(entry);
 
@@ -552,6 +721,35 @@ impl<T: Buf + Send> AsyncReceiver<T> {
 
         None
     }
+
+    pub async fn poll_peek(&self, cx: &mut Context<'_>) -> Poll<Option<T>> {
+        let mut s = self.state.lock().unwrap();
+        let handle = Handle::current();
+        let core_rc = handle.core.upgrade().expect("fracture: Runtime dropped");
+        let now = core_rc.borrow().current_time;
+
+        if let Some(envelope) = s.queue.front() {
+            if envelope.arrival_time <= now {
+                return Poll::Ready(Some(envelope.data.clone()));
+            }
+
+            let waker = cx.waker().clone();
+            drop(s);
+            let mut core = core_rc.borrow_mut();
+            core.timers.push(crate::runtime::core::TimerEntry { deadline: envelope.arrival_time, waker, id: core.rng.r#gen() as usize });
+
+            return Poll::Pending;
+        }
+
+        if s.closed {
+            Poll::Ready(None)
+        }
+        else {
+            s.recv_waiters.push_back(cx.waker().clone());
+
+            Poll::Pending
+        }
+    }
 }
 
 pub fn channel<T>(capacity: usize) -> (Sender<T>, AsyncReceiver<T>) {
@@ -573,10 +771,12 @@ pub struct UdpSocket {
 }
 
 impl UdpSocket {
-    pub async fn bind(addr: SocketAddr) -> Result<Self> {
+    pub async fn bind<A: ToSocketAddrs>(addr: A) -> Result<Self> {
          if chaos::should_fail(ChaosOperation::UdpBind) {
             return Err(Error::new(ErrorKind::Other, "fracture: UdpBind failed (chaos)"));
         }
+
+        let addr = addr.to_socket_addrs()?.next().ok_or_else(|| Error::new(ErrorKind::InvalidInput, "fracture: Invalid address"))?;
         
         let handle = Handle::current();
         let core_rc = handle.core.upgrade().ok_or_else(|| Error::new(ErrorKind::Other, "fracture: Runtime dropped"))?;
@@ -596,10 +796,12 @@ impl UdpSocket {
         Ok(self.local_addr)
     }
 
-    pub async fn send_to(&self, buf: &[u8], target: SocketAddr) -> Result<usize> {
+    pub async fn send_to<A: ToSocketAddrs>(&self, buf: &[u8], target: A) -> Result<usize> {
         if chaos::should_fail(ChaosOperation::UdpSendTo) {
             return Err(Error::new(ErrorKind::Other, "fracture: SendTo failed (chaos)"));
         }
+
+        let target = target.to_socket_addrs()?.next().ok_or_else(|| Error::new(ErrorKind::InvalidInput, "fracture: Invalid address"))?;
 
         if buf.len() > MAX_UDP_PACKET_SIZE {
             return Err(Error::new(ErrorKind::InvalidInput, "Packet too large"));

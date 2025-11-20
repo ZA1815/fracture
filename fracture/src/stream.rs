@@ -1,14 +1,12 @@
-use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 pub use futures::Stream;
 use pin_project::pin_project;
-use tokio::time::Instant;
 
+use crate::time::{interval, Interval, ChaosInstant as Instant};
 use crate::chaos::{self, ChaosOperation};
 use crate::net::{TcpListener, TcpStream};
-use crate::time::{interval, Interval};
 
 pub trait StreamExt: Stream {
     fn next(&mut self) -> Next<'_, Self>
