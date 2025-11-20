@@ -9,9 +9,24 @@ use rand::Rng;
 use crate::chaos::{self, ChaosOperation};
 use crate::runtime::Handle;
 
+pub type Instant = crate::runtime::core::Instant;
+
 pub struct Sleep {
-    deadline: Duration,
+    deadline: Instant,
     registered: bool
+}
+
+impl Sleep {
+    pub fn deadline(&self) -> Instant {
+        self.deadline
+    }
+    
+    pub fn is_elapsed(&self) -> bool {
+        let handle = Handle::current();
+        let core = handle.core.upgrade().expect("fracture: Runtime dropped");
+        let now = crate::runtime::core::Instant::from(core.borrow().current_time);
+        now >= self.deadline
+    }
 }
 
 impl Future for Sleep {
@@ -30,7 +45,7 @@ impl Future for Sleep {
             let entry = crate::runtime::core::TimerEntry {
                 deadline: self.deadline,
                 waker: cx.waker().clone(),
-                id: core.rng.rand_u64()
+                id: core.rng.r#gen()
             };
 
             core.timers.push(entry);
@@ -55,6 +70,10 @@ pub fn sleep(duration: Duration) -> Sleep {
     let now = core.borrow().current_time;
 
     Sleep { deadline: now + duration, registered: false }
+}
+
+pub fn sleep_until(deadline: Instant) -> Sleep {
+    Sleep { deadline, registered: false }
 }
 
 #[pin_project]
@@ -95,63 +114,120 @@ pub fn timeout<F: Future>(duration: Duration, future: F) -> Timeout<F> {
     Timeout { future, sleep: sleep(duration) }
 }
 
+pub fn timeout_at<F: Future>(deadline: Instant, future: F) -> Timeout<F> {
+    Timeout { future, sleep: Sleep { deadline, registered: false } }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissedTickBehavior {
+    Burst,
+    Delay,
+    Skip,
+}
+
 pub fn interval(period: Duration) -> Interval {
     Interval::new(period)
 }
 
 pub struct Interval {
     period: Duration,
-    next_tick: Duration,
+    next_tick: Instant,
+    missed_tick_behavior: MissedTickBehavior
 }
 
 impl Interval {
     pub fn new(period: Duration) -> Self {
         let handle = Handle::current();
         let core = handle.core.upgrade().expect("fracture: Runtime dropped");
-        let now = core.borrow().current_time;
+        let now = crate::runtime::core::Instant::from(core.borrow().current_time);
         Self {
             period,
-            next_tick: now + period,
+            next_tick: now,
+            missed_tick_behavior: MissedTickBehavior::Burst
         }
+    }
+
+    pub fn new_at(start: Instant, period: Duration) -> Self {
+        Self {
+            period,
+            next_tick: start,
+            missed_tick_behavior: MissedTickBehavior::Burst
+        }
+    }
+
+    pub fn set_missed_tick_behavior(&mut self, behavior: MissedTickBehavior) {
+        self.missed_tick_behavior = behavior;
     }
 
     pub async fn tick(&mut self) -> crate::runtime::core::Instant {
         if chaos::should_fail(ChaosOperation::IntervalSkip) {
-            self.next_tick += self.period;
+            self.next_tick = self.next_tick + self.period;
         }
 
-        let sleep_time = self
-            .next_tick
-            .saturating_sub(crate::runtime::core::Instant::now());
-
-        // Placeholder: Actually sleep to match next_tick
-        let handle = Handle::current();
-        let now = handle.core.upgrade().unwrap().borrow().current_time;
-
-        if self.next_tick > now {
-            crate::time::sleep(self.next_tick - now).await;
-        }
-
-        let now = handle.core.upgrade().unwrap().borrow().current_time;
-        self.next_tick += self.period;
-
-        crate::runtime::core::Instant::from(now)
-    }
-
-    pub fn poll_tick(&mut self, cx: &mut Context<'_>) -> Poll<crate::runtime::core::Instant> {
         let handle = Handle::current();
         let core_rc = handle.core.upgrade().unwrap();
-        let now = core_rc.borrow().current_time;
+        let now = crate::runtime::core::Instant::from(core_rc.borrow().current_time);
+
+        if self.next_tick > now {
+            sleep_until(self.next_tick).await;
+        }
+
+        let now = crate::runtime::core::Instant::from(core_rc.borrow().current_time);
+        let tick_time = self.next_tick;
+
+        match self.missed_tick_behavior {
+            MissedTickBehavior::Burst => {
+                self.next_tick = self.next_tick + self.period;
+            }
+            MissedTickBehavior::Delay => {
+                self.next_tick = now + self.period;
+            }
+            MissedTickBehavior::Skip => {
+                 let now = now;
+                 if now > self.next_tick {
+                     let missed = (now.0 - self.next_tick.0).as_millis() / self.period.as_millis();
+                     self.next_tick = self.next_tick + self.period * ((missed + 1) as u32);
+                 } else {
+                     self.next_tick = self.next_tick + self.period;
+                 }
+            }
+        }
+
+        tick_time
+    }
+
+    pub fn poll_tick(&mut self, cx: &mut Context<'_>) -> Poll<Instant> {
+        let handle = Handle::current();
+        let core_rc = handle.core.upgrade().unwrap();
+        let mut core = core_rc.borrow_mut();
+        let now = crate::runtime::core::Instant::from(core.current_time);
 
         if now >= self.next_tick {
-            self.next_tick += self.period;
-            Poll::Ready(crate::runtime::core::Instant::from(now))
+            let tick_time = self.next_tick;
+            match self.missed_tick_behavior {
+                MissedTickBehavior::Burst => {
+                    self.next_tick = self.next_tick + self.period;
+                }
+                MissedTickBehavior::Delay => {
+                    self.next_tick = now + self.period;
+                }
+                MissedTickBehavior::Skip => {
+                    if now > self.next_tick {
+                        let missed = (now.0 - self.next_tick.0).as_millis() / self.period.as_millis();
+                        self.next_tick = self.next_tick + self.period * ((missed + 1) as u32);
+                    }
+                    else {
+                        self.next_tick = self.next_tick + self.period;
+                    }
+                }
+            }
+            Poll::Ready(tick_time)
+            
         }
         else {
-            let mut core = core_rc.borrow_mut();
             let waker = cx.waker().clone();
             core.timers.push(crate::runtime::core::TimerEntry {
-                deadline: self.next_tick,
+                deadline: self.next_tick.0,
                 waker,
                 id: core.rng.r#gen() as usize,
             });

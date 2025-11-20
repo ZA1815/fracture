@@ -1,8 +1,8 @@
 use core::fmt;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque, HashSet};
 use std::future::Future;
 use std::io::{Error, ErrorKind, Result};
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::{SocketAddr, ToSocketAddrs, IpAddr, Ipv4Addr, Ipv6Addr};
 use std::pin::Pin;
 #[cfg(unix)]
 use std::path::PathBuf;
@@ -21,10 +21,13 @@ use crate::time::sleep;
 
 const DEFAULT_TCP_WINDOW_SIZE: usize = 65535;
 const MAX_UDP_PACKET_SIZE: usize = 65507;
+const EPHEMERAL_PORT_START: u16 = 49152;
+const EPHEMERAL_PORT_END: u16 = 65535;
 
 pub(crate) struct NetworkState {
     listeners: HashMap<SocketAddr, Sender<TcpConnection>>,
     udp_sockets: HashMap<SocketAddr, Sender<(Bytes, SocketAddr)>>,
+    used_ports: HashSet<(IpAddr, u16)>,
     #[cfg(unix)]
     unix_listeners: HashMap<PathBuf, Sender<unix::UnixConnection>>,
     #[cfg(unix)]
@@ -36,6 +39,7 @@ impl NetworkState {
         Self {
             listeners: HashMap::new(),
             udp_sockets: HashMap::new(),
+            used_ports: HashSet::new(),
             #[cfg(unix)]
             unix_listeners: HashMap::new(),
             #[cfg(unix)]
@@ -43,15 +47,36 @@ impl NetworkState {
         }
     }
 
-    pub fn assign_ephemeral_port(&self, core_rng: &mut rand_chacha::ChaCha8Rng) -> u16 {
-        loop {
-             let port = core_rng.gen_range(49152..=65535);
-             // Improve logic here, make more realistic
-             let addr = SocketAddr::from(([127, 0, 0, 1], port));
-             if !self.listeners.contains_key(&addr) && !self.udp_sockets.contains_key(&addr) {
-                 return port;
-             }
+    pub fn assign_ephemeral_port(&mut self, ip: IpAddr, core_rng: &mut rand_chacha::ChaCha8Rng) -> Result<u16> {
+        for _ in 0..100 {
+            let port = core_rng.gen_range(EPHEMERAL_PORT_START..=EPHEMERAL_PORT_END);
+            if !self.is_port_in_use(ip, port) {
+                self.used_ports.insert((ip, port));
+
+                return Ok(port);
+            }
         }
+
+        for port in EPHEMERAL_PORT_START..=EPHEMERAL_PORT_END {
+            if !self.is_port_in_use(ip, port) {
+                self.used_ports.insert((ip, port));
+
+                return Ok(port);
+            }
+        }
+
+        Err(Error::new(ErrorKind::AddrInUse, "fracture: Ephemeral ports exhausted"))
+    }
+
+    fn is_port_in_use(&self, ip: IpAddr, port: u16) -> bool {
+        let addr = SocketAddr::new(ip, port);
+        self.listeners.contains_key(&addr)
+            || self.udp_sockets.contains_key(&addr)
+            || self.used_ports.contains(&(ip, port))
+    }
+
+    fn release_port(&mut self, ip: IpAddr, port: u16) {
+        self.used_ports.remove(&(ip, port));
     }
 }
 
@@ -100,6 +125,7 @@ impl TcpSocket {
 
     pub fn set_nodelay(&mut self, nodelay: bool) -> Result<()> {
         self.nodelay = nodelay;
+
         Ok(())
     }
 
@@ -109,6 +135,7 @@ impl TcpSocket {
 
     pub fn set_linger(&mut self, dur: Option<Duration>) -> Result<()> {
         self.linger = Some(dur);
+
         Ok(())
     }
 
@@ -125,12 +152,43 @@ impl TcpSocket {
         Ok(self.ttl.unwrap_or(64))
     }
 
+    pub fn set_recv_buffer_size(&mut self, size: u32) -> Result<()> {
+        self.recv_buffer_size = Some(size);
+        Ok(())
+    }
+
+    pub fn recv_buffer_size(&self) -> Result<u32> {
+        Ok(self.recv_buffer_size.unwrap_or(DEFAULT_TCP_WINDOW_SIZE as u32))
+    }
+
+    pub fn set_send_buffer_size(&mut self, size: u32) -> Result<()> {
+        self.send_buffer_size = Some(size);
+
+        Ok(())
+    }
+
+    pub fn send_buffer_size(&self) -> Result<u32> {
+        Ok(self.send_buffer_size.unwrap_or(DEFAULT_TCP_WINDOW_SIZE as u32))
+    }
+
     pub fn bind(&self, addr: SocketAddr) -> Result<TcpListener> {
-        TcpListener::bind(addr)
+        TcpListener::bind(addr).await
     }
 
     pub async fn connect(self, addr: SocketAddr) -> Result<TcpStream> {
-        TcpStream::connect(addr).await
+        let mut stream = TcpStream::connect(addr).await?;
+
+        stream.set_nodelay(self.nodelay)?;
+        
+        if let Some(ttl) = self.ttl {
+            stream.set_ttl(ttl)?;
+        }
+
+        if let Some(linger) = self.linger {
+            stream.set_linger(linger)?;
+        }
+
+        Ok(stream)
     }
 }
 
@@ -155,11 +213,16 @@ impl TcpListener {
         let (tx, rx) = channel(128);
 
         core.network.listeners.insert(addr, tx);
+        core.network.used_ports.insert((addr.ip(), addr.port()));
 
         Ok(Self { local_addr: addr, accept_rx: rx })
     }
 
     pub async fn accept(&self) -> Result<(TcpStream, SocketAddr)> {
+        if chaos::should_fail(ChaosOperation::TcpAccept) {
+            return Err(Error::new(ErrorKind::Other, "fracture: Accept failed (chaos)"));
+        }
+
         let conn = self.accept_rx.recv().await.ok_or_else(|| Error::new(ErrorKind::BrokenPipe, "fracture: Listener closed"))?;
 
         let stream = TcpStream::new(conn.tx, conn.rx, self.local_addr, conn.remote_addr);
@@ -176,6 +239,17 @@ impl TcpListener {
     }
     pub fn set_ttl(&self, _ttl: u32) -> Result<()> {
         Ok(())
+    }
+}
+
+impl Drop for TcpListener {
+    fn drop(&mut self) {
+        let handle = Handle::current();
+        if let Some(core_rc) = handle.core.upgrade() {
+            let mut core = core_rc.borrow_mut();
+            core.network.listeners.remove(&self.local_addr);
+            core.network.release_port(self.local_addr.ip(), self.local_addr.port());
+        }
     }
 }
 
@@ -219,7 +293,8 @@ impl TcpStream {
 
         let (local_port, listener_tx) = {
             let mut core = core_rc.borrow_mut();
-            let port = core.network.assign_ephemeral_port(&mut core.rng);
+            let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+            let port = core.network.assign_ephemeral_port(ip, &mut core.rng);
             let listener = core.network.listeners.get(&addr).cloned();
             (port, listener)
         };
@@ -245,6 +320,8 @@ impl TcpStream {
         if !delay.is_zero() {
             sleep(delay).await;
         }
+
+        sleep(Duration::from_millis(1)).await;
         
         let (tx1, rx1) = channel(DEFAULT_TCP_WINDOW_SIZE);
         let (tx2, rx2) = channel(DEFAULT_TCP_WINDOW_SIZE);
@@ -287,9 +364,11 @@ impl TcpStream {
         if interest.is_readable() {
             self.readable().await?;
         }
+
         if interest.is_writable() {
             self.writable().await?;
         }
+
         Ok(Ready::from_interest(interest))
     }
 
@@ -303,6 +382,7 @@ impl TcpStream {
         }
 
         struct ReadableFuture<'a> { rx: &'a AsyncReceiver<Bytes> }
+
         impl Future for ReadableFuture<'_> {
             type Output = Result<()>;
             fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -312,6 +392,7 @@ impl TcpStream {
                 }
             }
         }
+
         ReadableFuture { rx: &self.rx }.await
     }
 
@@ -321,12 +402,14 @@ impl TcpStream {
         }
 
         struct WritableFuture<'a> { tx: &'a Sender<Bytes> }
+
         impl Future for WritableFuture<'_> {
             type Output = Result<()>;
             fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
                 self.tx.poll_reserve(cx, 1).map(|_| Ok(()))
             }
         }
+
         WritableFuture { tx: &self.tx }.await
     }
 
@@ -437,6 +520,18 @@ impl TcpStream {
     }
 }
 
+impl Drop for TcpStream {
+    fn drop(&mut self) {
+        let handle = Handle::current();
+
+        if let Some(core_rc) = handle.core.upgrade() {
+            let mut core = core_rc.borrow_mut();
+
+            core.network.release_port(self.local_addr.ip(), self.local_addr.port());
+        }
+    }
+}
+
 impl AsyncRead for TcpStream {
     fn poll_read(
         mut self: Pin<&mut Self>,
@@ -504,6 +599,10 @@ impl AsyncWrite for TcpStream {
 
         if chaos::is_partitioned(&local, &remote) {
             // Simulate a timeout/error later
+            if let Poll::Pending = self.tx.poll_reserve(cx, buf.len()) {
+                return Poll::Pending;
+            }
+
             return Poll::Ready(Ok(buf.len()));
         }
 
@@ -534,6 +633,7 @@ impl AsyncWrite for TcpStream {
 
     fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
         self.tx.close();
+
         Poll::Ready(Ok(()))
     }
 }
@@ -571,6 +671,19 @@ impl AsyncWrite for OwnedWriteHalf {
     }
 }
 
+pub async fn lookup_host<A: ToSocketAddrs>(host: A) -> Result<impl Iterator<Item = SocketAddr>> {
+    if chaos::should_fail(ChaosOperation::DnsLookup) {
+        return Err(Error::new(ErrorKind::Other, "fracture: DNS resolution failed (chaos)"));
+    }
+
+    sleep(Duration::from_millis(1)).await;
+
+    match host.to_socket_addrs() {
+        Ok(iter) => Ok(iter),
+        Err(e) => Err(e)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Interest(u8);
 
@@ -584,9 +697,11 @@ impl Interest {
     pub fn is_readable(self) -> bool {
         (self.0 & 0b01) != 0
     }
+
     pub fn is_writable(self) -> bool {
         (self.0 & 0b10) != 0
     }
+
     pub fn add(self, other: Interest) -> Interest {
         Interest(self.0 | other.0)
     }
@@ -606,9 +721,11 @@ impl Ready {
     pub fn is_readable(self) -> bool {
         (self.0 & 0b01) != 0
     }
+
     pub fn is_writable(self) -> bool {
         (self.0 & 0b10) != 0
     }
+
     fn from_interest(interest: Interest) -> Ready {
         Ready(interest.0)
     }
@@ -745,7 +862,7 @@ impl<T: Buf + Send> Sender<T> {
             arrival_time,
         };
 
-        // Later, if queue is empty or last item arrives before this one, push back
+        // Later: if queue is empty or last item arrives before this one, push back
         let insert_idx =
             if s.queue.is_empty() || s.queue.back().unwrap().arrival_time <= arrival_time {
                 s.queue.len()
@@ -878,9 +995,7 @@ impl<T: Buf + Send> AsyncReceiver<T> {
             Poll::Pending
         }
     }
-}
 
-impl<T: Clone> AsyncReceiver<T> {
     pub fn try_recv(&self) -> Result<Option<T>, ()> {
         let mut lock = self.state.lock().unwrap();
 
@@ -908,6 +1023,10 @@ impl<T: Clone> AsyncReceiver<T> {
             Err(())
         }
     }
+}
+
+impl<T: Clone> AsyncReceiver<T> {
+    
 }
 
 pub fn channel<T>(capacity: usize) -> (Sender<T>, AsyncReceiver<T>) {
@@ -1043,6 +1162,17 @@ impl UdpSocket {
             }
             Ok(None) => Err(Error::new(ErrorKind::WouldBlock, "fracture: Would block")),
             Err(_) => Err(Error::new(ErrorKind::BrokenPipe, "fracture: Socket closed"))
+        }
+    }
+}
+
+impl Drop for UdpSocket {
+    fn drop(&mut self) {
+        let handle = Handle::current();
+        if let Some(core_rc) = handle.core.upgrade() {
+            let mut core = core_rc.borrow_mut();
+            core.network.udp_sockets.remove(&self.local_addr);
+            core.network.release_port(self.local_addr.ip(), self.local_addr.port());
         }
     }
 }

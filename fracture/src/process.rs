@@ -77,11 +77,19 @@ struct ProcessState {
     cwd: PathBuf,
     stdout_data: Vec<u8>,
     stderr_data: Vec<u8>,
-    stdin_data: Vec<u8>
+    stdin_data: Vec<u8>,
+    config: ProcessConfig
+}
+
+#[derive(Clone)]
+struct ProcessConfig {
+    stdin_piped: bool,
+    stdout_piped: bool,
+    stderr_piped: bool,
 }
 
 impl ProcessState {
-    fn new(command: String, args: Vec<String>, env: HashMap<String, String>, cwd: PathBuf) -> Self {
+    fn new(command: String, args: Vec<String>, env: HashMap<String, String>, cwd: PathBuf, config: ProcessConfig) -> Self {
         Self {
             pid: 0,
             status: ProcessStatus::Running,
@@ -94,6 +102,7 @@ impl ProcessState {
             stdout_data: Vec::new(),
             stderr_data: Vec::new(),
             stdin_data: Vec::new(),
+            config
         }
     }
 
@@ -249,11 +258,18 @@ impl Command {
             env.insert(k.to_string_lossy().to_string(), v.to_string_lossy().to_string());
         }
 
+        let config = ProcessConfig {
+            stdin_piped: matches!(self.stdin, Stdio::Piped),
+            stdout_piped: matches!(self.stdout, Stdio::Piped),
+            stderr_piped: matches!(self.stderr, Stdio::Piped),
+        };
+
         let state = ProcessState::new(
             self.program.to_string_lossy().to_string(),
             self.args.iter().map(|s| s.to_string_lossy().to_string()).collect(),
             env,
-            self.cwd.clone().unwrap_or_else(|| std::env::current_dir().unwrap())
+            self.cwd.clone().unwrap_or_else(|| std::env::current_dir().unwrap()),
+            config
         );
 
         let pid = PROCESS_REGISTRY.register(state);
@@ -430,7 +446,9 @@ impl AsyncWrite for ChildStdin {
 
         if let Some(process) = PROCESS_REGISTRY.get(self.pid) {
             let mut state = process.lock().unwrap();
-            state.stdin_data.extend_from_slice(buf);
+            if state.config.stdin_piped {
+                state.stdin_data.extend_from_slice(buf);
+            }
         }
 
         Poll::Ready(Ok(buf.len()))
@@ -478,6 +496,10 @@ impl AsyncRead for ChildStdout {
         };
 
         let state = process.lock().unwrap();
+        if !state.config.stdout_piped {
+            return Poll::Ready(Ok(()));
+        }
+
         let available = &state.stdout_data[self.position..];
 
         if available.is_empty() {
@@ -531,6 +553,10 @@ impl AsyncRead for ChildStderr {
         };
 
         let state = process.lock().unwrap();
+        if !state.config.stderr_piped {
+            return Poll::Ready(Ok(()));
+        }
+
         let available = &state.stderr_data[self.position..];
 
         if available.is_empty() {
@@ -615,9 +641,14 @@ impl ExitStatus {
 
 impl From<StdExitStatus> for ExitStatus {
     fn from(status: StdExitStatus) -> Self {
+        #[cfg(unix)]
+        let signal = std::os::unix::process::ExitStatusExt::signal(&status);
+        #[cfg(not(unix))]
+        let signal = None;
+
         Self {
             code: status.code(),
-            signal: None,
+            signal,
         }
     }
 }
