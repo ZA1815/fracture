@@ -36,14 +36,13 @@ pub use tokio::{main, test, select, join, try_join, pin};
 
 #[cfg(feature = "simulation")]
 pub mod prelude {
-    pub use crate::{
-        net::{TcpListener, TcpStream, UdpSocket},
-        time::{sleep, timeout, interval, ChaosInstant},
-        fs::{File, read, write, OpenOptions},
-        task::{spawn, spawn_blocking, yield_now, JoinHandle},
-        io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter, ChaosReader, ChaosWriter, ChaosSeeker},
-        sync::{Mutex, RwLock, Semaphore, Notify}
-    };
+    pub use crate::net::{TcpListener, TcpStream, UdpSocket};
+    pub use crate::time::{sleep, timeout, interval, ChaosInstant as Instant};
+    pub use crate::fs::{File, OpenOptions};
+    pub use crate::task::{spawn, spawn_blocking, yield_now, JoinHandle};
+    pub use crate::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
+    pub use crate::sync::{Mutex, RwLock, Semaphore, Notify, mpsc, oneshot, watch, broadcast, Barrier};
+    pub use crate::{select, join, try_join, pin};
 
     pub use crate::chaos::{
         inject,

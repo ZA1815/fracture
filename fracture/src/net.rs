@@ -81,7 +81,6 @@ impl TcpSocket {
     }
 
     pub fn new_v6() -> Result<TcpSocket> {
-        // Simulation handles v4/v6 transparently mostly, but we adhere to API
         Ok(TcpSocket {
             ttl: None,
             nodelay: false,
@@ -92,11 +91,11 @@ impl TcpSocket {
     }
 
     pub fn set_reuseaddr(&mut self, _reuseaddr: bool) -> Result<()> {
-        Ok(()) // No-op in sim
+        Ok(())
     }
 
     pub fn set_reuseport(&mut self, _reuseport: bool) -> Result<()> {
-        Ok(()) // No-op in sim
+        Ok(())
     }
 
     pub fn set_nodelay(&mut self, nodelay: bool) -> Result<()> {
@@ -281,6 +280,92 @@ impl TcpStream {
                 Ok(len)
             }
             None => Ok(0)
+        }
+    }
+
+    pub async fn ready(&self, interest: Interest) -> Result<Ready> {
+        if interest.is_readable() {
+            self.readable().await?;
+        }
+        if interest.is_writable() {
+            self.writable().await?;
+        }
+        Ok(Ready::from_interest(interest))
+    }
+
+    pub async fn readable(&self) -> Result<()> {
+        if chaos::should_fail(ChaosOperation::TcpReadReady) {
+            std::future::pending().await
+        }
+        
+        if !self.read_buffer.is_empty() {
+            return Ok(());
+        }
+
+        struct ReadableFuture<'a> { rx: &'a AsyncReceiver<Bytes> }
+        impl Future for ReadableFuture<'_> {
+            type Output = Result<()>;
+            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                match self.rx.poll_peek(cx) {
+                    Poll::Ready(_) => Poll::Ready(Ok(())),
+                    Poll::Pending => Poll::Pending,
+                }
+            }
+        }
+        ReadableFuture { rx: &self.rx }.await
+    }
+
+    pub async fn writable(&self) -> Result<()> {
+        if chaos::should_fail(ChaosOperation::TcpWriteReady) {
+            std::future::pending().await
+        }
+
+        struct WritableFuture<'a> { tx: &'a Sender<Bytes> }
+        impl Future for WritableFuture<'_> {
+            type Output = Result<()>;
+            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                self.tx.poll_reserve(cx, 1).map(|_| Ok(()))
+            }
+        }
+        WritableFuture { tx: &self.tx }.await
+    }
+
+    pub fn try_read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        if chaos::should_fail(ChaosOperation::TcpTryRead) {
+             return Err(Error::new(ErrorKind::WouldBlock, "fracture: TryRead failed (chaos)"));
+        }
+
+        if !self.read_buffer.is_empty() {
+            let len = std::cmp::min(buf.len(), self.read_buffer.len());
+            buf[..len].copy_from_slice(&self.read_buffer[..len]);
+            self.read_buffer.advance(len);
+            return Ok(len);
+        }
+        
+        match self.rx.try_recv() {
+            Ok(Some(data)) => {
+                let len = std::cmp::min(buf.len(), data.len());
+                buf[..len].copy_from_slice(&data[..len]);
+                if len < data.len() {
+                    self.read_buffer.extend_from_slice(&data[len..]);
+                }
+                Ok(len)
+            }
+            Ok(None) => Ok(0),
+            Err(_) => Err(Error::new(ErrorKind::WouldBlock, "fracture: Would block"))
+        }
+    }
+
+    pub fn try_write(&self, buf: &[u8]) -> Result<usize> {
+        if chaos::should_fail(ChaosOperation::TcpTryWrite) {
+             return Err(Error::new(ErrorKind::WouldBlock, "fracture: TryWrite failed (chaos)"));
+        }
+
+        let bytes = Bytes::copy_from_slice(buf);
+        match self.tx.try_send(bytes) {
+            Ok(()) => Ok(buf.len()),
+            Err(TrySendError::Full(_)) => Err(Error::new(ErrorKind::WouldBlock, "fracture: Would block")),
+            Err(TrySendError::Closed(_)) => Err(Error::new(ErrorKind::BrokenPipe, "fracture: Broken pipe"))
         }
     }
 
@@ -486,6 +571,49 @@ impl AsyncWrite for OwnedWriteHalf {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Interest(u8);
+
+impl Interest {
+    pub const READABLE: Interest = Interest(0b01);
+
+    pub const WRITABLE: Interest = Interest(0b10);
+
+    pub const READ_WRITE: Interest = Interest(0b11);
+
+    pub fn is_readable(self) -> bool {
+        (self.0 & 0b01) != 0
+    }
+    pub fn is_writable(self) -> bool {
+        (self.0 & 0b10) != 0
+    }
+    pub fn add(self, other: Interest) -> Interest {
+        Interest(self.0 | other.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ready(u8);
+impl Ready {
+    pub const EMPTY: Ready = Ready(0);
+
+    pub const READABLE: Ready = Ready(0b01);
+
+    pub const WRITABLE: Ready = Ready(0b10);
+
+    pub const READ_WRITE: Ready = Ready(0b11);
+
+    pub fn is_readable(self) -> bool {
+        (self.0 & 0b01) != 0
+    }
+    pub fn is_writable(self) -> bool {
+        (self.0 & 0b10) != 0
+    }
+    fn from_interest(interest: Interest) -> Ready {
+        Ready(interest.0)
+    }
+}
+
 #[derive(Debug)]
 pub struct SendError<T>(pub T);
 
@@ -617,7 +745,7 @@ impl<T: Buf + Send> Sender<T> {
             arrival_time,
         };
 
-        // Optimization: if queue is empty or last item arrives before this one, push back.
+        // Later, if queue is empty or last item arrives before this one, push back
         let insert_idx =
             if s.queue.is_empty() || s.queue.back().unwrap().arrival_time <= arrival_time {
                 s.queue.len()
@@ -783,7 +911,7 @@ impl UdpSocket {
         let mut core = core_rc.borrow_mut();
 
         if core.network.udp_sockets.contains_key(&addr) {
-            return Err(Error::new(ErrorKind::AddrInUse, "Address already in use"));
+            return Err(Error::new(ErrorKind::AddrInUse, "fracture: Address already in use"));
         }
 
         let (tx, rx) = channel(1024);
@@ -804,7 +932,7 @@ impl UdpSocket {
         let target = target.to_socket_addrs()?.next().ok_or_else(|| Error::new(ErrorKind::InvalidInput, "fracture: Invalid address"))?;
 
         if buf.len() > MAX_UDP_PACKET_SIZE {
-            return Err(Error::new(ErrorKind::InvalidInput, "Packet too large"));
+            return Err(Error::new(ErrorKind::InvalidInput, "fracture: Packet too large"));
         }
 
         let local_str = self.local_addr.to_string();
@@ -850,6 +978,43 @@ impl UdpSocket {
             }
         }
     }
+
+    pub fn try_send_to<A: ToSocketAddrs>(&self, buf: &[u8], target: A) -> Result<usize> {
+        if chaos::should_fail(ChaosOperation::UdpTrySendTo) {
+            return Err(Error::new(ErrorKind::WouldBlock, "fracture: TrySendTo failed"));
+        }
+
+        let target = target.to_socket_addrs()?.next().ok_or_else(|| Error::new(ErrorKind::InvalidInput, "fracture: Invalid address"))?;
+        let local_str = self.local_addr.to_string();
+        let target_str = target.to_string();
+
+        if chaos::is_partitioned(&local_str, &target_str) {
+            return Ok(buf.len());
+        }
+
+        let handle = Handle::current();
+        let core_rc = handle.core.upgrade().unwrap();
+        let target_mailbox = { let core = core_rc.borrow(); core.network.udp_sockets.get(&target).cloned() };
+        
+        if let Some(mailbox) = target_mailbox {
+            let data = Bytes::copy_from_slice(buf);
+            mailbox.try_send((data, self.local_addr)).map_err(|_| Error::new(ErrorKind::WouldBlock, "fracture: Buffer full"))?;
+        }
+        Ok(buf.len())
+    }
+
+    pub fn try_recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
+        if chaos::should_fail(ChaosOperation::UdpTryRecvFrom) { return Err(Error::new(ErrorKind::WouldBlock, "fracture: TryRecvFrom failed")); }
+        match self.mailbox.try_recv() {
+            Ok(Some((data, src))) => {
+                let n = std::cmp::min(buf.len(), data.len());
+                buf[..n].copy_from_slice(&data[..n]);
+                Ok((n, src))
+            }
+            Ok(None) => Err(Error::new(ErrorKind::WouldBlock, "fracture: Would block")),
+            Err(_) => Err(Error::new(ErrorKind::BrokenPipe, "fracture: Socket closed"))
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -890,7 +1055,7 @@ pub mod unix {
             let mut core = core_rc.borrow_mut();
 
             if core.network.unix_listeners.contains_key(&path) {
-                return Err(Error::new(ErrorKind::AddrInUse, "Address already in use"));
+                return Err(Error::new(ErrorKind::AddrInUse, "fracture: Address already in use"));
             }
 
             let (tx, rx) = channel(128);
@@ -904,7 +1069,7 @@ pub mod unix {
                 return Err(Error::new(ErrorKind::Other, "fracture: UnixAccept failed (chaos)"));
             }
 
-            let conn = self.accept_rx.recv().await.ok_or(Error::new(ErrorKind::BrokenPipe, "Listener closed"))?;
+            let conn = self.accept_rx.recv().await.ok_or(Error::new(ErrorKind::BrokenPipe, "fracture: Listener closed"))?;
             let stream = UnixStream::new(conn.tx, conn.rx, self.path.clone(), conn.peer_path.clone());
             
             Ok((stream, SocketAddr(conn.peer_path)))
@@ -953,9 +1118,9 @@ pub mod unix {
                     tx: tx2,
                     rx: rx1
                 };
-                listener_tx.send(conn).map_err(|_| Error::new(ErrorKind::ConnectionRefused, "Connection refused"))?;
+                listener_tx.send(conn).map_err(|_| Error::new(ErrorKind::ConnectionRefused, "fracture: Connection refused"))?;
             } else {
-                return Err(Error::new(ErrorKind::NotFound, "Socket not found"));
+                return Err(Error::new(ErrorKind::NotFound, "fracture: Socket not found"));
             }
 
             Ok(UnixStream::new(tx1, rx2, local_path, peer_path))
@@ -1011,7 +1176,7 @@ pub mod unix {
             let bytes = Bytes::copy_from_slice(buf);
             match self.tx.try_send(bytes) {
                 Ok(_) => Poll::Ready(Ok(buf.len())),
-                Err(TrySendError::Closed(_)) => Poll::Ready(Err(Error::new(ErrorKind::BrokenPipe, "Broken pipe"))),
+                Err(TrySendError::Closed(_)) => Poll::Ready(Err(Error::new(ErrorKind::BrokenPipe, "fracture: Broken pipe"))),
                 Err(TrySendError::Full(_)) => {
                     cx.waker().wake_by_ref();
                     Poll::Pending
@@ -1042,7 +1207,7 @@ pub mod unix {
             let mut core = core_rc.borrow_mut();
 
             if core.network.unix_dgram.contains_key(&path) {
-                return Err(Error::new(ErrorKind::AddrInUse, "Address already in use"));
+                return Err(Error::new(ErrorKind::AddrInUse, "fracture: Address already in use"));
             }
 
             let (tx, rx) = channel(1024);
@@ -1080,11 +1245,11 @@ pub mod unix {
 
             if let Some(mailbox) = target_mailbox {
                 let data = Bytes::copy_from_slice(buf);
-                mailbox.try_send((data, self.path.clone())).map_err(|_| Error::new(ErrorKind::Other, "Buffer full"))?;
+                mailbox.try_send((data, self.path.clone())).map_err(|_| Error::new(ErrorKind::Other, "fracture: Buffer full"))?;
                 Ok(buf.len())
             }
             else {
-                Err(Error::new(ErrorKind::NotFound, "Socket not found"))
+                Err(Error::new(ErrorKind::NotFound, "fracture: Socket not found"))
             }
         }
 
@@ -1099,7 +1264,7 @@ pub mod unix {
                     buf[..len].copy_from_slice(&data[..len]);
                     Ok((len, SocketAddr(src)))
                 }
-                None => Err(Error::new(ErrorKind::BrokenPipe, "Socket closed"))
+                None => Err(Error::new(ErrorKind::BrokenPipe, "fracture: Socket closed"))
             }
         }
     }
