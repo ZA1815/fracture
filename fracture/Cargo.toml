@@ -36,6 +36,9 @@ parking_lot = "0.12"
 num_cpus = "1.17.0"
 slab = "0.4.11"
 
+[target.'cfg(unix)'.dependencies]
+unix = "0.6.12"
+
 [dependencies.tokio]
 version = "1.41"
 features = ["full"]

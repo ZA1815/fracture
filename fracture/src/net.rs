@@ -4,6 +4,8 @@ use std::future::Future;
 use std::io::{Error, ErrorKind, Result};
 use std::net::SocketAddr;
 use std::pin::Pin;
+#[cfg(unix)]
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
@@ -21,14 +23,22 @@ const MAX_UDP_PACKET_SIZE: usize = 65507;
 
 pub(crate) struct NetworkState {
     listeners: HashMap<SocketAddr, Sender<TcpConnection>>,
-    udp_sockets: HashMap<SocketAddr, Sender<(Bytes, SocketAddr)>>
+    udp_sockets: HashMap<SocketAddr, Sender<(Bytes, SocketAddr)>>,
+    #[cfg(unix)]
+    unix_listeners: HashMap<PathBuf, Sender<unix::UnixConnection>>,
+    #[cfg(unix)]
+    unix_dgram: HashMap<PathBuf, Sender<(Bytes, PathBuf)>>
 }
 
 impl NetworkState {
     pub fn new() -> Self {
         Self {
             listeners: HashMap::new(),
-            udp_sockets: HashMap::new()
+            udp_sockets: HashMap::new(),
+            #[cfg(unix)]
+            unix_listeners: HashMap::new(),
+            #[cfg(unix)]
+            unix_dgram: HashMap::new()
         }
     }
 
@@ -168,6 +178,29 @@ impl TcpStream {
             local_addr,
             peer_addr: addr
         })
+    }
+
+    pub async fn peek(&mut self, buf: &mut [u8]) -> Result<usize> {
+        if chaos::should_fail(ChaosOperation::TcpPeek) {
+            return Err(Error::new(ErrorKind::Other, "fracture: Peek failed (chaos)"));
+        }
+
+        if !self.read_buffer.is_empty() {
+            let len = std::cmp::min(buf.len(), self.read_buffer.len());
+            buf[..len].copy_from_slice(&self.read_buffer[..len]);
+
+            return Ok(len);
+        }
+
+        match self.rx.peek().await {
+            Some(data) => {
+                let len = std::cmp::min(buf.len(), data.len());
+                buf[..len].copy_from_slice(&data[..len]);
+                
+                Ok(len)
+            }
+            None => Ok(0)
+        }
     }
 
     pub fn local_addr(&self) -> Result<SocketAddr> {
@@ -504,6 +537,21 @@ impl<T: Buf + Send> AsyncReceiver<T> {
             Poll::Pending
         }
     }
+
+    pub async fn peek(&self) -> Option<T> {
+        let mut s = self.state.lock().unwrap();
+        let handle = Handle::current();
+        let core_rc = handle.core.upgrade().expect("fracture: Runtime dropped");
+        let now = core_rc.borrow().current_time;
+
+        if let Some(envelope) = s.queue.front() {
+            if envelope.arrival_time <= now {
+                return Some(envelope.data.clone());
+            }
+        }
+
+        None
+    }
 }
 
 pub fn channel<T>(capacity: usize) -> (Sender<T>, AsyncReceiver<T>) {
@@ -597,6 +645,259 @@ impl UdpSocket {
                 None => {
                     return Err(Error::new(ErrorKind::BrokenPipe, "fracture: Socket closed"));
                 }
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+pub mod unix {
+    use super::*;
+    use std::path::Path;
+
+    #[derive(Clone, Debug)]
+    pub struct SocketAddr(PathBuf);
+
+    impl SocketAddr {
+        pub fn as_pathname(&self) -> Option<&Path> {
+            Some(&self.0)
+        }
+        pub fn is_unnamed(&self) -> bool { false }
+    }
+
+    pub(crate) struct UnixConnection {
+        pub peer_path: PathBuf,
+        pub tx: Sender<Bytes>,
+        pub rx: AsyncReceiver<Bytes>
+    }
+
+    pub struct UnixListener {
+        path: PathBuf,
+        accept_rx: AsyncReceiver<UnixConnection>
+    }
+
+    impl UnixListener {
+        pub fn bind<P: AsRef<Path>>(path: P) -> Result<UnixListener> {
+            if chaos::should_fail(ChaosOperation::UnixBind) {
+                return Err(Error::new(ErrorKind::Other, "fracture: UnixBind failed (chaos)"));
+            }
+
+            let path = path.as_ref().to_path_buf();
+            let handle = Handle::current();
+            let core_rc = handle.core.upgrade().unwrap();
+            let mut core = core_rc.borrow_mut();
+
+            if core.network.unix_listeners.contains_key(&path) {
+                return Err(Error::new(ErrorKind::AddrInUse, "Address already in use"));
+            }
+
+            let (tx, rx) = channel(128);
+            core.network.unix_listeners.insert(path.clone(), tx);
+
+            Ok(UnixListener { path, accept_rx: rx })
+        }
+
+        pub async fn accept(&self) -> Result<(UnixStream, SocketAddr)> {
+            if chaos::should_fail(ChaosOperation::UnixAccept) {
+                return Err(Error::new(ErrorKind::Other, "fracture: UnixAccept failed (chaos)"));
+            }
+
+            let conn = self.accept_rx.recv().await.ok_or(Error::new(ErrorKind::BrokenPipe, "Listener closed"))?;
+            let stream = UnixStream::new(conn.tx, conn.rx, self.path.clone(), conn.peer_path.clone());
+            
+            Ok((stream, SocketAddr(conn.peer_path)))
+        }
+        
+        pub fn local_addr(&self) -> Result<SocketAddr> {
+            Ok(SocketAddr(self.path.clone()))
+        }
+    }
+
+    pub struct UnixStream {
+        tx: Sender<Bytes>,
+        rx: AsyncReceiver<Bytes>,
+        read_buffer: BytesMut,
+        local_path: PathBuf,
+        peer_path: PathBuf
+    }
+
+    impl UnixStream {
+        pub(crate) fn new(tx: Sender<Bytes>, rx: AsyncReceiver<Bytes>, local: PathBuf, peer: PathBuf) -> Self {
+            Self { tx, rx, read_buffer: BytesMut::new(), local_path: local, peer_path: peer }
+        }
+
+        pub async fn connect<P: AsRef<Path>>(path: P) -> Result<UnixStream> {
+            if chaos::should_fail(ChaosOperation::UnixConnect) {
+                 return Err(Error::new(ErrorKind::ConnectionRefused, "fracture: UnixConnect failed (chaos)"));
+            }
+
+            let peer_path = path.as_ref().to_path_buf();
+            let handle = Handle::current();
+            let core_rc = handle.core.upgrade().unwrap();
+            
+            let (tx1, rx1) = channel(DEFAULT_TCP_WINDOW_SIZE);
+            let (tx2, rx2) = channel(DEFAULT_TCP_WINDOW_SIZE);
+
+            let mut core = core_rc.borrow_mut();
+            let ephemeral_id = core.rng.r#gen();
+            let local_path = PathBuf::from(format!("/tmp/fracture_ephemeral_{}", ephemeral_id));
+
+            let listener = core.network.unix_listeners.get(&peer_path).cloned();
+            drop(core);
+
+            if let Some(listener_tx) = listener {
+                let conn = UnixConnection {
+                    peer_path: local_path.clone(),
+                    tx: tx2,
+                    rx: rx1
+                };
+                listener_tx.send(conn).map_err(|_| Error::new(ErrorKind::ConnectionRefused, "Connection refused"))?;
+            } else {
+                return Err(Error::new(ErrorKind::NotFound, "Socket not found"));
+            }
+
+            Ok(UnixStream::new(tx1, rx2, local_path, peer_path))
+        }
+
+        pub fn local_addr(&self) -> Result<SocketAddr> {
+            Ok(SocketAddr(self.local_path.clone()))
+        }
+
+        pub fn peer_addr(&self) -> Result<SocketAddr> {
+            Ok(SocketAddr(self.peer_path.clone()))
+        }
+
+        pub fn split(self) -> (crate::io::ReadHalf<UnixStream>, crate::io::WriteHalf<UnixStream>) {
+            crate::io::split(self)
+        }
+    }
+
+    impl AsyncRead for UnixStream {
+        fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<Result<()>> {
+            if chaos::should_fail(ChaosOperation::UnixRecv) {
+                return Poll::Ready(Err(Error::new(ErrorKind::Other, "fracture: UnixRecv failed (chaos)")));
+            }
+
+            if !self.read_buffer.is_empty() {
+                let len = std::cmp::min(buf.remaining(), self.read_buffer.len());
+                buf.put_slice(&self.read_buffer[..len]);
+                self.read_buffer.advance(len);
+                return Poll::Ready(Ok(()));
+            }
+
+            match self.rx.poll_recv(cx) {
+                Poll::Ready(Some(data)) => {
+                    let len = std::cmp::min(buf.remaining(), data.len());
+                    buf.put_slice(&data[..len]);
+                    if data.len() > len {
+                         self.read_buffer.extend_from_slice(&data[len..]);
+                    }
+                    Poll::Ready(Ok(()))
+                }
+                Poll::Ready(None) => Poll::Ready(Ok(())),
+                Poll::Pending => Poll::Pending
+            }
+        }
+    }
+
+    impl AsyncWrite for UnixStream {
+        fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize>> {
+             if chaos::should_fail(ChaosOperation::UnixSend) {
+                return Poll::Ready(Err(Error::new(ErrorKind::BrokenPipe, "fracture: UnixSend failed (chaos)")));
+            }
+            
+            let bytes = Bytes::copy_from_slice(buf);
+            match self.tx.try_send(bytes) {
+                Ok(_) => Poll::Ready(Ok(buf.len())),
+                Err(TrySendError::Closed(_)) => Poll::Ready(Err(Error::new(ErrorKind::BrokenPipe, "Broken pipe"))),
+                Err(TrySendError::Full(_)) => {
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+            }
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
+            self.tx.close();
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    pub struct UnixDatagram {
+        path: PathBuf,
+        mailbox: AsyncReceiver<(Bytes, PathBuf)>
+    }
+
+    impl UnixDatagram {
+        pub fn bind<P: AsRef<Path>>(path: P) -> Result<UnixDatagram> {
+            let path = path.as_ref().to_path_buf();
+            let handle = Handle::current();
+            let core_rc = handle.core.upgrade().unwrap();
+            let mut core = core_rc.borrow_mut();
+
+            if core.network.unix_dgram.contains_key(&path) {
+                return Err(Error::new(ErrorKind::AddrInUse, "Address already in use"));
+            }
+
+            let (tx, rx) = channel(1024);
+            core.network.unix_dgram.insert(path.clone(), tx);
+
+            Ok(UnixDatagram { path, mailbox: rx })
+        }
+
+        pub fn unbound() -> Result<UnixDatagram> {
+            let handle = Handle::current();
+            let core_rc = handle.core.upgrade().unwrap();
+            let mut core = core_rc.borrow_mut();
+            use rand::Rng;
+            let id = core.rng.r#gen();
+            let path = PathBuf::from(format!("/tmp/fracture_dgram_{}", id));
+             
+            let (tx, rx) = channel(1024);
+            core.network.unix_dgram.insert(path.clone(), tx);
+             
+            Ok(UnixDatagram { path, mailbox: rx })
+        }
+
+        pub async fn send_to<P: AsRef<Path>>(&self, buf: &[u8], target: P) -> Result<usize> {
+            if chaos::should_fail(ChaosOperation::UnixDatagramSend) {
+                return Err(Error::new(ErrorKind::Other, "fracture: UnixDgramSend failed (chaos)"));
+            }
+            
+            let target = target.as_ref().to_path_buf();
+            let handle = Handle::current();
+            let core_rc = handle.core.upgrade().unwrap();
+            let target_mailbox = {
+                let core = core_rc.borrow();
+                core.network.unix_dgram.get(&target).cloned()
+            };
+
+            if let Some(mailbox) = target_mailbox {
+                let data = Bytes::copy_from_slice(buf);
+                mailbox.try_send((data, self.path.clone())).map_err(|_| Error::new(ErrorKind::Other, "Buffer full"))?;
+                Ok(buf.len())
+            }
+            else {
+                Err(Error::new(ErrorKind::NotFound, "Socket not found"))
+            }
+        }
+
+        pub async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
+            if chaos::should_fail(ChaosOperation::UnixDatagramRecv) {
+                 return Err(Error::new(ErrorKind::Other, "fracture: UnixDgramRecv failed (chaos)"));
+            }
+
+            match self.mailbox.recv().await {
+                Some((data, src)) => {
+                    let len = std::cmp::min(buf.len(), data.len());
+                    buf[..len].copy_from_slice(&data[..len]);
+                    Ok((len, SocketAddr(src)))
+                }
+                None => Err(Error::new(ErrorKind::BrokenPipe, "Socket closed"))
             }
         }
     }
