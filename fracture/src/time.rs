@@ -161,12 +161,3 @@ impl Interval {
 }
 
 pub type ChaosInstant = crate::runtime::core::Instant;
-
-impl crate::runtime::core::Instant {
-    pub fn now() -> Self {
-        let handle = Handle::current();
-        let core = handle.core.upgrade().expect("fracture: Runtime dropped");
-        let now = core.borrow().current_time;
-        Self(now)
-    }
-}

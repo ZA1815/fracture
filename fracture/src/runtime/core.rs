@@ -11,8 +11,6 @@ use super::waker::make_waker;
 
 use crate::net::NetworkState;
 use crate::fs::FileSystemState;
-use crate::process::ProcessTable;
-use crate::signal::SignalState;
 
 pub(crate) struct Core {
     pub rng: ChaCha8Rng,
@@ -23,8 +21,6 @@ pub(crate) struct Core {
 
     pub network: NetworkState,
     pub fs: FileSystemState,
-    pub processes: ProcessTable,
-    pub signals: SignalState
 }
 
 #[derive(Eq, PartialEq)]
@@ -46,6 +42,65 @@ impl PartialOrd for TimerEntry {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Instant(pub(crate) Duration);
+
+impl Instant {
+    pub fn now() -> Self {
+        let handle = crate::runtime::Handle::current();
+        let core = handle.core.upgrade().expect("fracture: Runtime dropped");
+        let now = core.borrow().current_time;
+        Self(now)
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        Self::now().duration_since(*self)
+    }
+
+    pub fn duration_since(&self, earlier: Instant) -> Duration {
+        self.0.saturating_sub(earlier.0)
+    }
+
+    pub fn checked_add(&self, duration: Duration) -> Option<Instant> {
+        self.0.checked_add(duration).map(Instant)
+    }
+
+    pub fn checked_sub(&self, duration: Duration) -> Option<Instant> {
+        self.0.checked_sub(duration).map(Instant)
+    }
+
+    pub fn saturating_duration_since(&self, earlier: Instant) -> Duration {
+        self.0.saturating_sub(earlier.0)
+    }
+}
+
+impl std::ops::Add<Duration> for Instant {
+    type Output = Instant;
+    fn add(self, other: Duration) -> Instant {
+        Instant(self.0 + other)
+    }
+}
+
+impl std::ops::Sub<Duration> for Instant {
+    type Output = Instant;
+    fn sub(self, other: Duration) -> Instant {
+        Instant(self.0 - other)
+    }
+}
+
+impl std::ops::Sub<Instant> for Instant {
+    type Output = Duration;
+    fn sub(self, other: Instant) -> Duration {
+        self.0 - other.0
+    }
+}
+
+impl From<Duration> for Instant {
+    fn from(d: Duration) -> Self {
+        Instant(d)
+    }
+}
+
 impl Core {
     pub fn new(seed: u64) -> Self {
         eprintln!("🎲 Fracture Runtime Initialized (Seed: {})", seed);
@@ -57,9 +112,7 @@ impl Core {
             current_time: Duration::ZERO,
             timers: BinaryHeap::new(),
             network: NetworkState::new(),
-            fs: FileSystemState::new(),
-            processes: ProcessTable::new(),
-            signals: SignalState::new()
+            fs: FileSystemState::new()
         }
     }
 

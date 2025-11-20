@@ -880,6 +880,36 @@ impl<T: Buf + Send> AsyncReceiver<T> {
     }
 }
 
+impl<T: Clone> AsyncReceiver<T> {
+    pub fn try_recv(&self) -> Result<Option<T>, ()> {
+        let mut lock = self.state.lock().unwrap();
+
+        let handle = Handle::current();
+        let core_rc = handle.core.upgrade().expect("fracture: Runtime dropped");
+        let now = core_rc.borrow().current_time;
+
+        if let Some(envelope) = lock.queue.front() {
+            if envelope.arrival_time <= now {
+                let envelope = lock.queue.pop_front().unwrap();
+                lock.current_size -= envelope.data.remaining();
+
+                if let Some(w) = lock.send_waiters.pop_front() {
+                    w.wake();
+                }
+
+                return Ok(Some(envelope.data));
+            }
+        }
+
+        if lock.closed && lock.queue.is_empty() {
+            Ok(None)
+        }
+        else {
+            Err(())
+        }
+    }
+}
+
 pub fn channel<T>(capacity: usize) -> (Sender<T>, AsyncReceiver<T>) {
     let state = Arc::new(Mutex::new(ChannelState {
         queue: VecDeque::new(),
