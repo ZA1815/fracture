@@ -213,6 +213,30 @@ where R: AsyncRead + Unpin + ?Sized, W: AsyncWrite + Unpin + ?Sized {
     }
 }
 
+pub async fn copy_bidirectional<A, B>(a: &mut A, b: &mut B) -> Result<(u64, u64)>
+where
+    A: AsyncRead + AsyncWrite + Unpin + ?Sized,
+    B: AsyncRead + AsyncWrite + Unpin + ?Sized,
+{
+    if chaos::should_fail(ChaosOperation::IoCopyBidirectional) {
+         return Err(Error::new(ErrorKind::Other, "fracture: CopyBidirectional failed (chaos)"));
+    }
+
+    let mut a_to_b = copy(a, b);
+    let mut b_to_a = copy(b, a);
+
+    crate::select! {
+        r1 = &mut a_to_b => {
+            let r2 = b_to_a.await;
+            Ok((r1?, r2?))
+        },
+        r2 = &mut b_to_a => {
+            let r1 = a_to_b.await;
+            Ok((r1?, r2?))
+        }
+    }
+}
+
 pub trait AsyncReadExt: AsyncRead {
     fn read<'a>(&'a mut self, buf: &'a mut [u8]) -> ReadFuture<'a, Self>
     where Self: Unpin + Sized {
