@@ -28,14 +28,19 @@ where F: Future + Send + 'static, F::Output: Send + 'static {
         if chaos::should_fail(ChaosOperation::TaskScheduleDelay) {
             let delay = {
                 let handle = Handle::current();
-                let core_rc = handle.core.upgrade().expect("fracture: Runtime dropped");
-                let mut core = core_rc.borrow_mut();
-                let ms = core.rng.gen_range(1..100);
-
-                Duration::from_millis(ms)
+                if let Some(core_rc) = handle.core.upgrade() {
+                    let mut core = core_rc.borrow_mut();
+                    let ms = core.rng.gen_range(1..100);
+                    Some(Duration::from_millis(ms))
+                }
+                else {
+                    None
+                }
             };
 
-            sleep(delay).await;
+            if let Some(d) = delay {
+                sleep(d).await;
+            }
         }
 
         if chaos::should_fail(ChaosOperation::TaskStarvation) {
@@ -71,33 +76,15 @@ where F: Future + Send + 'static, F::Output: Send + 'static {
 }
 
 pub fn spawn_local<F>(future: F) -> JoinHandle<F::Output>
-where F: Future + 'static, F::Output: 'static {
-    if chaos::should_fail(ChaosOperation::TaskSpawnLocal) {
-        return JoinHandle {
-            rx: None,
-            chaos_state: JoinHandleChaos::AlwaysFail,
-            task_id: None
-        };
-    }
-
-    let (tx, rx) = oneshot::channel();
-
-    let wrapped_future = async move {
-        let output = future.await;
-        tx.send(output);
+where F: Future + 'static, F::Output: Send + 'static {
+    let future = unsafe { 
+        std::mem::transmute::<
+            Pin<Box<dyn Future<Output=F::Output>>>, 
+            Pin<Box<dyn Future<Output=F::Output> + Send>>
+        >(Box::pin(future)) 
     };
-
-    let handle = Handle::current();
-    let core_rc = handle.core.upgrade().expect("fracture: Runtime dropped");
-    let mut core = core_rc.borrow_mut();
-
-    let id = core.spawn(wrapped_future);
-
-    JoinHandle {
-        rx: Some(rx),
-        chaos_state: JoinHandleChaos::None,
-        task_id: Some(id)
-    }
+    
+    spawn(future)
 }
 
 pub fn spawn_blocking<F, R>(f: F) -> JoinHandle<R>
@@ -393,21 +380,28 @@ pub enum TaskPriority {
 }
 
 pub struct LocalKey<T: 'static> {
+    #[doc(hidden)]
     pub inner: &'static std::thread::LocalKey<std::cell::RefCell<Option<T>>>,
+    #[doc(hidden)]
     pub init: fn() -> T
 }
 
 impl<T: 'static> LocalKey<T> {
     pub async fn scope<F>(&'static self, value: T, f: F) -> F::Output
     where F: Future {
-        self.inner.with(|cell| {
-            *cell.borrow_mut() = Some(value);
-        });
+        let old_value = crate::runtime::core::with_current_locals(|locals| {
+            locals.insert(value)
+        }).flatten();
 
         let result = f.await;
 
-        self.inner.with(|cell| {
-            *cell.borrow_mut() = None;
+        crate::runtime::core::with_current_locals(|locals| {
+            if let Some(old) = old_value {
+                locals.insert(old);
+            }
+            else {
+                locals.remove::<T>();
+            }
         });
 
         result
@@ -415,15 +409,15 @@ impl<T: 'static> LocalKey<T> {
 
     pub fn with<F, R>(&'static self, f: F) -> R
     where F: FnOnce(&T) -> R {
-        self.inner.with(|cell| {
-            let borrow = cell.borrow();
-            if let Some(val) = &*borrow {
+        crate::runtime::core::with_current_locals(|locals| {
+            if let Some(val) = locals.get::<T>() {
                 f(val)
             }
             else {
-                panic!("fracture: LocalKey accessed outside of scope")
+                let val = (self.init)();
+                f(&val)
             }
-        })
+        }).expect("fracture: task_local access outside of task context")
     }
 }
 

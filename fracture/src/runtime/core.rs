@@ -5,12 +5,29 @@ use std::time::{Duration, SystemTime};
 use rand::{SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use slab::Slab;
+use std::cell::RefCell;
 
-use super::task::{Task, TaskId};
+use super::task::{Task, TaskId, TaskLocals};
 use super::waker::make_waker;
 
 use crate::net::NetworkState;
 use crate::fs::FileSystemState;
+
+thread_local! {
+    static CURRENT_TASK_LOCALS: RefCell<Option<*mut TaskLocals>> = RefCell::new(None);
+}
+
+pub(crate) fn with_current_locals<F, R>(f: F) -> Option<R>
+where F: FnOnce(&mut TaskLocals) -> R {
+    CURRENT_TASK_LOCALS.with(|cell| {
+        if let Some(ptr) = *cell.borrow() {
+            unsafe { Some(f(&mut *ptr)) }
+        }
+        else {
+            None
+        }
+    })
+}
 
 pub(crate) struct Core {
     pub rng: ChaCha8Rng,
@@ -48,9 +65,13 @@ pub struct Instant(pub(crate) Duration);
 impl Instant {
     pub fn now() -> Self {
         let handle = crate::runtime::Handle::current();
-        let core = handle.core.upgrade().expect("fracture: Runtime dropped");
-        let now = core.borrow().current_time;
-        Self(now)
+        if let Some(core_rc) = handle.core.upgrade() {
+            let now = core_rc.borrow().current_time;
+            Self(now)
+        }
+        else {
+            Self(Duration::ZERO)
+        }
     }
 
     pub fn elapsed(&self) -> Duration {
@@ -163,14 +184,27 @@ impl Core {
 
         let waker = make_waker(id);
         let mut cx = Context::from_waker(&waker);
+        
         let task = self.tasks.get_mut(id.0).unwrap();
 
-        match task.future.as_mut().poll(&mut cx) {
+        let locals_ptr: *mut TaskLocals = &mut task.locals;
+        
+        CURRENT_TASK_LOCALS.with(|cell| {
+            *cell.borrow_mut() = Some(locals_ptr);
+        });
+
+        let result = task.future.as_mut().poll(&mut cx);
+
+        CURRENT_TASK_LOCALS.with(|cell| {
+            *cell.borrow_mut() = None;
+        });
+
+        match result {
             Poll::Ready(()) => {
                 self.tasks.remove(id.0);
             }
             Poll::Pending => {
-                // Waker logic handles re-queueing
+                // Task is still alive, waker handles re-queueing
             }
         }
     }
