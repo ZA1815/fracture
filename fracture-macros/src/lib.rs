@@ -92,11 +92,9 @@ pub fn test(attr: TokenStream, item: TokenStream) -> TokenStream {
         #vis fn #fn_name() {
             ::fracture::chaos::init_from_env();
 
-            let mut sim = ::turmoil::Builder::new()
-                .simulation_duration(#duration)
-                .build();
+            let runtime = ::fracture::runtime::Runtime::new();
 
-            sim.client("test_client", async move {
+            runtime.block_on(async {
                 ::fracture::chaos::trace::clear_trace();
                 ::fracture::chaos::invariants::reset();
 
@@ -105,12 +103,13 @@ pub fn test(attr: TokenStream, item: TokenStream) -> TokenStream {
                         if !::fracture::chaos::invariants::check_all() {
                             break;
                         }
+
                         ::fracture::time::sleep(::std::time::Duration::from_millis(100)).await;
                     }
                 });
 
-                let test_fut = async #body;
-                let test_result = test_fut.await;
+                let test_body = async #body;
+                let test_result = ::fracture::time::timeout(#duration, test_body).await;
 
                 checker_handle.abort();
 
@@ -126,10 +125,11 @@ pub fn test(attr: TokenStream, item: TokenStream) -> TokenStream {
                     panic!("\n\n{}\n\n", report_string);
                 }
 
-                test_result
+                match test_result {
+                    Ok(_) => {},
+                    Err(_) => panic!("Fracture test timed out after {:?}", #duration)
+                }
             });
-
-            sim.run().expect("Simulation failed");
         }
     };
 
@@ -152,7 +152,7 @@ pub fn main(attr: TokenStream, item: TokenStream) -> TokenStream {
     let sig = input.sig;
     let body = input.block;
     let fn_name = &sig.ident;
-    let duration = macro_args.duration;
+    let _duration = macro_args.duration;
 
     let ret = match sig.output {
         ReturnType::Default => quote! {},
@@ -166,15 +166,11 @@ pub fn main(attr: TokenStream, item: TokenStream) -> TokenStream {
             {
                 ::fracture::chaos::init_from_env();
 
-                let mut sim = ::turmoil::Builder::new()
-                    .simulation_duration(#duration)
-                    .build();
-
-                sim.client("main", async move {
+                let runtime = ::fracture::runtime::Runtime::new();
+                
+                runtime.block_on(async {
                     #body
-                });
-
-                sim.run().expect("Simulation failed");
+                })
             }
 
             #[cfg(not(feature = "simulation"))]
