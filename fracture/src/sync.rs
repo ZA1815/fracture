@@ -490,6 +490,7 @@ pub mod mpsc {
     struct BoundedState<T> {
         queue: VecDeque<T>,
         capacity: usize,
+        reserved: usize,
         tx_waiters: VecDeque<Waker>,
         rx_waker: Option<Waker>,
         closed: bool,
@@ -516,7 +517,7 @@ pub mod mpsc {
                         return Poll::Ready(Err(SendError(self.value.take().unwrap())));
                     }
 
-                    if s.queue.len() < s.capacity {
+                    if s.queue.len() + s.reserved < s.capacity {
                         s.queue.push_back(self.value.take().unwrap());
                         if let Some(w) = s.rx_waker.take() { w.wake(); }
                         Poll::Ready(Ok(()))
@@ -549,6 +550,35 @@ pub mod mpsc {
             else {
                 Err(TrySendError::Full(value))
             }
+        }
+
+        pub async fn reserve(&self) -> Result<Permit<'_, T>, SendError<()>> {
+            if chaos::should_fail(ChaosOperation::MpscPermitReserve) {
+                return Err(SendError(()));
+            }
+
+            struct ReserveFuture<'a, T> { sender: &'a Sender<T> }
+
+            impl<T> Future for ReserveFuture<'_, T> {
+                type Output = Result<Permit<'_, T>, SendError<()>>;
+
+                fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                    let mut s = self.sender.state.lock().unwrap();
+                    if s.closed {
+                        return Poll::Ready(Err(SendError(())));
+                    }
+
+                    if s.queue.len() + s.reserved < s.capacity {
+                        s.reserved += 1;
+                        Poll::Ready(Ok(Permit { sender: self.sender }))
+                    } else {
+                        s.tx_waiters.push_back(cx.waker().clone());
+                        Poll::Pending
+                    }
+                }
+            }
+
+            unsafe { std::mem::transmute(ReserveFuture { sender: self }.await) }
         }
     }
 
@@ -598,6 +628,31 @@ pub mod mpsc {
                 }
             }
             RecvFuture { rx: self }.await
+        }
+    }
+
+    pub struct Permit<'a, T> { sender: &'a Sender<T> }
+
+    impl<'a, T> Permit<'a, T> {
+        pub fn send(self, value: T) {
+            let mut s = self.sender.state.lock().unwrap();
+            s.reserved -= 1;
+            s.queue.push_back(value);
+            if let Some(w) = s.rx_waker.take() {
+                w.wake();
+            }
+            
+            std::mem::forget(self);
+        }
+    }
+
+    impl<T> Drop for Permit<'_, T> {
+        fn drop(&mut self) {
+            let mut s = self.sender.state.lock().unwrap();
+            s.reserved -= 1;
+            if let Some(w) = s.tx_waiters.pop_front() {
+                w.wake();
+            }
         }
     }
 }
