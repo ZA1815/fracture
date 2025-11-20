@@ -7,10 +7,11 @@ use std::task::{Context, Poll};
 use std::time::SystemTime;
 use std::time::Duration;
 
-use crate::io::{AsyncRead, AsyncWrite, AsyncSeek, ReadBuf};
+use crate::io::{AsyncRead, AsyncWrite, AsyncSeek, AsyncReadExt, AsyncWriteExt, ReadBuf};
 use crate::runtime::Handle;
 use crate::chaos::{self, ChaosOperation};
 use crate::time::sleep;
+use rand::RngCore;
 
 const MAX_SYMLINK_RECURSION: usize = 32;
 
@@ -373,7 +374,7 @@ impl OpenOptions {
         let entry_ref = if exists {
             let entry = core.fs.files.get(&path).unwrap().clone();
 
-            if entry.lock().unwrap().is_dir {
+            if entry.lock().unwrap().file_type.is_dir {
                 return Err(Error::new(ErrorKind::IsADirectory, "fracture: Is a directory"));
             }
 
@@ -494,21 +495,22 @@ impl AsyncRead for File {
 
         if chaos::should_fail(ChaosOperation::FsCorruption) {
             let mut garbage = vec![0u8; to_copy];
-            
+
             if let Some(core_rc) = handle.core.upgrade() {
                 let mut core = core_rc.borrow_mut();
                 core.rng.fill_bytes(&mut garbage);
             }
             else {
-                garbage.fill(0xAA); 
+                garbage.fill(0xAA);
             }
-            
+
             buf.put_slice(&garbage);
         }
         else {
             buf.put_slice(&available[..to_copy]);
         }
 
+        drop(locked);
         self.cursor += to_copy as u64;
 
         Poll::Ready(Ok(()))
@@ -553,9 +555,12 @@ impl AsyncWrite for File {
         }
 
         locked.content[pos..end].copy_from_slice(buf);
-        self.cursor += buf.len() as u64;
+        let written = buf.len();
+        drop(locked);
 
-        Poll::Ready(Ok(buf.len()))
+        self.cursor += written as u64;
+
+        Poll::Ready(Ok(written))
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
@@ -727,7 +732,8 @@ pub async fn remove_file<P: AsRef<Path>>(path: P) -> Result<()> {
     simulate_io_latency().await;
 
     let handle = Handle::current();
-    let mut core = handle.core.upgrade().unwrap().borrow_mut();
+    let core_rc = handle.core.upgrade().unwrap();
+    let mut core = core_rc.borrow_mut();
     let path = path.as_ref();
     if let Some(entry) = core.fs.files.get(path) {
         if entry.lock().unwrap().file_type.is_dir() {
@@ -748,7 +754,8 @@ pub async fn remove_dir<P: AsRef<Path>>(path: P) -> Result<()> {
     simulate_io_latency().await;
 
     let handle = Handle::current();
-    let mut core = handle.core.upgrade().unwrap().borrow_mut();
+    let core_rc = handle.core.upgrade().unwrap();
+    let mut core = core_rc.borrow_mut();
     let path = path.as_ref();
     match core.fs.files.get(path) {
         Some(entry) => {
@@ -775,7 +782,8 @@ pub async fn rename<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<()
     simulate_io_latency().await;
 
     let handle = Handle::current();
-    let mut core = handle.core.upgrade().unwrap().borrow_mut();
+    let core_rc = handle.core.upgrade().unwrap();
+    let mut core = core_rc.borrow_mut();
     let entry = core.fs.files.remove(from.as_ref()).ok_or(Error::new(ErrorKind::NotFound, "fracture: File not found"))?;
     core.fs.files.insert(to.as_ref().to_path_buf(), entry);
 
@@ -801,7 +809,8 @@ pub async fn hard_link<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> 
     simulate_io_latency().await;
 
     let handle = Handle::current();
-    let mut core = handle.core.upgrade().unwrap().borrow_mut();
+    let core_rc = handle.core.upgrade().unwrap();
+    let mut core = core_rc.borrow_mut();
     let entry = core.fs.files.get(original.as_ref())
         .ok_or(Error::new(ErrorKind::NotFound, "fracture: Original file not found"))?
         .clone();
@@ -878,7 +887,8 @@ pub async fn read_link<P: AsRef<Path>>(path: P) -> Result<PathBuf> {
     }
 
     let handle = Handle::current();
-    let core =  handle.core.upgrade().unwrap().borrow();
+    let core_rc = handle.core.upgrade().unwrap();
+    let core = core_rc.borrow();
     let entry = core.fs.files.get(path.as_ref()).ok_or(Error::new(ErrorKind::NotFound, "fracture: File not found"))?;
     let locked = entry.lock().unwrap();
 
@@ -896,7 +906,8 @@ pub async fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Re
     simulate_io_latency().await;
 
     let handle = Handle::current();
-    let mut core = handle.core.upgrade().unwrap().borrow_mut();
+    let core_rc = handle.core.upgrade().unwrap();
+    let mut core = core_rc.borrow_mut();
 
     let link = link.as_ref().to_path_buf();
     if core.fs.files.contains_key(&link) {

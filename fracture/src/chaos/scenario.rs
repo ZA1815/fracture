@@ -136,7 +136,7 @@ impl Scenario {
         let chaos_future = self.execute_chaos();
         let test_future = test();
 
-        tokio::join!(chaos_future, test_future);
+        crate::join!(chaos_future, test_future);
     }
 }
 

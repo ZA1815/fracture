@@ -45,7 +45,7 @@ impl Future for Sleep {
             let entry = crate::runtime::core::TimerEntry {
                 deadline: self.deadline,
                 waker: cx.waker().clone(),
-                id: core.rng.r#gen()
+                id: core.rng.r#gen::<usize>()
             };
 
             core.timers.push(entry);
@@ -229,7 +229,7 @@ impl Interval {
             core.timers.push(crate::runtime::core::TimerEntry {
                 deadline: self.next_tick.0,
                 waker,
-                id: core.rng.r#gen() as usize,
+                id: core.rng.r#gen::<usize>(),
             });
             Poll::Pending
         }

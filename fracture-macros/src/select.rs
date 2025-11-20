@@ -125,7 +125,7 @@ fn generate_select(select: SelectMacro) -> proc_macro2::TokenStream {
         let future = &branch.future;
         quote! {
             let mut #ident = #future;
-            ::std::pin::Pin::new(&mut ident)
+            ::std::pin::Pin::new(&mut #ident)
         }
     });
 
@@ -178,7 +178,7 @@ fn generate_biased_polling(branches: &[Branch], future_idents: &[Ident]) -> proc
 
         quote_spanned! {
             branch.pattern.span() =>
-            if !::fracture::chaos::should_fail(::fracture::chaos::ChaosOperation::SelectStarvation) {
+            if !crate::chaos::should_fail(crate::chaos::ChaosOperation::SelectStarvation) {
                 match #ident.as_mut().poll(__cx) {
                     Poll::Ready(__result) => {
                         let #pattern = __result;
@@ -226,9 +226,9 @@ fn generate_random_polling(branches: &[Branch], future_idents: &[Ident]) -> proc
     quote! {
         let mut __order = [#(#indices), *];
 
-        if ::fracture::chaos::should_fail(::fracture::chaos::ChaosOperation::SelectRandom) {
+        if crate::chaos::should_fail(crate::chaos::ChaosOperation::SelectRandom) {
             for __i in (1..#n).rev() {
-                let __j = (::fracture::chaos::get_seed() as usize % (__i + 1));
+                let __j = (crate::chaos::get_seed() as usize % (__i + 1));
                 __order.swap(__i, __j);
             }
         }
@@ -258,7 +258,8 @@ pub fn join(input: TokenStream) -> proc_macro::TokenStream {
     let pin_futures = futures.iter().zip(&future_idents).map(|(fut, ident)| {
         quote! {
             let mut #ident = #fut;
-            let mut #ident = ::std::pin::Pin::new(&mut #ident);
+            // SAFETY: The future is shadowed and cannot be moved after this point
+            let mut #ident = unsafe { ::std::pin::Pin::new_unchecked(&mut #ident) };
         }
     });
 
@@ -324,7 +325,8 @@ pub fn try_join(input: TokenStream) -> TokenStream {
     let pin_futures = futures.iter().zip(&future_idents).map(|(fut, ident)| {
         quote! {
             let mut #ident = #fut;
-            let mut #ident = ::std::pin::Pin::new(&mut #ident);
+            // SAFETY: The future is shadowed and cannot be moved after this point
+            let mut #ident = unsafe { ::std::pin::Pin::new_unchecked(&mut #ident) };
         }
     });
 

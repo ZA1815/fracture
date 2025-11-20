@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -780,24 +781,10 @@ impl Stream for TcpListenerStream {
     type Item = std::io::Result<(TcpStream, SocketAddr)>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if self.pending.is_none() {
-            let listener = self.listener.clone();
-            self.pending = Some(Box::pin(async move {
-                listener.accept().await
-            }));
-        }
-
-        if let Some(fut) = self.pending.as_mut() {
-            match fut.as_mut().poll(cx) {
-                Poll::Ready(result) => {
-                    self.pending = None;
-                    Poll::Ready(Some(result))
-                }
-                Poll::Pending => Poll::Pending
-            }
-        }
-        else {
-            Poll::Pending
+        match self.listener.poll_accept(cx) {
+            Poll::Ready(Ok((stream, addr))) => Poll::Ready(Some(Ok((stream, addr)))),
+            Poll::Ready(Err(e)) => Poll::Ready(Some(Err(e))),
+            Poll::Pending => Poll::Pending
         }
     }
 }

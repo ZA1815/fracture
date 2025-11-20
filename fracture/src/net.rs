@@ -25,11 +25,11 @@ const EPHEMERAL_PORT_START: u16 = 49152;
 const EPHEMERAL_PORT_END: u16 = 65535;
 
 pub(crate) struct NetworkState {
-    listeners: HashMap<SocketAddr, Sender<TcpConnection>>,
+    listeners: HashMap<SocketAddr, crate::sync::mpsc::UnboundedSender<TcpConnection>>,
     udp_sockets: HashMap<SocketAddr, Sender<(Bytes, SocketAddr)>>,
     used_ports: HashSet<(IpAddr, u16)>,
     #[cfg(unix)]
-    unix_listeners: HashMap<PathBuf, Sender<unix::UnixConnection>>,
+    unix_listeners: HashMap<PathBuf, crate::sync::mpsc::UnboundedSender<unix::UnixConnection>>,
     #[cfg(unix)]
     unix_dgram: HashMap<PathBuf, Sender<(Bytes, PathBuf)>>
 }
@@ -171,7 +171,7 @@ impl TcpSocket {
         Ok(self.send_buffer_size.unwrap_or(DEFAULT_TCP_WINDOW_SIZE as u32))
     }
 
-    pub fn bind(&self, addr: SocketAddr) -> Result<TcpListener> {
+    pub async fn bind(self, addr: SocketAddr) -> Result<TcpListener> {
         TcpListener::bind(addr).await
     }
 
@@ -194,7 +194,7 @@ impl TcpSocket {
 
 pub struct TcpListener {
     local_addr: SocketAddr,
-    accept_rx: AsyncReceiver<TcpConnection>
+    accept_rx: crate::sync::mpsc::UnboundedReceiver<TcpConnection>
 }
 
 impl TcpListener {
@@ -210,7 +210,7 @@ impl TcpListener {
             return Err(Error::new(ErrorKind::AddrInUse, format!("fracture: Address {} already in use", addr)));
         }
 
-        let (tx, rx) = channel(128);
+        let (tx, rx) = crate::sync::mpsc::unbounded();
 
         core.network.listeners.insert(addr, tx);
         core.network.used_ports.insert((addr.ip(), addr.port()));
@@ -218,7 +218,7 @@ impl TcpListener {
         Ok(Self { local_addr: addr, accept_rx: rx })
     }
 
-    pub async fn accept(&self) -> Result<(TcpStream, SocketAddr)> {
+    pub async fn accept(&mut self) -> Result<(TcpStream, SocketAddr)> {
         if chaos::should_fail(ChaosOperation::TcpAccept) {
             return Err(Error::new(ErrorKind::Other, "fracture: Accept failed (chaos)"));
         }
@@ -239,6 +239,21 @@ impl TcpListener {
     }
     pub fn set_ttl(&self, _ttl: u32) -> Result<()> {
         Ok(())
+    }
+
+    pub fn poll_accept(&mut self, cx: &mut Context<'_>) -> Poll<Result<(TcpStream, SocketAddr)>> {
+        if chaos::should_fail(ChaosOperation::TcpAccept) {
+            return Poll::Ready(Err(Error::new(ErrorKind::Other, "fracture: Accept failed (chaos)")));
+        }
+
+        match Pin::new(&mut self.accept_rx).poll_recv(cx) {
+            Poll::Ready(Some(conn)) => {
+                let stream = TcpStream::new(conn.tx, conn.rx, self.local_addr, conn.remote_addr);
+                Poll::Ready(Ok((stream, conn.remote_addr)))
+            }
+            Poll::Ready(None) => Poll::Ready(Err(Error::new(ErrorKind::BrokenPipe, "fracture: Listener closed"))),
+            Poll::Pending => Poll::Pending
+        }
     }
 }
 
@@ -292,9 +307,12 @@ impl TcpStream {
         let core_rc = handle.core.upgrade().ok_or_else(|| Error::new(ErrorKind::Other, "fracture: Runtime dropped"))?;
 
         let (local_port, listener_tx) = {
-            let mut core = core_rc.borrow_mut();
             let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-            let port = core.network.assign_ephemeral_port(ip, &mut core.rng);
+            let mut core = core_rc.borrow_mut();
+            let port = {
+                let rng_ptr = &mut core.rng as *mut _;
+                unsafe { core.network.assign_ephemeral_port(ip, &mut *rng_ptr)? }
+            };
             let listener = core.network.listeners.get(&addr).cloned();
             (port, listener)
         };
@@ -777,7 +795,7 @@ pub struct AsyncReceiver<T> {
     state: Arc<Mutex<ChannelState<T>>>
 }
 
-impl<T: Buf + Send> Sender<T> {
+impl<T: ChannelItemSize + Send> Sender<T> {
     pub fn poll_reserve(
         &self,
         cx: &mut Context<'_>,
@@ -798,19 +816,26 @@ impl<T: Buf + Send> Sender<T> {
     }
 
     pub async fn send(&self, item: T) -> std::result::Result<(), ()> {
-        struct SendFuture<'a, T: Buf + Send> { sender: &'a Sender<T>, item: Option<T> }
+        #[pin_project::pin_project]
+        struct SendFuture<'a, T: ChannelItemSize + Send> {
+            sender: &'a Sender<T>,
+            item: Option<T>
+        }
 
-        impl<T: Buf + Send> Future for SendFuture<'_, T> {
+        impl<T: ChannelItemSize + Send> Future for SendFuture<'_, T> {
             type Output = std::result::Result<(), ()>;
 
-            fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-                let len = self.item.as_ref().unwrap().remaining();
-                
-                match self.sender.poll_reserve(cx, len) {
+            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                let this = self.project();
+                let len = this.item.as_ref().unwrap().channel_size();
+
+                match this.sender.poll_reserve(cx, len) {
                     Poll::Ready(()) => {
-                        let item = self.item.take().unwrap();
-                        self.sender.try_send(item)?;
-                        Poll::Ready(Ok(()))
+                        let item = this.item.take().unwrap();
+                        match this.sender.try_send(item) {
+                            Ok(()) => Poll::Ready(Ok(())),
+                            Err(_) => Poll::Ready(Err(()))
+                        }
                     }
                     Poll::Pending => Poll::Pending
                 }
@@ -820,14 +845,27 @@ impl<T: Buf + Send> Sender<T> {
         SendFuture { sender: self, item: Some(item) }.await
     }
 
-    pub fn try_send(&self, item: T) -> std::result::Result<(), ()> {
+    pub fn try_send(&self, item: T) -> std::result::Result<(), TrySendError<T>> {
         let mut s = self.state.lock().unwrap();
         if s.closed {
-            return Err(());
+            return Err(TrySendError::Closed(item));
         }
 
-        let len = item.remaining();
-        s.queue.push_back(item);
+        let len = item.channel_size();
+        if s.current_size + len > s.capacity && s.current_size > 0 {
+            return Err(TrySendError::Full(item));
+        }
+
+        let handle = Handle::current();
+        let core_rc = handle.core.upgrade().expect("fracture: Runtime dropped");
+        let now = core_rc.borrow().current_time;
+
+        let envelope = Envelope {
+            data: item,
+            arrival_time: now,
+        };
+
+        s.queue.push_back(envelope);
         s.current_size += len;
 
         if let Some(w) = s.recv_waiters.pop_front() {
@@ -847,7 +885,7 @@ impl<T: Buf + Send> Sender<T> {
             return Err(TrySendError::Closed(item));
         }
 
-        let len = item.remaining();
+        let len = item.channel_size();
         if s.current_size + len > s.capacity && s.current_size > 0 {
             return Err(TrySendError::Full(item));
         }
@@ -895,11 +933,11 @@ impl<T> Clone for Sender<T> {
     }
 }
 
-impl<T: Buf + Send> AsyncReceiver<T> {
+impl<T: ChannelItemSize + Send + Clone> AsyncReceiver<T> {
     pub async fn recv(&self) -> Option<T> {
-        struct RecvFuture<'a, T: Buf + Send> { rx: &'a AsyncReceiver<T> }
+        struct RecvFuture<'a, T: ChannelItemSize + Send> { rx: &'a AsyncReceiver<T> }
         
-        impl<T: Buf + Send> Future for RecvFuture<'_, T> {
+        impl<T: ChannelItemSize + Send> Future for RecvFuture<'_, T> {
             type Output = Option<T>;
 
             fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -920,7 +958,7 @@ impl<T: Buf + Send> AsyncReceiver<T> {
         if let Some(envelope) = s.queue.front() {
             if envelope.arrival_time <= now {
                 let envelope = s.queue.pop_front().unwrap();
-                s.current_size -= envelope.data.remaining();
+                s.current_size -= envelope.data.channel_size();
 
                 if let Some(w) = s.send_waiters.pop_front() {
                     w.wake();
@@ -936,7 +974,7 @@ impl<T: Buf + Send> AsyncReceiver<T> {
                 let entry = crate::runtime::core::TimerEntry {
                     deadline: envelope.arrival_time,
                     waker: waker,
-                    id: core.rng.r#gen() as usize
+                    id: core.rng.r#gen::<usize>()
                 };
                 core.timers.push(entry);
 
@@ -967,7 +1005,7 @@ impl<T: Buf + Send> AsyncReceiver<T> {
         None
     }
 
-    pub async fn poll_peek(&self, cx: &mut Context<'_>) -> Poll<Option<T>> {
+    pub fn poll_peek(&self, cx: &mut Context<'_>) -> Poll<Option<T>> {
         let mut s = self.state.lock().unwrap();
         let handle = Handle::current();
         let core_rc = handle.core.upgrade().expect("fracture: Runtime dropped");
@@ -978,10 +1016,16 @@ impl<T: Buf + Send> AsyncReceiver<T> {
                 return Poll::Ready(Some(envelope.data.clone()));
             }
 
+            let deadline = envelope.arrival_time;
             let waker = cx.waker().clone();
             drop(s);
             let mut core = core_rc.borrow_mut();
-            core.timers.push(crate::runtime::core::TimerEntry { deadline: envelope.arrival_time, waker, id: core.rng.r#gen() as usize });
+            let entry = crate::runtime::core::TimerEntry {
+                deadline,
+                waker,
+                id: core.rng.r#gen::<usize>()
+            };
+            core.timers.push(entry);
 
             return Poll::Pending;
         }
@@ -996,7 +1040,7 @@ impl<T: Buf + Send> AsyncReceiver<T> {
         }
     }
 
-    pub fn try_recv(&self) -> Result<Option<T>, ()> {
+    pub fn try_recv(&self) -> std::result::Result<Option<T>, ()> {
         let mut lock = self.state.lock().unwrap();
 
         let handle = Handle::current();
@@ -1026,7 +1070,24 @@ impl<T: Buf + Send> AsyncReceiver<T> {
 }
 
 impl<T: Clone> AsyncReceiver<T> {
-    
+
+}
+
+// Size tracking trait for channel items
+trait ChannelItemSize {
+    fn channel_size(&self) -> usize;
+}
+
+impl ChannelItemSize for Bytes {
+    fn channel_size(&self) -> usize {
+        self.remaining()
+    }
+}
+
+impl ChannelItemSize for (Bytes, SocketAddr) {
+    fn channel_size(&self) -> usize {
+        self.0.len()
+    }
 }
 
 pub fn channel<T>(capacity: usize) -> (Sender<T>, AsyncReceiver<T>) {
@@ -1200,7 +1261,7 @@ pub mod unix {
 
     pub struct UnixListener {
         path: PathBuf,
-        accept_rx: AsyncReceiver<UnixConnection>
+        accept_rx: crate::sync::mpsc::UnboundedReceiver<UnixConnection>
     }
 
     impl UnixListener {
@@ -1218,13 +1279,13 @@ pub mod unix {
                 return Err(Error::new(ErrorKind::AddrInUse, "fracture: Address already in use"));
             }
 
-            let (tx, rx) = channel(128);
+            let (tx, rx) = crate::sync::mpsc::unbounded();
             core.network.unix_listeners.insert(path.clone(), tx);
 
             Ok(UnixListener { path, accept_rx: rx })
         }
 
-        pub async fn accept(&self) -> Result<(UnixStream, SocketAddr)> {
+        pub async fn accept(&mut self) -> Result<(UnixStream, SocketAddr)> {
             if chaos::should_fail(ChaosOperation::UnixAccept) {
                 return Err(Error::new(ErrorKind::Other, "fracture: UnixAccept failed (chaos)"));
             }
@@ -1266,7 +1327,7 @@ pub mod unix {
             let (tx2, rx2) = channel(DEFAULT_TCP_WINDOW_SIZE);
 
             let mut core = core_rc.borrow_mut();
-            let ephemeral_id = core.rng.r#gen();
+            let ephemeral_id: u64 = core.rng.r#gen();
             let local_path = PathBuf::from(format!("/tmp/fracture_ephemeral_{}", ephemeral_id));
 
             let listener = core.network.unix_listeners.get(&peer_path).cloned();
@@ -1381,7 +1442,7 @@ pub mod unix {
             let core_rc = handle.core.upgrade().unwrap();
             let mut core = core_rc.borrow_mut();
             use rand::Rng;
-            let id = core.rng.r#gen();
+            let id: u64 = core.rng.r#gen();
             let path = PathBuf::from(format!("/tmp/fracture_dgram_{}", id));
              
             let (tx, rx) = channel(1024);

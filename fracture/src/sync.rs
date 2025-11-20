@@ -7,6 +7,49 @@ use std::task::{Context, Poll, Waker};
 
 use crate::chaos::{self, ChaosOperation};
 
+struct WaitList {
+    waiters: VecDeque<(usize, Waker)>,
+    next_id: usize,
+}
+
+impl WaitList {
+    fn new() -> Self {
+        Self {
+            waiters: VecDeque::new(),
+            next_id: 0,
+        }
+    }
+
+    fn push(&mut self, waker: Waker) -> usize {
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1);
+        self.waiters.push_back((id, waker));
+        id
+    }
+
+    fn remove(&mut self, id: usize) {
+        if let Some(pos) = self.waiters.iter().position(|(i, _)| *i == id) {
+            self.waiters.remove(pos);
+        }
+    }
+
+    fn pop(&mut self) -> Option<Waker> {
+        self.waiters.pop_front().map(|(_, w)| w)
+    }
+
+    fn push_back(&mut self, waker: Waker) -> usize {
+        self.push(waker)
+    }
+
+    fn pop_front(&mut self) -> Option<Waker> {
+        self.pop()
+    }
+
+    fn iter_mut(&mut self) -> impl Iterator<Item = &mut (usize, Waker)> {
+        self.waiters.iter_mut()
+    }
+}
+
 pub struct Mutex<T: ?Sized> {
     state: StdMutex<MutexState>,
     data: UnsafeCell<T>,
@@ -14,7 +57,7 @@ pub struct Mutex<T: ?Sized> {
 
 struct MutexState {
     locked: bool,
-    waiters: VecDeque<Waker>,
+    waiters: WaitList,
 }
 
 unsafe impl<T: Send + ?Sized> Send for Mutex<T> {}
@@ -23,7 +66,10 @@ unsafe impl<T: Send + ?Sized> Sync for Mutex<T> {}
 impl<T> Mutex<T> {
     pub fn new(data: T) -> Self {
         Self {
-            state: StdMutex::new(MutexState { locked: false, waiters: VecDeque::new() }),
+            state: StdMutex::new(MutexState { 
+                locked: false, 
+                waiters: WaitList::new() 
+            }),
             data: UnsafeCell::new(data),
         }
     }
@@ -73,13 +119,69 @@ impl<T: ?Sized> Mutex<T> {
     }
 }
 
+pub struct LockFuture<'a, T: ?Sized> {
+    mutex: &'a Mutex<T>,
+    waiter_id: Option<usize>,
+}
+
+impl<'a, T: ?Sized> Future for LockFuture<'a, T> {
+    type Output = MutexGuard<'a, T>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if chaos::should_fail(ChaosOperation::MutexDeadlock) {
+            return Poll::Pending;
+        }
+
+        let mut state = self.mutex.state.lock().unwrap();
+
+        if !state.locked {
+            state.locked = true;
+            
+            if let Some(id) = self.waiter_id.take() {
+                state.waiters.remove(id);
+            }
+            
+            return Poll::Ready(MutexGuard { lock: self.mutex });
+        }
+
+        match self.waiter_id {
+            None => {
+                let id = state.waiters.push(cx.waker().clone());
+                self.waiter_id = Some(id);
+            }
+            Some(id) => {
+                if let Some(entry) = state.waiters.iter_mut().find(|(i, _)| *i == id) {
+                    entry.1 = cx.waker().clone();
+                }
+            }
+        }
+
+        if chaos::should_fail(ChaosOperation::MutexLockTimeout) {
+            // Wrap future with timeout from time mod
+        }
+
+        Poll::Pending
+    }
+}
+
+impl<'a, T: ?Sized> Drop for LockFuture<'a, T> {
+    fn drop(&mut self) {
+        if let Some(id) = self.waiter_id {
+            let mut state = self.mutex.state.lock().unwrap();
+            state.waiters.remove(id);
+
+            // Propagate wake later
+        }
+    }
+}
+
 pub struct MutexGuard<'a, T: ?Sized> { lock: &'a Mutex<T> }
 
 impl<T: ?Sized> Drop for MutexGuard<'_, T> {
     fn drop(&mut self) {
         let mut state = self.lock.state.lock().unwrap();
         state.locked = false;
-        if let Some(waker) = state.waiters.pop_front() {
+        if let Some(waker) = state.waiters.pop() {
             waker.wake();
         }
     }
@@ -101,8 +203,8 @@ pub struct RwLock<T: ?Sized> {
 struct RwLockState {
     readers: usize,
     writer: bool,
-    writer_waiters: VecDeque<Waker>,
-    reader_waiters: VecDeque<Waker>,
+    writer_waiters: WaitList,
+    reader_waiters: WaitList
 }
 
 unsafe impl<T: Send + Sync + ?Sized> Send for RwLock<T> {}
@@ -111,7 +213,12 @@ unsafe impl<T: Send + Sync + ?Sized> Sync for RwLock<T> {}
 impl<T> RwLock<T> {
     pub fn new(data: T) -> Self {
         Self {
-            state: StdMutex::new(RwLockState { readers: 0, writer: false, writer_waiters: VecDeque::new(), reader_waiters: VecDeque::new() }),
+            state: StdMutex::new(RwLockState { 
+                readers: 0, 
+                writer: false, 
+                writer_waiters: WaitList::new(), 
+                reader_waiters: WaitList::new() 
+            }),
             data: UnsafeCell::new(data),
         }
     }
@@ -214,58 +321,125 @@ impl<T: ?Sized> std::ops::DerefMut for RwLockWriteGuard<'_, T> {
 }
 
 pub struct Notify {
-    waiters: StdMutex<VecDeque<Waker>>,
-    notified: StdMutex<bool>,
+    state: StdMutex<NotifyState>
+}
+
+struct NotifyState {
+    waiters: WaitList,
+    notified: bool,
 }
 
 impl Notify {
     pub fn new() -> Self {
-        Self { waiters: StdMutex::new(VecDeque::new()), notified: StdMutex::new(false) }
+        Self { 
+            state: StdMutex::new(NotifyState { 
+                waiters: WaitList::new(), 
+                notified: false 
+            }) 
+        }
     }
+
     pub fn notify_one(&self) {
         if chaos::should_fail(ChaosOperation::NotifyMissed) {
             return;
         }
 
-        let mut notified = self.notified.lock().unwrap();
-        if let Some(waker) = self.waiters.lock().unwrap().pop_front() {
+        let mut state = self.state.lock().unwrap();
+        if let Some(waker) = state.waiters.pop() {
             waker.wake();
         } else {
-            *notified = true;
+            state.notified = true;
         }
     }
-    pub async fn notified(&self) {
-        struct NotifyFuture<'a> { n: &'a Notify }
-        impl Future for NotifyFuture<'_> {
-            type Output = ();
-            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-                if chaos::should_fail(ChaosOperation::NotifyNotifyWaitTimeout) {
-                    // Placeholder for chaos
-                    return Poll::Pending;
-                }
 
-                let mut notified = self.n.notified.lock().unwrap();
-                if *notified {
-                    *notified = false;
-                    Poll::Ready(())
-                } else {
-                    self.n.waiters.lock().unwrap().push_back(cx.waker().clone());
-                    Poll::Pending
+    pub fn notified(&self) -> Notified<'_> {
+        Notified {
+            notify: self,
+            waiter_id: None
+        }
+    }
+}
+
+pub struct Notified<'a> {
+    notify: &'a Notify,
+    waiter_id: Option<usize>
+}
+
+impl Future for Notified<'_> {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let mut state = self.notify.state.lock().unwrap();
+
+        if state.notified {
+            state.notified = false;
+            if let Some(id) = self.waiter_id.take() {
+                state.waiters.remove(id);
+            }
+            return Poll::Ready(());
+        }
+
+        match self.waiter_id {
+            None => {
+                let id = state.waiters.push(cx.waker().clone());
+                self.waiter_id = Some(id);
+            }
+            Some(id) => {
+                if let Some(entry) = state.waiters.iter_mut().find(|(i, _)| *i == id) {
+                    entry.1 = cx.waker().clone();
                 }
             }
         }
-        NotifyFuture { n: self }.await
+        
+        Poll::Pending
+    }
+}
+
+impl Drop for Notified<'_> {
+    fn drop(&mut self) {
+        if let Some(id) = self.waiter_id {
+            let mut state = self.notify.state.lock().unwrap();
+            state.waiters.remove(id);
+        }
     }
 }
 
 pub struct Semaphore {
     permits: StdMutex<usize>,
-    waiters: StdMutex<VecDeque<(usize, Waker)>>,
+    waiters: StdMutex<SemaphoreWaitList>,
+}
+
+struct SemaphoreWaitList {
+    waiters: VecDeque<(usize, usize, Waker)>,
+    next_id: usize,
+}
+
+impl SemaphoreWaitList {
+    fn new() -> Self {
+        Self { waiters: VecDeque::new(), next_id: 0 }
+    }
+    
+    fn push(&mut self, permits: usize, waker: Waker) -> usize {
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1);
+        self.waiters.push_back((id, permits, waker));
+        id
+    }
+
+    fn remove(&mut self, id: usize) {
+        if let Some(pos) = self.waiters.iter().position(|(i, _, _)| *i == id) {
+            self.waiters.remove(pos);
+        }
+    }
+
+    fn push_back(&mut self, item: (usize, Waker)) -> usize {
+        self.push(item.0, item.1)
+    }
 }
 
 impl Semaphore {
     pub fn new(permits: usize) -> Self {
-        Self { permits: StdMutex::new(permits), waiters: StdMutex::new(VecDeque::new()) }
+        Self { permits: StdMutex::new(permits), waiters: StdMutex::new(SemaphoreWaitList::new()) }
     }
 
     pub async fn acquire(&self) -> Result<SemaphorePermit<'_>, ()> {
@@ -303,13 +477,16 @@ impl Semaphore {
     pub fn add_permits(&self, n: usize) {
         let mut permits = self.permits.lock().unwrap();
         *permits += n;
+
         let mut waiters = self.waiters.lock().unwrap();
-        // Naive wake: wake everyone to check again. Inefficient but correct.
-        while let Some((req, waker)) = waiters.front() {
-            if *permits >= *req {
-                let (_, waker) = waiters.pop_front().unwrap();
+        
+        // Have to improve this later
+        while let Some((id, needed, _)) = waiters.waiters.front() {
+            if *permits >= *needed {
+                let (_, _, waker) = waiters.waiters.pop_front().unwrap();
                 waker.wake();
-            } else {
+            }
+            else {
                 break;
             }
         }
@@ -444,18 +621,22 @@ pub mod mpsc {
 
     pub struct UnboundedReceiver<T> { shared: Arc<StdMutex<UnboundedState<T>>> }
     impl<T> UnboundedReceiver<T> {
+        pub fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Option<T>> {
+            if chaos::should_fail(ChaosOperation::MpscRecv) {
+                return Poll::Ready(None);
+            }
+            let mut s = self.shared.lock().unwrap();
+            if let Some(v) = s.queue.pop_front() { Poll::Ready(Some(v)) }
+            else if s.closed { Poll::Ready(None) }
+            else { s.waker = Some(cx.waker().clone()); Poll::Pending }
+        }
+
         pub async fn recv(&mut self) -> Option<T> {
             struct RecvFuture<'a, T> { rx: &'a mut UnboundedReceiver<T> }
             impl<T> Future for RecvFuture<'_, T> {
                 type Output = Option<T>;
-                fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<T>> {
-                    if chaos::should_fail(ChaosOperation::MpscRecv) {
-                        return Poll::Ready(None);
-                    }
-                    let mut s = self.rx.shared.lock().unwrap();
-                    if let Some(v) = s.queue.pop_front() { Poll::Ready(Some(v)) }
-                    else if s.closed { Poll::Ready(None) }
-                    else { s.waker = Some(cx.waker().clone()); Poll::Pending }
+                fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<T>> {
+                    self.rx.poll_recv(cx)
                 }
             }
             RecvFuture { rx: self }.await
@@ -479,6 +660,7 @@ pub mod mpsc {
         let state = Arc::new(StdMutex::new(BoundedState {
             queue: VecDeque::with_capacity(capacity),
             capacity,
+            reserved: 0,
             tx_waiters: VecDeque::new(),
             rx_waker: None,
             closed: false,
@@ -501,24 +683,30 @@ pub mod mpsc {
     
     impl<T> Sender<T> {
         pub async fn send(&self, value: T) -> Result<(), SendError<T>> {
-            struct SendFuture<'a, T> { sender: &'a Sender<T>, value: Option<T> }
-            
+            #[pin_project::pin_project]
+            struct SendFuture<'a, T> {
+                sender: &'a Sender<T>,
+                value: Option<T>
+            }
+
             impl<T> Future for SendFuture<'_, T> {
                 type Output = Result<(), SendError<T>>;
 
-                fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                    let this = self.project();
+
                     if chaos::should_fail(ChaosOperation::MpscSend) {
-                        return Poll::Ready(Err(SendError(self.value.take().unwrap())));
+                        return Poll::Ready(Err(SendError(this.value.take().unwrap())));
                     }
 
-                    let mut s = self.sender.state.lock().unwrap();
-                    
+                    let mut s = this.sender.state.lock().unwrap();
+
                     if s.closed {
-                        return Poll::Ready(Err(SendError(self.value.take().unwrap())));
+                        return Poll::Ready(Err(SendError(this.value.take().unwrap())));
                     }
 
                     if s.queue.len() + s.reserved < s.capacity {
-                        s.queue.push_back(self.value.take().unwrap());
+                        s.queue.push_back(this.value.take().unwrap());
                         if let Some(w) = s.rx_waker.take() { w.wake(); }
                         Poll::Ready(Ok(()))
                     }
@@ -559,8 +747,8 @@ pub mod mpsc {
 
             struct ReserveFuture<'a, T> { sender: &'a Sender<T> }
 
-            impl<T> Future for ReserveFuture<'_, T> {
-                type Output = Result<Permit<'_, T>, SendError<()>>;
+            impl<'a, T> Future for ReserveFuture<'a, T> {
+                type Output = Result<Permit<'a, T>, SendError<()>>;
 
                 fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
                     let mut s = self.sender.state.lock().unwrap();
@@ -578,7 +766,7 @@ pub mod mpsc {
                 }
             }
 
-            unsafe { std::mem::transmute(ReserveFuture { sender: self }.await) }
+            ReserveFuture { sender: self }.await
         }
     }
 
@@ -688,6 +876,16 @@ pub mod oneshot {
         }
     }
 
+    impl<T> Drop for Sender<T> {
+        fn drop(&mut self) {
+            let mut s = self.shared.lock().unwrap();
+            s.closed = true;
+            if let Some(w) = s.waker.take() {
+                w.wake();
+            }
+        }
+    }
+
     pub struct Receiver<T> { shared: Arc<StdMutex<State<T>>> }
     impl<T> Future for Receiver<T> {
         type Output = Result<T, RecvError>;
@@ -768,7 +966,10 @@ pub mod watch {
 
         pub fn borrow(&self) -> Ref<'_, T> {
             let s = self.state.lock().unwrap();
-            Ref { inner: std::sync::MutexGuard::map(s, |x| &mut x.value) } // Simplification
+            Ref {
+                inner: s.value.clone(),
+                _marker: std::marker::PhantomData
+            }
         }
     }
 
@@ -781,7 +982,10 @@ pub mod watch {
     }
 
     // Placeholder for Ref implementation simplification
-    pub struct Ref<'a, T> { inner: T } // Simplified, fix later
+    pub struct Ref<'a, T> {
+        inner: T,
+        _marker: std::marker::PhantomData<&'a ()>
+    } // Simplified, fix later
 
     #[derive(Clone)]
     pub struct Receiver<T> {
@@ -811,12 +1015,15 @@ pub mod watch {
 
                     let mut s = self.rx.state.lock().unwrap();
                     if s.version > self.rx.version {
-                        self.rx.value = s.value.clone();
-                        self.rx.version = s.version;
+                        let new_value = s.value.clone();
+                        let new_version = s.version;
+                        drop(s);
+                        self.rx.value = new_value;
+                        self.rx.version = new_version;
                         return Poll::Ready(Ok(()));
                     }
                     if s.closed { return Poll::Ready(Err(RecvError)); }
-                    
+
                     s.waiters.push(cx.waker().clone());
                     Poll::Pending
                 }
@@ -928,15 +1135,19 @@ pub mod broadcast {
                     if let Some(head) = s.buffer.front() {
                         if self.rx.next_seq < head.seq {
                             let missed = head.seq - self.rx.next_seq;
-                            self.rx.next_seq = s.tail_seq;
+                            let tail_seq = s.tail_seq;
+                            drop(s);
+                            self.rx.next_seq = tail_seq;
                             return Poll::Ready(Err(RecvError::Lagged(missed)));
                         }
                     }
 
                     for msg in &s.buffer {
                         if msg.seq == self.rx.next_seq {
+                            let val = msg.val.clone();
+                            drop(s);
                             self.rx.next_seq += 1;
-                            return Poll::Ready(Ok(msg.val.clone()));
+                            return Poll::Ready(Ok(val));
                         }
                     }
 

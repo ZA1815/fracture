@@ -32,7 +32,8 @@ impl Runtime {
         }
     }
 
-    pub fn block_on<F: Future>(&self, future: F) -> F::Output {
+    pub fn block_on<F: Future + 'static>(&self, future: F) -> F::Output
+    where F::Output: 'static {
         let handle = Handle {
             core: Rc::downgrade(&self.core)
         };
