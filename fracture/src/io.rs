@@ -138,9 +138,11 @@ impl<T: AsRef<[u8]> + Unpin> AsyncBufRead for io::Cursor<T> {
 
 pub fn split<T>(stream: T) -> (ReadHalf<T>, WriteHalf<T>)
 where T: AsyncRead + AsyncWrite {
-    let (r, w) = std::sync::Arc::new(std::sync::Mutex::new(stream)).into();
+    let arc = std::sync::Arc::new(std::sync::Mutex::new(stream));
+    let r = arc.clone();
+    let w = arc;
 
-    (ReadHalf { inner: r}, WriteHalf { inner: w })
+    (ReadHalf { inner: r }, WriteHalf { inner: w })
 }
 
 pub struct ReadHalf<T> {
@@ -393,7 +395,6 @@ impl<R: AsyncBufRead + ?Sized> AsyncBufReadExt for R {}
 
 #[pin_project::pin_project]
 pub struct ReadFuture<'a, R: ?Sized> {
-    #[pin]
     reader: &'a mut R,
     buf: &'a mut [u8]
 }
@@ -401,11 +402,11 @@ pub struct ReadFuture<'a, R: ?Sized> {
 impl<R: AsyncRead + Unpin + ?Sized> Future for ReadFuture<'_, R> {
     type Output = Result<usize>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.project();
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
         let mut buf = ReadBuf::new(this.buf);
 
-        match this.reader.poll_read(cx, &mut buf) {
+        match Pin::new(&mut *this.reader).poll_read(cx, &mut buf) {
             Poll::Ready(Ok(())) => Poll::Ready(Ok(buf.filled().len())),
             Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
             Poll::Pending => Poll::Pending
@@ -415,7 +416,6 @@ impl<R: AsyncRead + Unpin + ?Sized> Future for ReadFuture<'_, R> {
 
 #[pin_project::pin_project]
 pub struct ReadExactFuture<'a, R: ?Sized> {
-    #[pin]
     reader: &'a mut R,
     buf: &'a mut [u8],
     pos: usize
@@ -424,24 +424,24 @@ pub struct ReadExactFuture<'a, R: ?Sized> {
 impl<R: AsyncRead + Unpin + ?Sized> Future for ReadExactFuture<'_, R> {
     type Output = Result<usize>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut this = self.project();
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
 
         loop {
-            if *this.pos >= this.buf.len() {
-                return Poll::Ready(Ok(*this.pos));
+            if this.pos >= this.buf.len() {
+                return Poll::Ready(Ok(this.pos));
             }
 
-            let mut buf = ReadBuf::new(&mut this.buf[*this.pos..]);
+            let mut buf = ReadBuf::new(&mut this.buf[this.pos..]);
 
-            match this.reader.as_mut().poll_read(cx, &mut buf) {
+            match Pin::new(&mut *this.reader).poll_read(cx, &mut buf) {
                 Poll::Ready(Ok(())) => {
                     let n = buf.filled().len();
                     if n == 0 {
                         return Poll::Ready(Err(Error::new(ErrorKind::UnexpectedEof, "fracture: Unexpected EOF")));
                     }
 
-                    *this.pos += n;
+                    this.pos += n;
                 }
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                 Poll::Pending => return Poll::Pending
@@ -459,32 +459,33 @@ impl<R: AsyncRead + Unpin + ?Sized> Future for ReadToEndFuture<'_, R> {
     type Output = Result<usize>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let start_len = self.buf.len();
+        let this = self.get_mut();
+        let start_len = this.buf.len();
 
         loop {
-            if self.buf.capacity() == self.buf.len() {
-                self.buf.reserve(32);
+            if this.buf.capacity() == this.buf.len() {
+                this.buf.reserve(32);
             }
 
-            let len = self.buf.len();
-            let cap = self.buf.capacity();
-            self.buf.resize(cap, 0);
-            let mut buf = ReadBuf::new(&mut self.buf[len..]);
+            let len = this.buf.len();
+            let cap = this.buf.capacity();
+            this.buf.resize(cap, 0);
+            let mut buf = ReadBuf::new(&mut this.buf[len..]);
 
-            match Pin::new(&mut *self.reader).poll_read(cx, &mut buf) {
+            match Pin::new(&mut *this.reader).poll_read(cx, &mut buf) {
                 Poll::Ready(Ok(())) => {
                     let n = buf.filled().len();
-                    self.buf.truncate(len + n);
+                    this.buf.truncate(len + n);
                     if n == 0 {
-                        return Poll::Ready(Ok(self.buf.len() - start_len));
+                        return Poll::Ready(Ok(this.buf.len() - start_len));
                     }
                 }
                 Poll::Ready(Err(e)) => {
-                    self.buf.truncate(len);
+                    this.buf.truncate(len);
                     return Poll::Ready(Err(e));
                 }
                 Poll::Pending => {
-                    self.buf.truncate(len);
+                    this.buf.truncate(len);
                     return Poll::Pending;
                 }
             }
@@ -544,7 +545,8 @@ impl<W: AsyncWrite + Unpin + ?Sized> Future for WriteFuture<'_, W> {
     type Output = Result<usize>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut *self.writer).poll_write(cx, self.buf)
+        let this = self.get_mut();
+        Pin::new(&mut *this.writer).poll_write(cx, this.buf)
     }
 }
 
@@ -558,10 +560,11 @@ impl<W: AsyncWrite + Unpin + ?Sized> Future for WriteAllFuture<'_, W> {
     type Output = Result<()>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        while self.pos < self.buf.len() {
-            match Pin::new(&mut *self.writer).poll_write(cx, &self.buf[self.pos..]) {
+        let this = self.get_mut();
+        while this.pos < this.buf.len() {
+            match Pin::new(&mut *this.writer).poll_write(cx, &this.buf[this.pos..]) {
                 Poll::Ready(Ok(0)) => return Poll::Ready(Err(Error::new(ErrorKind::WriteZero, "fracture: Write zero"))),
-                Poll::Ready(Ok(n)) => self.pos += n,
+                Poll::Ready(Ok(n)) => this.pos += n,
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                 Poll::Pending => return Poll::Pending
             }
@@ -616,11 +619,12 @@ impl<S: AsyncSeek + Unpin + ?Sized> Future for SeekFuture<'_, S> {
     type Output = Result<u64>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match Pin::new(&mut *self.seeker).start_seek(self.pos) {
+        let this = self.get_mut();
+        match Pin::new(&mut *this.seeker).start_seek(this.pos) {
             Ok(_) => {},
             Err(e) => return Poll::Ready(Err(e)),
         }
-        Pin::new(&mut *self.seeker).poll_complete(cx)
+        Pin::new(&mut *this.seeker).poll_complete(cx)
     }
 }
 
@@ -667,24 +671,18 @@ impl<R: AsyncRead> AsyncRead for BufReader<R> {
             return this.inner.poll_read(cx, buf);
         }
 
-        match this.inner.poll_read(cx, &mut ReadBuf::new(this.buf)) {
+        let mut read_buf = ReadBuf::new(this.buf);
+        match this.inner.poll_read(cx, &mut read_buf) {
             Poll::Ready(Ok(())) => {
-                let mut read_buf = ReadBuf::new(this.buf);
-                match this.inner.poll_read(cx, &mut read_buf) {
-                     Poll::Ready(Ok(())) => {
-                        let n = read_buf.filled().len();
-                        *this.pos = 0;
-                        *this.cap = n;
-                        let len = std::cmp::min(buf.remaining(), n);
-                        buf.put_slice(&this.buf[0..len]);
-                        *this.pos += len;
-                        Poll::Ready(Ok(()))
-                     }
-                     res => res
-                }
+                let n = read_buf.filled().len();
+                *this.pos = 0;
+                *this.cap = n;
+                let len = std::cmp::min(buf.remaining(), n);
+                buf.put_slice(&this.buf[0..len]);
+                *this.pos += len;
+                Poll::Ready(Ok(()))
             }
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e))
+            res => res
         }
     }
 }
@@ -850,36 +848,39 @@ impl<R: AsyncBufRead + Unpin + ?Sized> Future for ReadUntilFuture<'_, R> {
         }
         
         loop {
-            let delimiter = self.delimiter;
+            let this = self.as_mut().get_mut();
+            let delimiter = this.delimiter;
+            let reader = &mut this.reader;
+            let buf = &mut this.buf;
+            let read = &mut this.read;
+            
             let (done, used) = {
-                let available = match Pin::new(&mut *self.reader).poll_fill_buf(cx) {
+                let available = match Pin::new(&mut **reader).poll_fill_buf(cx) {
                     Poll::Ready(Ok(chunk)) => chunk,
                     Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                     Poll::Pending => return Poll::Pending,
                 };
 
                 if available.is_empty() {
-                    let read = self.read;
-                    return Poll::Ready(Ok(read));
+                    return Poll::Ready(Ok(*read));
                 }
 
                 // Optimization: Use memchr later
                 if let Some(i) = available.iter().position(|&b| b == delimiter) {
                     let chunk = &available[..=i];
-                    self.buf.extend_from_slice(chunk);
+                    buf.extend_from_slice(chunk);
                     (true, i + 1)
                 } else {
                     let chunk = available;
-                    self.buf.extend_from_slice(chunk);
+                    buf.extend_from_slice(chunk);
                     (false, chunk.len())
                 }
             };
 
-            Pin::new(&mut *self.reader).consume(used);
-            self.read += used;
+            Pin::new(&mut **reader).consume(used);
+            *read += used;
             if done {
-                let read = self.read;
-                return Poll::Ready(Ok(read));
+                return Poll::Ready(Ok(*read));
             }
         }
     }
@@ -900,25 +901,25 @@ impl<R: AsyncBufRead + Unpin + ?Sized> Future for ReadLineFuture<'_, R> {
              return Poll::Ready(Err(Error::new(ErrorKind::Other, "fracture: ReadLine failed (chaos)")));
         }
 
-        let reader = unsafe { Pin::new_unchecked(&mut *self.reader) };
+        let this = self.get_mut();
         let mut read_until = ReadUntilFuture {
-            reader: &mut reader,
+            reader: &mut *this.reader,
             delimiter: b'\n',
-            buf: &mut self.bytes,
-            read: self.read
+            buf: &mut this.bytes,
+            read: this.read
         };
 
         match Pin::new(&mut read_until).poll(cx) {
             Poll::Ready(Ok(n)) => {
-                self.read = n;
-                match String::from_utf8(std::mem::take(&mut self.bytes)) {
+                this.read = n;
+                match String::from_utf8(std::mem::take(&mut this.bytes)) {
                     Ok(s) => {
-                        self.buf.push_str(&s);
+                        this.buf.push_str(&s);
                         Poll::Ready(Ok(n))
                     }
-                    Err(_) => Poll::Ready(Err(Error::new(ErrorKind::InvalidData, "stream did not contain valid UTF-8")))
+                    Err(_) => Poll::Ready(Err(Error::new(ErrorKind::InvalidData, "fracture: Invalid UTF-8")))
                 }
-            }
+            },
             Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
             Poll::Pending => Poll::Pending
         }

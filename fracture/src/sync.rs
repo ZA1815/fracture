@@ -1087,7 +1087,8 @@ pub mod broadcast {
                  s.buffer.pop_front();
              }
              
-             s.buffer.push_back(Message { val: value, seq: s.tail_seq });
+             let seq = s.tail_seq;
+             s.buffer.push_back(Message { val: value, seq });
              s.tail_seq += 1;
 
              for w in s.waiters.drain(..) { w.wake(); }

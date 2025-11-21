@@ -37,13 +37,13 @@ impl Future for Sleep {
         let core_rc = handle.core.upgrade().expect("fracture: Runtime dropped");
         let mut core = core_rc.borrow_mut();
 
-        if core.current_time >= self.deadline {
+        if core.current_time >= self.deadline.0 {
             return Poll::Ready(());
         }
 
         if !self.registered {
             let entry = crate::runtime::core::TimerEntry {
-                deadline: self.deadline,
+                deadline: self.deadline.0,
                 waker: cx.waker().clone(),
                 id: core.rng.r#gen::<usize>()
             };
@@ -69,7 +69,7 @@ pub fn sleep(duration: Duration) -> Sleep {
     let core = handle.core.upgrade().expect("fracture: Runtime dropped");
     let now = core.borrow().current_time;
 
-    Sleep { deadline: now + duration, registered: false }
+    Sleep { deadline: Instant::from(now + duration), registered: false }
 }
 
 pub fn sleep_until(deadline: Instant) -> Sleep {
@@ -88,13 +88,13 @@ impl<F: Future> Future for Timeout<F> {
     type Output = Result<F::Output, ()>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.project();
+        let mut this = self.project();
 
-        if let Poll::Ready(v) = self.future.poll(cx) {
+        if let Poll::Ready(v) = this.future.as_mut().poll(cx) {
             return Poll::Ready(Ok(v))
         }
 
-        if let Poll::Ready(()) = self.sleep.poll(cx) {
+        if let Poll::Ready(()) = this.sleep.as_mut().poll(cx) {
             return Poll::Ready(Err(()));
         }
 
@@ -199,8 +199,10 @@ impl Interval {
     pub fn poll_tick(&mut self, cx: &mut Context<'_>) -> Poll<Instant> {
         let handle = Handle::current();
         let core_rc = handle.core.upgrade().unwrap();
-        let mut core = core_rc.borrow_mut();
-        let now = crate::runtime::core::Instant::from(core.current_time);
+        let now = {
+            let core = core_rc.borrow();
+            crate::runtime::core::Instant::from(core.current_time)
+        };
 
         if now >= self.next_tick {
             let tick_time = self.next_tick;
@@ -226,10 +228,15 @@ impl Interval {
         }
         else {
             let waker = cx.waker().clone();
+            let id = {
+                let mut core = core_rc.borrow_mut();
+                core.rng.r#gen::<usize>()
+            };
+            let mut core = core_rc.borrow_mut();
             core.timers.push(crate::runtime::core::TimerEntry {
                 deadline: self.next_tick.0,
                 waker,
-                id: core.rng.r#gen::<usize>(),
+                id,
             });
             Poll::Pending
         }

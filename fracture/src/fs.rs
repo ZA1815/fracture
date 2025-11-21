@@ -460,7 +460,7 @@ impl OpenOptions {
 }
 
 impl AsyncRead for File {
-    fn poll_read(self: Pin<&mut Self>, _cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<Result<()>> {
+    fn poll_read(mut self: Pin<&mut Self>, _cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<Result<()>> {
         if chaos::should_fail(ChaosOperation::FsRead) {
              return Poll::Ready(Err(Error::new(ErrorKind::Other, "fracture: Read failed (chaos)")));
         }

@@ -935,9 +935,9 @@ impl<T> Clone for Sender<T> {
 
 impl<T: ChannelItemSize + Send + Clone> AsyncReceiver<T> {
     pub async fn recv(&self) -> Option<T> {
-        struct RecvFuture<'a, T: ChannelItemSize + Send> { rx: &'a AsyncReceiver<T> }
+        struct RecvFuture<'a, T: ChannelItemSize + Send + Clone> { rx: &'a AsyncReceiver<T> }
         
-        impl<T: ChannelItemSize + Send> Future for RecvFuture<'_, T> {
+        impl<T: ChannelItemSize + Send + Clone> Future for RecvFuture<'_, T> {
             type Output = Option<T>;
 
             fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -967,13 +967,14 @@ impl<T: ChannelItemSize + Send + Clone> AsyncReceiver<T> {
                 return Poll::Ready(Some(envelope.data));
             }
             else {
+                let deadline = envelope.arrival_time;
                 let waker = cx.waker().clone();
                 drop(s);
 
                 let mut core = core_rc.borrow_mut();
                 let entry = crate::runtime::core::TimerEntry {
-                    deadline: envelope.arrival_time,
-                    waker: waker,
+                    deadline,
+                    waker,
                     id: core.rng.r#gen::<usize>()
                 };
                 core.timers.push(entry);
@@ -1050,7 +1051,7 @@ impl<T: ChannelItemSize + Send + Clone> AsyncReceiver<T> {
         if let Some(envelope) = lock.queue.front() {
             if envelope.arrival_time <= now {
                 let envelope = lock.queue.pop_front().unwrap();
-                lock.current_size -= envelope.data.remaining();
+                lock.current_size -= envelope.data.channel_size();
 
                 if let Some(w) = lock.send_waiters.pop_front() {
                     w.wake();

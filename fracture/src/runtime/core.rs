@@ -40,12 +40,19 @@ pub(crate) struct Core {
     pub fs: FileSystemState,
 }
 
-#[derive(Eq, PartialEq)]
 pub(crate) struct TimerEntry {
     pub deadline: Duration,
     pub waker: Waker,
     pub id: usize
 }
+
+impl PartialEq for TimerEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.deadline == other.deadline && self.id == other.id
+    }
+}
+
+impl Eq for TimerEntry {}
 
 impl Ord for TimerEntry {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
