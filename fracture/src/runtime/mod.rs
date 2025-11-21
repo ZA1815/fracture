@@ -1,7 +1,6 @@
 use std::cell::RefCell;
 use std::future::Future;
 use std::rc::Rc;
-use std::time::Duration;
 
 pub(crate) mod core;
 pub(crate) mod task;
@@ -22,11 +21,10 @@ impl Default for Runtime {
 
 impl Runtime {
     pub fn new() -> Self {
-        let seed = std::env::var("FRACTURE_SEED")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_else(rand::random);
+        Builder::new_multi_thread().build().unwrap()
+    }
 
+    fn with_seed(seed: u64) -> Self {
         Self {
             core: Rc::new(RefCell::new(Core::new(seed)))
         }
@@ -88,4 +86,128 @@ impl Handle {
 
 thread_local! {
     static CONTEXT: RefCell<Option<Handle>> = RefCell::new(None);
+}
+
+#[derive(Debug, Clone)]
+pub struct Builder {
+    worker_threads: Option<usize>,
+    max_blocking_threads: Option<usize>,
+    thread_name: Option<String>,
+    thread_stack_size: Option<usize>,
+    global_queue_interval: Option<u32>,
+    event_interval: Option<u32>,
+    enable_io: bool,
+    enable_time: bool,
+}
+
+impl Builder {
+    pub fn new_multi_thread() -> Self {
+        Self {
+            worker_threads: None,
+            max_blocking_threads: None,
+            thread_name: None,
+            thread_stack_size: None,
+            global_queue_interval: None,
+            event_interval: None,
+            enable_io: true,
+            enable_time: true,
+        }
+    }
+
+    pub fn new_current_thread() -> Self {
+        Self::new_multi_thread()
+    }
+
+    pub fn worker_threads(&mut self, val: usize) -> &mut Self {
+        self.worker_threads = Some(val);
+        self
+    }
+
+    pub fn max_blocking_threads(&mut self, val: usize) -> &mut Self {
+        self.max_blocking_threads = Some(val);
+        self
+    }
+
+    pub fn thread_name(&mut self, val: impl Into<String>) -> &mut Self {
+        self.thread_name = Some(val.into());
+        self
+    }
+
+    pub fn thread_stack_size(&mut self, val: usize) -> &mut Self {
+        self.thread_stack_size = Some(val);
+        self
+    }
+
+    pub fn global_queue_interval(&mut self, val: u32) -> &mut Self {
+        self.global_queue_interval = Some(val);
+        self
+    }
+
+    pub fn event_interval(&mut self, val: u32) -> &mut Self {
+        self.event_interval = Some(val);
+        self
+    }
+
+    pub fn enable_all(&mut self) -> &mut Self {
+        self.enable_io = true;
+        self.enable_time = true;
+        self
+    }
+
+    pub fn enable_io(&mut self) -> &mut Self {
+        self.enable_io = true;
+        self
+    }
+
+    pub fn enable_time(&mut self) -> &mut Self {
+        self.enable_time = true;
+        self
+    }
+
+    pub fn on_thread_start<F>(&mut self, _f: F) -> &mut Self
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        // In simulation mode, this is a no-op
+        self
+    }
+
+    pub fn on_thread_stop<F>(&mut self, _f: F) -> &mut Self
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        // In simulation mode, this is a no-op
+        self
+    }
+
+    pub fn on_thread_park<F>(&mut self, _f: F) -> &mut Self
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        // In simulation mode, this is a no-op
+        self
+    }
+
+    pub fn on_thread_unpark<F>(&mut self, _f: F) -> &mut Self
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        // In simulation mode, this is a no-op
+        self
+    }
+
+    pub fn build(&mut self) -> std::io::Result<Runtime> {
+        let seed = std::env::var("FRACTURE_SEED")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(rand::random);
+
+        Ok(Runtime::with_seed(seed))
+    }
+}
+
+impl Default for Builder {
+    fn default() -> Self {
+        Self::new_multi_thread()
+    }
 }

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 use rand::Rng;
@@ -14,15 +16,20 @@ use crate::time::sleep;
 
 pub fn spawn<F>(future: F) -> JoinHandle<F::Output>
 where F: Future + Send + 'static, F::Output: Send + 'static {
+    let finished = Arc::new(AtomicBool::new(false));
+
     if chaos::should_fail(ChaosOperation::TaskSpawn) {
         return JoinHandle {
             rx: None,
             chaos_state: JoinHandleChaos::AlwaysFail,
-            task_id: None
+            task_id: None,
+            abort_handle: AbortHandle { task_id: None, finished: finished.clone() },
+            finished,
         };
     }
 
     let (tx, rx) = oneshot::channel();
+    let finished_flag = finished.clone();
 
     let wrapped_future = async move {
         if chaos::should_fail(ChaosOperation::TaskScheduleDelay) {
@@ -58,8 +65,9 @@ where F: Future + Send + 'static, F::Output: Send + 'static {
         }
 
         let output = future.await;
-        
+
         tx.send(output);
+        finished_flag.store(true, Ordering::Release);
     };
 
     let handle = Handle::current();
@@ -71,7 +79,9 @@ where F: Future + Send + 'static, F::Output: Send + 'static {
     JoinHandle {
         rx: Some(rx),
         chaos_state: JoinHandleChaos::None,
-        task_id: Some(id)
+        task_id: Some(id),
+        abort_handle: AbortHandle { task_id: Some(id), finished: finished.clone() },
+        finished,
     }
 }
 
@@ -89,15 +99,20 @@ where F: Future + 'static, F::Output: Send + 'static {
 
 pub fn spawn_blocking<F, R>(f: F) -> JoinHandle<R>
 where F: FnOnce() -> R + Send + 'static, R: Send + 'static {
+    let finished = Arc::new(AtomicBool::new(false));
+
     if chaos::should_fail(ChaosOperation::TaskSpawnBlocking) {
         return JoinHandle {
             rx: None,
             chaos_state: JoinHandleChaos::AlwaysFail,
-            task_id: None
+            task_id: None,
+            abort_handle: AbortHandle { task_id: None, finished: finished.clone() },
+            finished,
         };
     }
 
     let (tx, rx) = oneshot::channel();
+    let finished_flag = finished.clone();
 
     std::thread::spawn(move || {
         if chaos::should_fail(ChaosOperation::ThreadPoolExhaustion) {
@@ -106,12 +121,15 @@ where F: FnOnce() -> R + Send + 'static, R: Send + 'static {
 
         let result = f();
         tx.send(result);
+        finished_flag.store(true, Ordering::Release);
     });
 
     JoinHandle {
         rx: Some(rx),
         chaos_state: JoinHandleChaos::None,
-        task_id: None
+        task_id: None,
+        abort_handle: AbortHandle { task_id: None, finished: finished.clone() },
+        finished,
     }
 }
 
@@ -154,7 +172,15 @@ where F: FnOnce() -> R {
 pub struct JoinHandle<T> {
     rx: Option<oneshot::Receiver<T>>,
     chaos_state: JoinHandleChaos,
-    task_id: Option<crate::runtime::task::TaskId>
+    task_id: Option<crate::runtime::task::TaskId>,
+    abort_handle: AbortHandle,
+    finished: Arc<AtomicBool>,
+}
+
+#[derive(Clone)]
+pub struct AbortHandle {
+    task_id: Option<crate::runtime::task::TaskId>,
+    finished: Arc<AtomicBool>,
 }
 
 pub enum JoinHandleChaos {
@@ -166,6 +192,28 @@ pub enum JoinHandleChaos {
 
 impl<T> JoinHandle<T> {
     pub fn abort(&self) {
+        self.abort_handle.abort();
+    }
+
+    pub fn is_finished(&self) -> bool {
+        if let JoinHandleChaos::AlwaysFail = self.chaos_state {
+            return true;
+        }
+
+        self.finished.load(Ordering::Acquire)
+    }
+
+    pub fn id(&self) -> Option<TaskId> {
+        self.task_id
+    }
+
+    pub fn abort_handle(&self) -> AbortHandle {
+        self.abort_handle.clone()
+    }
+}
+
+impl AbortHandle {
+    pub fn abort(&self) {
         if chaos::should_fail(ChaosOperation::TaskAbort) {
             return;
         }
@@ -174,19 +222,15 @@ impl<T> JoinHandle<T> {
             let handle = Handle::current();
             if let Some(core_rc) = handle.core.upgrade() {
                 let mut core = core_rc.borrow_mut();
-                // Implement a remove/abort in Core
                 core.tasks.remove(id.0);
             }
         }
+
+        self.finished.store(true, Ordering::Release);
     }
 
     pub fn is_finished(&self) -> bool {
-        if let JoinHandleChaos::AlwaysFail = self.chaos_state {
-            return true;
-        }
-
-        // Need a shared atomic flag
-        false
+        self.finished.load(Ordering::Acquire)
     }
 
     pub fn id(&self) -> Option<TaskId> {
@@ -286,7 +330,7 @@ impl<T> JoinSet<T> {
         let tx = self.tx.clone();
         spawn(async move {
             let result = handle.await;
-            tx.send((key, result));
+            let _ = tx.send((key, result));
         });
     }
 

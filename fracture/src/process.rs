@@ -404,7 +404,7 @@ impl Child {
 impl Drop for Child {
     fn drop(&mut self) {
         if self.kill_on_drop {
-            self.start_kill();
+            let _ = self.start_kill();
         }
 
         if chaos::should_fail(ChaosOperation::ProcessOrphan) {

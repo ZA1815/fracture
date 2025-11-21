@@ -224,6 +224,72 @@ impl File {
         OpenOptions::new().write(true).create(true).truncate(true).open(path).await
     }
 
+    pub fn from_std(mut file: std::fs::File) -> File {
+        use std::io::{Read as _, Seek as _};
+
+        // In simulation mode, extract what we can from the std file
+        let path = PathBuf::from("/tmp/fracture_from_std_file");
+
+        let handle = Handle::current();
+        let core_rc = handle.core.upgrade().expect("fracture: Runtime dropped");
+        let mut core = core_rc.borrow_mut();
+
+        let inode = core.fs.assign_inode();
+
+        // Try to extract metadata from the std file
+        let (accessed, modified) = if let Ok(metadata) = file.metadata() {
+            let accessed = metadata.accessed().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| core.start_system_time + d).unwrap_or_else(|| core.sys_now());
+            let modified = metadata.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| core.start_system_time + d).unwrap_or_else(|| core.sys_now());
+            (accessed, modified)
+        } else {
+            let now = core.sys_now();
+            (now, now)
+        };
+
+        // Try to read the file contents
+        let mut contents = Vec::new();
+        let _ = file.read_to_end(&mut contents);
+
+        // Try to get current cursor position
+        let cursor = file.stream_position().unwrap_or(0);
+
+        // Create the file entry with the extracted data
+        let mut file_entry = FileEntry::new_file(accessed, inode);
+        file_entry.modified = modified;
+        file_entry.data = contents;
+
+        let entry = Arc::new(Mutex::new(file_entry));
+        core.fs.files.insert(path.clone(), entry.clone());
+
+        File {
+            path,
+            entry,
+            cursor,
+            can_read: true,
+            can_write: true,
+        }
+    }
+
+    pub async fn set_times(&self, times: FileTimes) -> Result<()> {
+        if chaos::should_fail(ChaosOperation::FsSetPermissions) {
+            return Err(Error::new(ErrorKind::PermissionDenied, "fracture: SetTimes failed (chaos)"));
+        }
+        simulate_io_latency().await;
+
+        let mut locked = self.entry.lock().unwrap();
+
+        if let Some(accessed) = times.accessed {
+            locked.accessed = accessed;
+        }
+        if let Some(modified) = times.modified {
+            locked.modified = modified;
+        }
+
+        Ok(())
+    }
+
     pub async fn sync_all(&self) -> Result<()> {
         if chaos::should_fail(ChaosOperation::FsSyncAll) {
              return Err(Error::new(ErrorKind::Other, "fracture: SyncAll failed (chaos)"));
@@ -940,4 +1006,29 @@ pub async fn read_to_string<P: AsRef<Path>>(path: P) -> Result<String> {
     let bytes = read(path).await?;
 
     String::from_utf8(bytes).map_err(|e| Error::new(ErrorKind::InvalidData, e))
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct FileTimes {
+    accessed: Option<SystemTime>,
+    modified: Option<SystemTime>,
+}
+
+impl FileTimes {
+    pub fn new() -> Self {
+        Self {
+            accessed: None,
+            modified: None,
+        }
+    }
+
+    pub fn set_accessed(mut self, t: SystemTime) -> Self {
+        self.accessed = Some(t);
+        self
+    }
+
+    pub fn set_modified(mut self, t: SystemTime) -> Self {
+        self.modified = Some(t);
+        self
+    }
 }

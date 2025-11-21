@@ -1,6 +1,8 @@
+use std::collections::VecDeque;
 use std::io::{self, Result, Error, ErrorKind, SeekFrom};
 use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::sync::Arc;
+use std::task::{Context, Poll, Waker};
 use std::future::Future;
 use pin_project::pin_project;
 
@@ -324,6 +326,117 @@ pub trait AsyncReadExt: AsyncRead {
             limit
         }
     }
+
+    // Primitive readers
+    fn read_u8(&mut self) -> ReadU8Future<'_, Self>
+    where Self: Unpin + Sized {
+        ReadU8Future { reader: self }
+    }
+
+    fn read_i8(&mut self) -> ReadI8Future<'_, Self>
+    where Self: Unpin + Sized {
+        ReadI8Future { reader: self }
+    }
+
+    fn read_u16(&mut self) -> ReadU16Future<'_, Self>
+    where Self: Unpin + Sized {
+        ReadU16Future { reader: self }
+    }
+
+    fn read_u16_le(&mut self) -> ReadU16LeFuture<'_, Self>
+    where Self: Unpin + Sized {
+        ReadU16LeFuture { reader: self }
+    }
+
+    fn read_i16(&mut self) -> ReadI16Future<'_, Self>
+    where Self: Unpin + Sized {
+        ReadI16Future { reader: self }
+    }
+
+    fn read_i16_le(&mut self) -> ReadI16LeFuture<'_, Self>
+    where Self: Unpin + Sized {
+        ReadI16LeFuture { reader: self }
+    }
+
+    fn read_u32(&mut self) -> ReadU32Future<'_, Self>
+    where Self: Unpin + Sized {
+        ReadU32Future { reader: self }
+    }
+
+    fn read_u32_le(&mut self) -> ReadU32LeFuture<'_, Self>
+    where Self: Unpin + Sized {
+        ReadU32LeFuture { reader: self }
+    }
+
+    fn read_i32(&mut self) -> ReadI32Future<'_, Self>
+    where Self: Unpin + Sized {
+        ReadI32Future { reader: self }
+    }
+
+    fn read_i32_le(&mut self) -> ReadI32LeFuture<'_, Self>
+    where Self: Unpin + Sized {
+        ReadI32LeFuture { reader: self }
+    }
+
+    fn read_u64(&mut self) -> ReadU64Future<'_, Self>
+    where Self: Unpin + Sized {
+        ReadU64Future { reader: self }
+    }
+
+    fn read_u64_le(&mut self) -> ReadU64LeFuture<'_, Self>
+    where Self: Unpin + Sized {
+        ReadU64LeFuture { reader: self }
+    }
+
+    fn read_i64(&mut self) -> ReadI64Future<'_, Self>
+    where Self: Unpin + Sized {
+        ReadI64Future { reader: self }
+    }
+
+    fn read_i64_le(&mut self) -> ReadI64LeFuture<'_, Self>
+    where Self: Unpin + Sized {
+        ReadI64LeFuture { reader: self }
+    }
+
+    fn read_u128(&mut self) -> ReadU128Future<'_, Self>
+    where Self: Unpin + Sized {
+        ReadU128Future { reader: self }
+    }
+
+    fn read_u128_le(&mut self) -> ReadU128LeFuture<'_, Self>
+    where Self: Unpin + Sized {
+        ReadU128LeFuture { reader: self }
+    }
+
+    fn read_i128(&mut self) -> ReadI128Future<'_, Self>
+    where Self: Unpin + Sized {
+        ReadI128Future { reader: self }
+    }
+
+    fn read_i128_le(&mut self) -> ReadI128LeFuture<'_, Self>
+    where Self: Unpin + Sized {
+        ReadI128LeFuture { reader: self }
+    }
+
+    fn read_f32(&mut self) -> ReadF32Future<'_, Self>
+    where Self: Unpin + Sized {
+        ReadF32Future { reader: self }
+    }
+
+    fn read_f32_le(&mut self) -> ReadF32LeFuture<'_, Self>
+    where Self: Unpin + Sized {
+        ReadF32LeFuture { reader: self }
+    }
+
+    fn read_f64(&mut self) -> ReadF64Future<'_, Self>
+    where Self: Unpin + Sized {
+        ReadF64Future { reader: self }
+    }
+
+    fn read_f64_le(&mut self) -> ReadF64LeFuture<'_, Self>
+    where Self: Unpin + Sized {
+        ReadF64LeFuture { reader: self }
+    }
 }
 
 impl<R: AsyncRead + ?Sized> AsyncReadExt for R {}
@@ -357,6 +470,117 @@ pub trait AsyncWriteExt: AsyncWrite {
         ShutdownFuture {
             writer: self
         }
+    }
+
+    // Primitive writers
+    fn write_u8(&mut self, n: u8) -> WriteU8Future<'_, Self>
+    where Self: Unpin + Sized {
+        WriteU8Future { writer: self, n }
+    }
+
+    fn write_i8(&mut self, n: i8) -> WriteI8Future<'_, Self>
+    where Self: Unpin + Sized {
+        WriteI8Future { writer: self, n }
+    }
+
+    fn write_u16(&mut self, n: u16) -> WriteU16Future<'_, Self>
+    where Self: Unpin + Sized {
+        WriteU16Future { writer: self, n }
+    }
+
+    fn write_u16_le(&mut self, n: u16) -> WriteU16LeFuture<'_, Self>
+    where Self: Unpin + Sized {
+        WriteU16LeFuture { writer: self, n }
+    }
+
+    fn write_i16(&mut self, n: i16) -> WriteI16Future<'_, Self>
+    where Self: Unpin + Sized {
+        WriteI16Future { writer: self, n }
+    }
+
+    fn write_i16_le(&mut self, n: i16) -> WriteI16LeFuture<'_, Self>
+    where Self: Unpin + Sized {
+        WriteI16LeFuture { writer: self, n }
+    }
+
+    fn write_u32(&mut self, n: u32) -> WriteU32Future<'_, Self>
+    where Self: Unpin + Sized {
+        WriteU32Future { writer: self, n }
+    }
+
+    fn write_u32_le(&mut self, n: u32) -> WriteU32LeFuture<'_, Self>
+    where Self: Unpin + Sized {
+        WriteU32LeFuture { writer: self, n }
+    }
+
+    fn write_i32(&mut self, n: i32) -> WriteI32Future<'_, Self>
+    where Self: Unpin + Sized {
+        WriteI32Future { writer: self, n }
+    }
+
+    fn write_i32_le(&mut self, n: i32) -> WriteI32LeFuture<'_, Self>
+    where Self: Unpin + Sized {
+        WriteI32LeFuture { writer: self, n }
+    }
+
+    fn write_u64(&mut self, n: u64) -> WriteU64Future<'_, Self>
+    where Self: Unpin + Sized {
+        WriteU64Future { writer: self, n }
+    }
+
+    fn write_u64_le(&mut self, n: u64) -> WriteU64LeFuture<'_, Self>
+    where Self: Unpin + Sized {
+        WriteU64LeFuture { writer: self, n }
+    }
+
+    fn write_i64(&mut self, n: i64) -> WriteI64Future<'_, Self>
+    where Self: Unpin + Sized {
+        WriteI64Future { writer: self, n }
+    }
+
+    fn write_i64_le(&mut self, n: i64) -> WriteI64LeFuture<'_, Self>
+    where Self: Unpin + Sized {
+        WriteI64LeFuture { writer: self, n }
+    }
+
+    fn write_u128(&mut self, n: u128) -> WriteU128Future<'_, Self>
+    where Self: Unpin + Sized {
+        WriteU128Future { writer: self, n }
+    }
+
+    fn write_u128_le(&mut self, n: u128) -> WriteU128LeFuture<'_, Self>
+    where Self: Unpin + Sized {
+        WriteU128LeFuture { writer: self, n }
+    }
+
+    fn write_i128(&mut self, n: i128) -> WriteI128Future<'_, Self>
+    where Self: Unpin + Sized {
+        WriteI128Future { writer: self, n }
+    }
+
+    fn write_i128_le(&mut self, n: i128) -> WriteI128LeFuture<'_, Self>
+    where Self: Unpin + Sized {
+        WriteI128LeFuture { writer: self, n }
+    }
+
+    fn write_f32(&mut self, n: f32) -> WriteF32Future<'_, Self>
+    where Self: Unpin + Sized {
+        WriteF32Future { writer: self, n }
+    }
+
+    fn write_f32_le(&mut self, n: f32) -> WriteF32LeFuture<'_, Self>
+    where Self: Unpin + Sized {
+        WriteF32LeFuture { writer: self, n }
+    }
+
+    fn write_f64(&mut self, n: f64) -> WriteF64Future<'_, Self>
+    where Self: Unpin + Sized {
+        WriteF64Future { writer: self, n }
+    }
+
+    fn write_f64_le(&mut self, n: f64) -> WriteF64LeFuture<'_, Self>
+    where Self: Unpin + Sized {
+        WriteF64LeFuture { writer: self, n }
     }
 }
 
@@ -1058,7 +1282,7 @@ impl<R: AsyncRead> AsyncRead for Take<R> {
         if chaos::should_fail(ChaosOperation::IoTake) {
              return Poll::Ready(Err(Error::new(ErrorKind::Other, "fracture: Take failed (chaos)")));
         }
-        
+
         let this = self.project();
         if *this.limit == 0 {
             return Poll::Ready(Ok(()));
@@ -1067,7 +1291,7 @@ impl<R: AsyncRead> AsyncRead for Take<R> {
         let max = std::cmp::min(buf.remaining() as u64, *this.limit) as usize;
         let mut temp = vec![0u8; max];
         let mut temp_buf = ReadBuf::new(&mut temp);
-        
+
         match this.inner.poll_read(cx, &mut temp_buf) {
             Poll::Ready(Ok(())) => {
                 let n = temp_buf.filled().len();
@@ -1077,5 +1301,395 @@ impl<R: AsyncRead> AsyncRead for Take<R> {
             }
             other => other
         }
+    }
+}
+
+// Macro to generate primitive read futures
+macro_rules! impl_read_primitive {
+    ($name:ident, $ty:ty, $size:expr, $from_bytes:expr) => {
+        pub struct $name<'a, R: ?Sized> {
+            reader: &'a mut R,
+        }
+
+        impl<R: AsyncRead + Unpin + ?Sized> Future for $name<'_, R> {
+            type Output = Result<$ty>;
+
+            fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                let mut buf = [0u8; $size];
+                let mut read_buf = ReadBuf::new(&mut buf);
+
+                match Pin::new(&mut *self.reader).poll_read(cx, &mut read_buf) {
+                    Poll::Ready(Ok(())) => {
+                        if read_buf.filled().len() < $size {
+                            return Poll::Ready(Err(Error::new(
+                                ErrorKind::UnexpectedEof,
+                                "fracture: Unexpected EOF",
+                            )));
+                        }
+                        Poll::Ready(Ok($from_bytes(&buf)))
+                    }
+                    Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+                    Poll::Pending => Poll::Pending,
+                }
+            }
+        }
+    };
+}
+
+// Macro to generate primitive write futures
+macro_rules! impl_write_primitive {
+    ($name:ident, $ty:ty, $to_bytes:expr) => {
+        pub struct $name<'a, W: ?Sized> {
+            writer: &'a mut W,
+            n: $ty,
+        }
+
+        impl<W: AsyncWrite + Unpin + ?Sized> Future for $name<'_, W> {
+            type Output = Result<()>;
+
+            fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                let buf = $to_bytes(self.n);
+                let mut pos = 0;
+
+                while pos < buf.len() {
+                    match Pin::new(&mut *self.writer).poll_write(cx, &buf[pos..]) {
+                        Poll::Ready(Ok(0)) => {
+                            return Poll::Ready(Err(Error::new(
+                                ErrorKind::WriteZero,
+                                "fracture: Write zero",
+                            )))
+                        }
+                        Poll::Ready(Ok(n)) => pos += n,
+                        Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                        Poll::Pending => return Poll::Pending,
+                    }
+                }
+
+                Poll::Ready(Ok(()))
+            }
+        }
+    };
+}
+
+// Primitive readers
+impl_read_primitive!(ReadU8Future, u8, 1, |buf: &[u8]| buf[0]);
+impl_read_primitive!(ReadI8Future, i8, 1, |buf: &[u8]| buf[0] as i8);
+
+impl_read_primitive!(ReadU16Future, u16, 2, |buf: &[u8]| {
+    u16::from_be_bytes([buf[0], buf[1]])
+});
+impl_read_primitive!(ReadU16LeFuture, u16, 2, |buf: &[u8]| {
+    u16::from_le_bytes([buf[0], buf[1]])
+});
+
+impl_read_primitive!(ReadI16Future, i16, 2, |buf: &[u8]| {
+    i16::from_be_bytes([buf[0], buf[1]])
+});
+impl_read_primitive!(ReadI16LeFuture, i16, 2, |buf: &[u8]| {
+    i16::from_le_bytes([buf[0], buf[1]])
+});
+
+impl_read_primitive!(ReadU32Future, u32, 4, |buf: &[u8]| {
+    u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]])
+});
+impl_read_primitive!(ReadU32LeFuture, u32, 4, |buf: &[u8]| {
+    u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]])
+});
+
+impl_read_primitive!(ReadI32Future, i32, 4, |buf: &[u8]| {
+    i32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]])
+});
+impl_read_primitive!(ReadI32LeFuture, i32, 4, |buf: &[u8]| {
+    i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]])
+});
+
+impl_read_primitive!(ReadU64Future, u64, 8, |buf: &[u8]| {
+    u64::from_be_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]])
+});
+impl_read_primitive!(ReadU64LeFuture, u64, 8, |buf: &[u8]| {
+    u64::from_le_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]])
+});
+
+impl_read_primitive!(ReadI64Future, i64, 8, |buf: &[u8]| {
+    i64::from_be_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]])
+});
+impl_read_primitive!(ReadI64LeFuture, i64, 8, |buf: &[u8]| {
+    i64::from_le_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]])
+});
+
+impl_read_primitive!(ReadU128Future, u128, 16, |buf: &[u8]| {
+    u128::from_be_bytes([
+        buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+        buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
+    ])
+});
+impl_read_primitive!(ReadU128LeFuture, u128, 16, |buf: &[u8]| {
+    u128::from_le_bytes([
+        buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+        buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
+    ])
+});
+
+impl_read_primitive!(ReadI128Future, i128, 16, |buf: &[u8]| {
+    i128::from_be_bytes([
+        buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+        buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
+    ])
+});
+impl_read_primitive!(ReadI128LeFuture, i128, 16, |buf: &[u8]| {
+    i128::from_le_bytes([
+        buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+        buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
+    ])
+});
+
+impl_read_primitive!(ReadF32Future, f32, 4, |buf: &[u8]| {
+    f32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]])
+});
+impl_read_primitive!(ReadF32LeFuture, f32, 4, |buf: &[u8]| {
+    f32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]])
+});
+
+impl_read_primitive!(ReadF64Future, f64, 8, |buf: &[u8]| {
+    f64::from_be_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]])
+});
+impl_read_primitive!(ReadF64LeFuture, f64, 8, |buf: &[u8]| {
+    f64::from_le_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]])
+});
+
+// Primitive writers
+impl_write_primitive!(WriteU8Future, u8, |n: u8| [n]);
+impl_write_primitive!(WriteI8Future, i8, |n: i8| [n as u8]);
+
+impl_write_primitive!(WriteU16Future, u16, |n: u16| n.to_be_bytes());
+impl_write_primitive!(WriteU16LeFuture, u16, |n: u16| n.to_le_bytes());
+
+impl_write_primitive!(WriteI16Future, i16, |n: i16| n.to_be_bytes());
+impl_write_primitive!(WriteI16LeFuture, i16, |n: i16| n.to_le_bytes());
+
+impl_write_primitive!(WriteU32Future, u32, |n: u32| n.to_be_bytes());
+impl_write_primitive!(WriteU32LeFuture, u32, |n: u32| n.to_le_bytes());
+
+impl_write_primitive!(WriteI32Future, i32, |n: i32| n.to_be_bytes());
+impl_write_primitive!(WriteI32LeFuture, i32, |n: i32| n.to_le_bytes());
+
+impl_write_primitive!(WriteU64Future, u64, |n: u64| n.to_be_bytes());
+impl_write_primitive!(WriteU64LeFuture, u64, |n: u64| n.to_le_bytes());
+
+impl_write_primitive!(WriteI64Future, i64, |n: i64| n.to_be_bytes());
+impl_write_primitive!(WriteI64LeFuture, i64, |n: i64| n.to_le_bytes());
+
+impl_write_primitive!(WriteU128Future, u128, |n: u128| n.to_be_bytes());
+impl_write_primitive!(WriteU128LeFuture, u128, |n: u128| n.to_le_bytes());
+
+impl_write_primitive!(WriteI128Future, i128, |n: i128| n.to_be_bytes());
+impl_write_primitive!(WriteI128LeFuture, i128, |n: i128| n.to_le_bytes());
+
+impl_write_primitive!(WriteF32Future, f32, |n: f32| n.to_be_bytes());
+impl_write_primitive!(WriteF32LeFuture, f32, |n: f32| n.to_le_bytes());
+
+impl_write_primitive!(WriteF64Future, f64, |n: f64| n.to_be_bytes());
+impl_write_primitive!(WriteF64LeFuture, f64, |n: f64| n.to_le_bytes());
+
+// Standard streams (simulated - these just discard/provide dummy data in simulation)
+pub struct Stdout {
+    _private: (),
+}
+
+pub struct Stderr {
+    _private: (),
+}
+
+pub struct Stdin {
+    _private: (),
+}
+
+pub fn stdout() -> Stdout {
+    Stdout { _private: () }
+}
+
+pub fn stderr() -> Stderr {
+    Stderr { _private: () }
+}
+
+pub fn stdin() -> Stdin {
+    Stdin { _private: () }
+}
+
+impl AsyncWrite for Stdout {
+    fn poll_write(self: Pin<&mut Self>, _cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize>> {
+        // In simulation mode, just pretend we wrote it
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncWrite for Stderr {
+    fn poll_write(self: Pin<&mut Self>, _cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize>> {
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncRead for Stdin {
+    fn poll_read(self: Pin<&mut Self>, _cx: &mut Context<'_>, _buf: &mut ReadBuf<'_>) -> Poll<Result<()>> {
+        // In simulation mode, stdin returns EOF immediately
+        Poll::Ready(Ok(()))
+    }
+}
+
+// Utility constructors
+pub struct Sink {
+    _private: (),
+}
+
+pub fn sink() -> Sink {
+    Sink { _private: () }
+}
+
+impl AsyncWrite for Sink {
+    fn poll_write(self: Pin<&mut Self>, _cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize>> {
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+pub struct Empty {
+    _private: (),
+}
+
+pub fn empty() -> Empty {
+    Empty { _private: () }
+}
+
+impl AsyncRead for Empty {
+    fn poll_read(self: Pin<&mut Self>, _cx: &mut Context<'_>, _buf: &mut ReadBuf<'_>) -> Poll<Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+pub struct Repeat {
+    byte: u8,
+}
+
+pub fn repeat(byte: u8) -> Repeat {
+    Repeat { byte }
+}
+
+impl AsyncRead for Repeat {
+    fn poll_read(self: Pin<&mut Self>, _cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<Result<()>> {
+        let remaining = buf.remaining();
+        let to_fill = vec![self.byte; remaining];
+        buf.put_slice(&to_fill);
+        Poll::Ready(Ok(()))
+    }
+}
+
+// Duplex - bidirectional in-memory stream
+pub struct DuplexStream {
+    read_half: Arc<std::sync::Mutex<VecDeque<u8>>>,
+    write_half: Arc<std::sync::Mutex<VecDeque<u8>>>,
+    read_waker: Arc<std::sync::Mutex<Option<Waker>>>,
+    write_waker: Arc<std::sync::Mutex<Option<Waker>>>,
+    max_buf_size: usize,
+}
+
+pub fn duplex(max_buf_size: usize) -> (DuplexStream, DuplexStream) {
+    let buf1 = Arc::new(std::sync::Mutex::new(VecDeque::new()));
+    let buf2 = Arc::new(std::sync::Mutex::new(VecDeque::new()));
+    let waker1 = Arc::new(std::sync::Mutex::new(None));
+    let waker2 = Arc::new(std::sync::Mutex::new(None));
+
+    let stream1 = DuplexStream {
+        read_half: buf1.clone(),
+        write_half: buf2.clone(),
+        read_waker: waker1.clone(),
+        write_waker: waker2.clone(),
+        max_buf_size,
+    };
+
+    let stream2 = DuplexStream {
+        read_half: buf2,
+        write_half: buf1,
+        read_waker: waker2,
+        write_waker: waker1,
+        max_buf_size,
+    };
+
+    (stream1, stream2)
+}
+
+impl AsyncRead for DuplexStream {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<Result<()>> {
+        let mut read_buf = self.read_half.lock().unwrap();
+
+        if read_buf.is_empty() {
+            *self.read_waker.lock().unwrap() = Some(cx.waker().clone());
+            return Poll::Pending;
+        }
+
+        let to_read = std::cmp::min(buf.remaining(), read_buf.len());
+        for _ in 0..to_read {
+            if let Some(byte) = read_buf.pop_front() {
+                buf.put_slice(&[byte]);
+            }
+        }
+
+        // Wake the writer if there's space now
+        if let Some(waker) = self.write_waker.lock().unwrap().take() {
+            waker.wake();
+        }
+
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncWrite for DuplexStream {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize>> {
+        let mut write_buf = self.write_half.lock().unwrap();
+
+        if write_buf.len() >= self.max_buf_size {
+            *self.write_waker.lock().unwrap() = Some(cx.waker().clone());
+            return Poll::Pending;
+        }
+
+        let to_write = std::cmp::min(buf.len(), self.max_buf_size - write_buf.len());
+        write_buf.extend(&buf[..to_write]);
+
+        // Wake the reader
+        if let Some(waker) = self.read_waker.lock().unwrap().take() {
+            waker.wake();
+        }
+
+        Poll::Ready(Ok(to_write))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
+        Poll::Ready(Ok(()))
     }
 }

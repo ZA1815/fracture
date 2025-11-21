@@ -423,7 +423,7 @@ impl Tracer {
         let mut file = File::create(path)?;
 
         writeln!(file, "=== Fracture Chaos Timeline ===")?;
-        writeln!(file, "Start: {:?}", self.start_system_time);
+        writeln!(file, "Start: {:?}", self.start_system_time)?;
         writeln!(file)?;
 
         for entry in log.iter() {

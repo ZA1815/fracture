@@ -29,7 +29,7 @@ where F: FnOnce() -> R + Send + 'static, R: Send + 'static {
     
     std::thread::spawn(move || {
         let result = f();
-        tx.send(result);
+        let _ = tx.send(result);
     });
 
     BlockingTask { rx }

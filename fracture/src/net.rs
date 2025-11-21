@@ -10,8 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
-use bytes::{Buf, BufMut, Bytes, BytesMut};
-use futures::TryFutureExt;
+use bytes::{Buf, Bytes, BytesMut};
 use rand::Rng;
 
 use crate::chaos::{self, ChaosOperation};
@@ -293,6 +292,18 @@ impl TcpStream {
         }
     }
 
+    pub fn from_std(stream: std::net::TcpStream) -> Result<Self> {
+        // In simulation mode, we can't actually use the std TcpStream
+        // So we extract the addresses and create a simulated connection
+        let local_addr = stream.local_addr()?;
+        let peer_addr = stream.peer_addr()?;
+
+        // Create dummy channels since we're simulated
+        let (tx, rx) = channel(DEFAULT_TCP_WINDOW_SIZE);
+
+        Ok(Self::new(tx, rx, local_addr, peer_addr))
+    }
+
     pub async fn connect<A: ToSocketAddrs>(addr: A) -> Result<Self> {
         if chaos::should_fail(ChaosOperation::TcpConnect) {
             return Err(Error::new(
@@ -306,18 +317,20 @@ impl TcpStream {
         let handle = Handle::current();
         let core_rc = handle.core.upgrade().ok_or_else(|| Error::new(ErrorKind::Other, "fracture: Runtime dropped"))?;
 
-        let (local_port, listener_tx) = {
-            let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+        let (local_addr, listener_tx) = {
+            // Use IPv4 or IPv6 localhost based on the target address
+            let ip = match addr.ip() {
+                IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+                IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),
+            };
             let mut core = core_rc.borrow_mut();
             let port = {
                 let rng_ptr = &mut core.rng as *mut _;
                 unsafe { core.network.assign_ephemeral_port(ip, &mut *rng_ptr)? }
             };
             let listener = core.network.listeners.get(&addr).cloned();
-            (port, listener)
+            (SocketAddr::new(ip, port), listener)
         };
-
-        let local_addr = SocketAddr::from(([127, 0, 0, 1], local_port));
 
         let local_addr_str = local_addr.to_string();
         let peer_addr_str = addr.to_string();
@@ -992,7 +1005,7 @@ impl<T: ChannelItemSize + Send + Clone> AsyncReceiver<T> {
     }
 
     pub async fn peek(&self) -> Option<T> {
-        let mut s = self.state.lock().unwrap();
+        let s = self.state.lock().unwrap();
         let handle = Handle::current();
         let core_rc = handle.core.upgrade().expect("fracture: Runtime dropped");
         let now = core_rc.borrow().current_time;
@@ -1116,7 +1129,7 @@ impl UdpSocket {
         }
 
         let addr = addr.to_socket_addrs()?.next().ok_or_else(|| Error::new(ErrorKind::InvalidInput, "fracture: Invalid address"))?;
-        
+
         let handle = Handle::current();
         let core_rc = handle.core.upgrade().ok_or_else(|| Error::new(ErrorKind::Other, "fracture: Runtime dropped"))?;
         let mut core = core_rc.borrow_mut();
@@ -1129,6 +1142,24 @@ impl UdpSocket {
         core.network.udp_sockets.insert(addr, tx);
 
         Ok(Self { local_addr: addr, mailbox: rx })
+    }
+
+    pub fn from_std(socket: std::net::UdpSocket) -> Result<Self> {
+        // In simulation mode, extract the address and create a simulated socket
+        let local_addr = socket.local_addr()?;
+
+        let handle = Handle::current();
+        let core_rc = handle.core.upgrade().ok_or_else(|| Error::new(ErrorKind::Other, "fracture: Runtime dropped"))?;
+        let mut core = core_rc.borrow_mut();
+
+        if core.network.udp_sockets.contains_key(&local_addr) {
+            return Err(Error::new(ErrorKind::AddrInUse, "fracture: Address already in use"));
+        }
+
+        let (tx, rx) = channel(1024);
+        core.network.udp_sockets.insert(local_addr, tx);
+
+        Ok(Self { local_addr, mailbox: rx })
     }
 
     pub fn local_addr(&self) -> Result<SocketAddr> {
@@ -1315,6 +1346,23 @@ pub mod unix {
             Self { tx, rx, read_buffer: BytesMut::new(), local_path: local, peer_path: peer }
         }
 
+        pub fn from_std(stream: std::os::unix::net::UnixStream) -> Result<UnixStream> {
+            // In simulation mode, create a simulated unix stream
+            // We can't get peer address from std::os::unix::net::UnixStream easily
+            // so we create dummy paths
+            let handle = Handle::current();
+            let core_rc = handle.core.upgrade().unwrap();
+            let mut core = core_rc.borrow_mut();
+
+            let ephemeral_id: u64 = core.rng.r#gen();
+            let local_path = PathBuf::from(format!("/tmp/fracture_from_std_{}", ephemeral_id));
+            let peer_path = PathBuf::from(format!("/tmp/fracture_from_std_peer_{}", ephemeral_id));
+
+            let (tx, rx) = channel(DEFAULT_TCP_WINDOW_SIZE);
+
+            Ok(UnixStream::new(tx, rx, local_path, peer_path))
+        }
+
         pub async fn connect<P: AsRef<Path>>(path: P) -> Result<UnixStream> {
             if chaos::should_fail(ChaosOperation::UnixConnect) {
                  return Err(Error::new(ErrorKind::ConnectionRefused, "fracture: UnixConnect failed (chaos)"));
@@ -1487,6 +1535,190 @@ pub mod unix {
                     Ok((len, SocketAddr(src)))
                 }
                 None => Err(Error::new(ErrorKind::BrokenPipe, "fracture: Socket closed"))
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+pub mod windows {
+    use super::*;
+
+    pub mod named_pipe {
+        use super::*;
+
+        pub struct NamedPipeServer {
+            path: String,
+            rx: AsyncReceiver<Bytes>,
+            tx: Sender<Bytes>,
+        }
+
+        pub struct NamedPipeClient {
+            path: String,
+            rx: AsyncReceiver<Bytes>,
+            tx: Sender<Bytes>,
+        }
+
+        impl NamedPipeServer {
+            pub fn bind(path: impl AsRef<str>) -> Result<Self> {
+                let path = path.as_ref().to_string();
+                let (tx, rx) = channel(DEFAULT_TCP_WINDOW_SIZE);
+                Ok(Self { path, rx, tx })
+            }
+
+            pub async fn connect(&mut self) -> Result<()> {
+                // In simulation, this is a no-op
+                Ok(())
+            }
+        }
+
+        impl AsyncRead for NamedPipeServer {
+            fn poll_read(
+                self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+                buf: &mut ReadBuf<'_>,
+            ) -> Poll<Result<()>> {
+                match Pin::into_inner(self).rx.poll_recv(cx) {
+                    Poll::Ready(Some(data)) => {
+                        let to_copy = std::cmp::min(buf.remaining(), data.len());
+                        buf.put_slice(&data[..to_copy]);
+                        Poll::Ready(Ok(()))
+                    }
+                    Poll::Ready(None) => Poll::Ready(Ok(())),
+                    Poll::Pending => Poll::Pending,
+                }
+            }
+        }
+
+        impl AsyncWrite for NamedPipeServer {
+            fn poll_write(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                buf: &[u8],
+            ) -> Poll<Result<usize>> {
+                let bytes = Bytes::copy_from_slice(buf);
+                match self.tx.try_send(bytes) {
+                    Ok(()) => Poll::Ready(Ok(buf.len())),
+                    Err(TrySendError::Full(_)) => Poll::Pending,
+                    Err(TrySendError::Closed(_)) => {
+                        Poll::Ready(Err(Error::new(ErrorKind::BrokenPipe, "fracture: Pipe closed")))
+                    }
+                }
+            }
+
+            fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+
+            fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
+                self.tx.close();
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        impl NamedPipeClient {
+            pub async fn connect(path: impl AsRef<str>) -> Result<Self> {
+                let path = path.as_ref().to_string();
+                let (tx, rx) = channel(DEFAULT_TCP_WINDOW_SIZE);
+                Ok(Self { path, rx, tx })
+            }
+        }
+
+        impl AsyncRead for NamedPipeClient {
+            fn poll_read(
+                self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+                buf: &mut ReadBuf<'_>,
+            ) -> Poll<Result<()>> {
+                match Pin::into_inner(self).rx.poll_recv(cx) {
+                    Poll::Ready(Some(data)) => {
+                        let to_copy = std::cmp::min(buf.remaining(), data.len());
+                        buf.put_slice(&data[..to_copy]);
+                        Poll::Ready(Ok(()))
+                    }
+                    Poll::Ready(None) => Poll::Ready(Ok(())),
+                    Poll::Pending => Poll::Pending,
+                }
+            }
+        }
+
+        impl AsyncWrite for NamedPipeClient {
+            fn poll_write(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                buf: &[u8],
+            ) -> Poll<Result<usize>> {
+                let bytes = Bytes::copy_from_slice(buf);
+                match self.tx.try_send(bytes) {
+                    Ok(()) => Poll::Ready(Ok(buf.len())),
+                    Err(TrySendError::Full(_)) => Poll::Pending,
+                    Err(TrySendError::Closed(_)) => {
+                        Poll::Ready(Err(Error::new(ErrorKind::BrokenPipe, "fracture: Pipe closed")))
+                    }
+                }
+            }
+
+            fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+
+            fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
+                self.tx.close();
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        #[derive(Debug, Clone)]
+        pub struct ServerOptions {
+            _private: (),
+        }
+
+        impl ServerOptions {
+            pub fn new() -> Self {
+                Self { _private: () }
+            }
+
+            pub fn first_pipe_instance(&mut self, _val: bool) -> &mut Self {
+                self
+            }
+
+            pub fn max_instances(&mut self, _val: usize) -> &mut Self {
+                self
+            }
+
+            pub fn out_buffer_size(&mut self, _val: u32) -> &mut Self {
+                self
+            }
+
+            pub fn in_buffer_size(&mut self, _val: u32) -> &mut Self {
+                self
+            }
+
+            pub fn access_inbound(&mut self, _val: bool) -> &mut Self {
+                self
+            }
+
+            pub fn access_outbound(&mut self, _val: bool) -> &mut Self {
+                self
+            }
+
+            pub fn create(&self, path: impl AsRef<str>) -> Result<NamedPipeServer> {
+                NamedPipeServer::bind(path)
+            }
+        }
+
+        #[derive(Debug, Clone)]
+        pub struct ClientOptions {
+            _private: (),
+        }
+
+        impl ClientOptions {
+            pub fn new() -> Self {
+                Self { _private: () }
+            }
+
+            pub async fn open(&self, path: impl AsRef<str>) -> Result<NamedPipeClient> {
+                NamedPipeClient::connect(path).await
             }
         }
     }

@@ -407,6 +407,7 @@ impl Drop for Notified<'_> {
 pub struct Semaphore {
     permits: StdMutex<usize>,
     waiters: StdMutex<SemaphoreWaitList>,
+    closed: StdMutex<bool>,
 }
 
 struct SemaphoreWaitList {
@@ -439,7 +440,25 @@ impl SemaphoreWaitList {
 
 impl Semaphore {
     pub fn new(permits: usize) -> Self {
-        Self { permits: StdMutex::new(permits), waiters: StdMutex::new(SemaphoreWaitList::new()) }
+        Self {
+            permits: StdMutex::new(permits),
+            waiters: StdMutex::new(SemaphoreWaitList::new()),
+            closed: StdMutex::new(false),
+        }
+    }
+
+    pub fn close(&self) {
+        *self.closed.lock().unwrap() = true;
+
+        // Wake all waiters
+        let mut waiters = self.waiters.lock().unwrap();
+        while let Some((_, _, waker)) = waiters.waiters.pop_front() {
+            waker.wake();
+        }
+    }
+
+    pub fn is_closed(&self) -> bool {
+        *self.closed.lock().unwrap()
     }
 
     pub async fn acquire(&self) -> Result<SemaphorePermit<'_>, ()> {
@@ -451,26 +470,34 @@ impl Semaphore {
             return Err(());
         }
 
+        if *self.closed.lock().unwrap() {
+            return Err(());
+        }
+
         let n = n as usize;
         struct AcquireFuture<'a> { sem: &'a Semaphore, n: usize }
         impl Future for AcquireFuture<'_> {
-            type Output = ();
-            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+            type Output = Result<(), ()>;
+            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), ()>> {
                 if chaos::should_fail(ChaosOperation::SemaphoreAcquireTimeout) {
                     return Poll::Pending;
+                }
+
+                if *self.sem.closed.lock().unwrap() {
+                    return Poll::Ready(Err(()));
                 }
 
                 let mut permits = self.sem.permits.lock().unwrap();
                 if *permits >= self.n {
                     *permits -= self.n;
-                    Poll::Ready(())
+                    Poll::Ready(Ok(()))
                 } else {
                     self.sem.waiters.lock().unwrap().push_back((self.n, cx.waker().clone()));
                     Poll::Pending
                 }
             }
         }
-        AcquireFuture { sem: self, n }.await;
+        AcquireFuture { sem: self, n }.await?;
         Ok(SemaphorePermit { sem: self, permits: n })
     }
 
@@ -614,6 +641,10 @@ pub mod mpsc {
             if let Some(w) = s.waker.take() { w.wake(); }
             Ok(())
         }
+
+        pub fn blocking_send(&self, value: T) -> Result<(), SendError<T>> {
+            self.send(value)
+        }
     }
     impl<T> Clone for UnboundedSender<T> {
         fn clone(&self) -> Self { Self { shared: self.shared.clone() } }
@@ -640,6 +671,13 @@ pub mod mpsc {
                 }
             }
             RecvFuture { rx: self }.await
+        }
+
+        pub fn blocking_recv(&mut self) -> Option<T> {
+            let mut s = self.shared.lock().unwrap();
+            s.queue.pop_front().or_else(|| {
+                if s.closed { None } else { s.queue.pop_front() }
+            })
         }
 
         pub fn close(&mut self) {
@@ -718,6 +756,23 @@ pub mod mpsc {
             }
 
             SendFuture { sender: self, value: Some(value) }.await
+        }
+
+        pub fn blocking_send(&self, value: T) -> Result<(), SendError<T>> {
+            // In simulation mode, just spin until we can send
+            loop {
+                let mut s = self.state.lock().unwrap();
+                if s.closed {
+                    return Err(SendError(value));
+                }
+                if s.queue.len() < s.capacity {
+                    s.queue.push_back(value);
+                    if let Some(w) = s.rx_waker.take() { w.wake(); }
+                    return Ok(());
+                }
+                drop(s);
+                std::thread::yield_now();
+            }
         }
 
         pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
@@ -816,6 +871,22 @@ pub mod mpsc {
                 }
             }
             RecvFuture { rx: self }.await
+        }
+
+        pub fn blocking_recv(&mut self) -> Option<T> {
+            // In simulation mode, just spin until we get a value
+            loop {
+                let mut s = self.state.lock().unwrap();
+                if let Some(v) = s.queue.pop_front() {
+                    if let Some(w) = s.tx_waiters.pop_front() { w.wake(); }
+                    return Some(v);
+                }
+                if s.closed && s.sender_count == 0 {
+                    return None;
+                }
+                drop(s);
+                std::thread::yield_now();
+            }
         }
     }
 
@@ -1030,6 +1101,75 @@ pub mod watch {
             }
             ChangedFuture { rx: self }.await
         }
+    }
+}
+
+pub struct OnceCell<T> {
+    value: StdMutex<Option<T>>,
+    waiters: StdMutex<Vec<Waker>>,
+}
+
+impl<T> OnceCell<T> {
+    pub fn new() -> Self {
+        Self {
+            value: StdMutex::new(None),
+            waiters: StdMutex::new(Vec::new()),
+        }
+    }
+
+    pub fn get(&self) -> Option<&T> {
+        // This is safe because we never remove the value once set
+        let guard = self.value.lock().unwrap();
+        if guard.is_some() {
+            unsafe {
+                let ptr = &*guard as *const Option<T>;
+                (*ptr).as_ref()
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn set(&self, value: T) -> Result<(), T> {
+        let mut guard = self.value.lock().unwrap();
+        if guard.is_some() {
+            return Err(value);
+        }
+        *guard = Some(value);
+        drop(guard);
+
+        let mut waiters = self.waiters.lock().unwrap();
+        for waker in waiters.drain(..) {
+            waker.wake();
+        }
+        Ok(())
+    }
+
+    pub async fn get_or_init<F>(&self, f: F) -> &T
+    where
+        F: Future<Output = T>,
+    {
+        if let Some(value) = self.get() {
+            return value;
+        }
+
+        let value = f.await;
+        let _ = self.set(value);
+        self.get().unwrap()
+    }
+
+    pub fn get_mut(&mut self) -> Option<&mut T> {
+        self.value.get_mut().unwrap().as_mut()
+    }
+
+    pub fn into_inner(self) -> Option<T> {
+        self.value.into_inner().unwrap()
+    }
+}
+
+impl<T> Default for OnceCell<T> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
