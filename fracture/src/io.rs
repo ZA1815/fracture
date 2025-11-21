@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::io::{self, Result, Error, ErrorKind, SeekFrom};
+use std::mem::MaybeUninit;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
@@ -41,6 +42,13 @@ impl<'a> ReadBuf<'a> {
         Self { buf, filled: 0, initialized: len }
     }
 
+    pub fn uninit(buf: &'a mut [MaybeUninit<u8>]) -> Self {
+        // Safety: In simulation mode, we treat all memory as initialized
+        // This is safe because we're not actually dealing with real uninitialized memory
+        let buf = unsafe { &mut *(buf as *mut [MaybeUninit<u8>] as *mut [u8]) };
+        Self { buf, filled: 0, initialized: 0 }
+    }
+
     pub fn capacity(&self) -> usize {
         self.buf.len()
     }
@@ -53,6 +61,18 @@ impl<'a> ReadBuf<'a> {
         &mut self.buf[..self.filled]
     }
 
+    pub fn initialized(&self) -> &[u8] {
+        &self.buf[..self.initialized]
+    }
+
+    pub fn initialized_mut(&mut self) -> &mut [u8] {
+        &mut self.buf[..self.initialized]
+    }
+
+    pub fn unfilled_mut(&mut self) -> &mut [u8] {
+        &mut self.buf[self.filled..self.initialized]
+    }
+
     pub fn remaining(&self) -> usize {
         self.capacity() - self.filled
     }
@@ -63,6 +83,27 @@ impl<'a> ReadBuf<'a> {
 
     pub fn advance(&mut self, n: usize) {
         self.filled += n;
+    }
+
+    pub fn assume_init(&mut self, n: usize) {
+        let new_init = std::cmp::min(self.filled + n, self.buf.len());
+        self.initialized = std::cmp::max(self.initialized, new_init);
+    }
+
+    pub fn set_filled(&mut self, n: usize) {
+        self.filled = std::cmp::min(n, self.capacity());
+    }
+
+    pub fn initialize_unfilled(&mut self) -> &mut [u8] {
+        let len = self.buf.len();
+        self.initialized = len;
+        &mut self.buf[self.filled..]
+    }
+
+    pub fn initialize_unfilled_to(&mut self, n: usize) -> &mut [u8] {
+        let end = std::cmp::min(self.filled + n, self.buf.len());
+        self.initialized = std::cmp::max(self.initialized, end);
+        &mut self.buf[self.filled..end]
     }
 
     pub fn put_slice(&mut self, buf: &[u8]) {

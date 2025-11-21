@@ -611,11 +611,30 @@ pub mod mpsc {
     #[derive(Debug)]
     pub struct SendError<T>(pub T);
 
+    impl<T> std::fmt::Display for SendError<T> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "channel closed")
+        }
+    }
+
+    impl<T: std::fmt::Debug> std::error::Error for SendError<T> {}
+
     #[derive(Debug)]
     pub enum TrySendError<T> {
         Full(T),
         Closed(T),
     }
+
+    impl<T> std::fmt::Display for TrySendError<T> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                TrySendError::Full(_) => write!(f, "channel full"),
+                TrySendError::Closed(_) => write!(f, "channel closed"),
+            }
+        }
+    }
+
+    impl<T: std::fmt::Debug> std::error::Error for TrySendError<T> {}
 
     pub fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
         let shared = Arc::new(StdMutex::new(UnboundedState {
@@ -918,9 +937,17 @@ pub mod mpsc {
 
 pub mod oneshot {
     use super::*;
-    
+
     #[derive(Debug, Copy, Clone, Eq, PartialEq)]
     pub struct RecvError;
+
+    impl std::fmt::Display for RecvError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "channel closed")
+        }
+    }
+
+    impl std::error::Error for RecvError {}
 
     pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
         let shared = Arc::new(StdMutex::new(State { value: None, waker: None, closed: false }));
@@ -989,8 +1016,24 @@ pub mod watch {
     #[derive(Debug, Clone)]
     pub struct SendError<T>(pub T);
 
+    impl<T> std::fmt::Display for SendError<T> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "channel closed")
+        }
+    }
+
+    impl<T: std::fmt::Debug> std::error::Error for SendError<T> {}
+
     #[derive(Debug, Clone)]
     pub struct RecvError;
+
+    impl std::fmt::Display for RecvError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "channel closed")
+        }
+    }
+
+    impl std::error::Error for RecvError {}
 
     pub fn channel<T: Clone + Send + Sync + 'static>(init: T) -> (Sender<T>, Receiver<T>) {
         let state = Arc::new(StdMutex::new(State {
@@ -1179,11 +1222,30 @@ pub mod broadcast {
     #[derive(Debug, Clone)]
     pub struct SendError<T>(pub T);
 
+    impl<T> std::fmt::Display for SendError<T> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "channel closed")
+        }
+    }
+
+    impl<T: std::fmt::Debug> std::error::Error for SendError<T> {}
+
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum RecvError {
         Closed,
         Lagged(u64),
     }
+
+    impl std::fmt::Display for RecvError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                RecvError::Closed => write!(f, "channel closed"),
+                RecvError::Lagged(n) => write!(f, "channel lagged by {} messages", n),
+            }
+        }
+    }
+
+    impl std::error::Error for RecvError {}
 
     #[derive(Clone)]
     struct Message<T> {

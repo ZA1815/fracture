@@ -85,7 +85,7 @@ pub struct Timeout<F> {
 }
 
 impl<F: Future> Future for Timeout<F> {
-    type Output = Result<F::Output, ()>;
+    type Output = Result<F::Output, error::Elapsed>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.project();
@@ -95,7 +95,7 @@ impl<F: Future> Future for Timeout<F> {
         }
 
         if let Poll::Ready(()) = this.sleep.as_mut().poll(cx) {
-            return Poll::Ready(Err(()));
+            return Poll::Ready(Err(error::Elapsed::new()));
         }
 
         Poll::Pending
@@ -244,3 +244,24 @@ impl Interval {
 }
 
 pub type ChaosInstant = crate::runtime::core::Instant;
+
+pub mod error {
+    use std::fmt;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Elapsed(());
+
+    impl Elapsed {
+        pub(crate) fn new() -> Self {
+            Elapsed(())
+        }
+    }
+
+    impl fmt::Display for Elapsed {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "deadline has elapsed")
+        }
+    }
+
+    impl std::error::Error for Elapsed {}
+}

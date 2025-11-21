@@ -18,7 +18,8 @@ const MAX_SYMLINK_RECURSION: usize = 32;
 async fn simulate_io_latency() {
     if let Some(delay) = chaos::get_delay("disk_io") {
         sleep(delay).await;
-    } else {
+    }
+    else {
         sleep(Duration::from_micros(10)).await;
     }
 }
