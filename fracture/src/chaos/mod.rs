@@ -9,7 +9,7 @@ mod topology;
 pub mod scenario;
 pub mod invariants;
 pub mod trace;
-mod visualization;
+pub mod visualization;
 
 use trace::TraceEvent;
 

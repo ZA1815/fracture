@@ -72,9 +72,12 @@ where F: Future + Send + 'static, F::Output: Send + 'static {
             let delay = {
                 let handle = Handle::current();
                 if let Some(core_rc) = handle.core.upgrade() {
-                    let mut core = core_rc.borrow_mut();
-                    let ms = core.rng.gen_range(1..100);
-                    Some(Duration::from_millis(ms))
+                    if let Ok(mut core) = core_rc.try_borrow_mut() {
+                        let ms = core.rng.gen_range(1..100);
+                        Some(Duration::from_millis(ms))
+                    } else {
+                        Some(Duration::from_millis(50)) // Default if core is borrowed
+                    }
                 }
                 else {
                     None
@@ -108,9 +111,16 @@ where F: Future + Send + 'static, F::Output: Send + 'static {
 
     let handle = Handle::current();
     let core_rc = handle.core.upgrade().expect("fracture: Runtime dropped");
-    let mut core = core_rc.borrow_mut();
 
-    let id = core.spawn(wrapped_future);
+    let id = loop {
+        match core_rc.try_borrow_mut() {
+            Ok(mut core) => break core.spawn(wrapped_future),
+            Err(_) => {
+                // Core is borrowed, yield and try again
+                std::thread::yield_now();
+            }
+        }
+    };
 
     JoinHandle {
         rx: Some(rx),
@@ -258,8 +268,10 @@ impl AbortHandle {
         if let Some(id) = self.task_id {
             let handle = Handle::current();
             if let Some(core_rc) = handle.core.upgrade() {
-                let mut core = core_rc.borrow_mut();
-                core.tasks.remove(id.0);
+                if let Ok(mut core) = core_rc.try_borrow_mut() {
+                    core.tasks.remove(id.0);
+                }
+                // If we can't borrow, the task will be cleaned up later
             }
         }
 
@@ -404,10 +416,12 @@ impl<T> JoinSet<T> {
         for task_id in self.tasks.values() {
             let handle = Handle::current();
             if let Some(core_rc) = handle.core.upgrade() {
-                let mut core = core_rc.borrow_mut();
-                if core.tasks.contains(task_id.0) {
-                    core.tasks.remove(task_id.0);
+                if let Ok(mut core) = core_rc.try_borrow_mut() {
+                    if core.tasks.contains(task_id.0) {
+                        core.tasks.remove(task_id.0);
+                    }
                 }
+                // If we can't borrow, the tasks will be cleaned up later
             }
         }
     }
