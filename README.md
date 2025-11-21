@@ -1,6 +1,6 @@
 # Fracture
 
-> ⚠️ **ALPHA SOFTWARE** - Fracture is in early development (v0.1.0). The core concepts work, but there are likely edge cases and bugs we haven't found yet. **Please report any issues you encounter!** The irony is not lost on us that a chaos testing tool needs help finding its own bugs. 🙃
+> ⚠️ **PROJECT IS IN ALPHA** - Fracture is in early development (v0.1.0). The core concepts work, but there are likely edge cases and bugs we haven't found yet. **Please report any issues you encounter!** The irony is not lost on us that a chaos testing tool needs help finding its own bugs. 🙃
 
 **Deterministic chaos testing for async Rust. Drop-in for Tokio.**
 
@@ -148,6 +148,45 @@ Set the environment variable to get the exact same failure:
 ```bash
 FRACTURE_SEED=17135321411058301739 cargo test
 ```
+
+## Testing External Libraries (reqwest, sqlx, aws-sdk)
+By default, Fracture simulates your logic. External libraries that depend on the real tokio runtime (like database drivers or HTTP clients) will continue to use the real network and OS threads, ignoring your chaos settings.
+
+To simulate chaos in external libraries, you must "patch" Tokio.
+
+We provide a Shim Crate strategy that tricks the entire dependency tree into using Fracture instead of Tokio.
+
+1. The Setup
+
+In your Cargo.toml, add a patch directive to redirect tokio to the shim included in this repository:
+```
+[patch.crates-io]
+
+⚠️ This forces every library in your tree to use Fracture as its runtime
+tokio = { git = "https://github.com/ZA1815/fracture", path = "shims/tokio" }
+```
+
+2. The Rules
+
+When patching is active:
+
+Do NOT enable the tokio feature in fracture. Your Cargo.toml dependencies should look like this:
+
+```
+[dev-dependencies]
+# Only enable simulation features, do not depend on the real tokio
+fracture = { version = "0.1", features = ["simulation"] } 
+Run tests normally: cargo test
+```
+
+Revert for production: Remove the [patch] section when building your actual application release.
+
+Why do this?
+Time Travel: fracture::time::sleep(Duration::from_secs(3600)) will instantly advance time for reqwest timeouts.
+
+Network Chaos: You can inject packet loss into sqlx database connections.
+
+Determinism: The entire stack becomes deterministic, including 3rd party driver behavior.
 
 ## Use Cases
 
