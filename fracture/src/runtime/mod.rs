@@ -71,14 +71,10 @@ impl Runtime {
     }
 
     pub fn shutdown_timeout(&mut self, duration: std::time::Duration) {
-        // In simulation mode, we just drop all tasks immediately
-        // The duration parameter is ignored since we have full control over time
         self.core.borrow_mut().tasks.clear();
     }
 
     pub fn shutdown_background(self) {
-        // In simulation mode, dropping the runtime is sufficient
-        // This method consumes self, so the core will be dropped
         drop(self);
     }
 
@@ -94,6 +90,21 @@ impl Runtime {
         EnterGuard {
             _runtime: self,
             prev_context: prev,
+        }
+    }
+
+    pub fn spawn<F>(&self, future: F) -> crate::task::JoinHandle<F::Output>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        let _guard = self.enter();
+        crate::task::spawn(future)
+    }
+
+    pub fn handle(&self) -> Handle {
+        Handle {
+            core: Rc::downgrade(&self.core)
         }
     }
 }
@@ -121,6 +132,94 @@ impl Handle {
         CONTEXT.with(|cx| {
             cx.borrow().clone().expect("fracture: Must be called from within a fracture runtime")
         })
+    }
+
+    pub fn spawn<F>(&self, future: F) -> crate::task::JoinHandle<F::Output>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        let prev = CONTEXT.with(|cx| cx.borrow_mut().replace(self.clone()));
+        let result = crate::task::spawn(future);
+        CONTEXT.with(|cx| *cx.borrow_mut() = prev);
+        result
+    }
+
+    pub fn spawn_blocking<F, R>(&self, f: F) -> crate::task::JoinHandle<R>
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        let prev = CONTEXT.with(|cx| cx.borrow_mut().replace(self.clone()));
+        let result = crate::task::spawn_blocking(f);
+        CONTEXT.with(|cx| *cx.borrow_mut() = prev);
+        result
+    }
+
+    pub fn block_on<F: Future + 'static>(&self, future: F) -> F::Output
+    where
+        F::Output: 'static
+    {
+        let core_rc = self.core.upgrade().expect("fracture: Runtime has been dropped");
+
+        let prev = CONTEXT.with(|cx| cx.borrow_mut().replace(self.clone()));
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let wrapped = async move {
+            let res = future.await;
+            let _ = tx.send(res);
+        };
+
+        core_rc.borrow_mut().spawn(wrapped);
+
+        loop {
+            if let Ok(result) = rx.try_recv() {
+                CONTEXT.with(|cx| *cx.borrow_mut() = prev);
+                return result;
+            }
+
+            let mut core = core_rc.borrow_mut();
+            let steps = core.tick();
+
+            if steps == 0 {
+                if !core.has_pending_tasks() {
+                    if let Ok(result) = rx.try_recv() {
+                        CONTEXT.with(|cx| *cx.borrow_mut() = prev);
+                        return result;
+                    }
+                    panic!("fracture: Deadlock detected! No tasks ready and no timers pending.");
+                }
+
+                if !core.advance_time() {
+                    if let Ok(result) = rx.try_recv() {
+                        CONTEXT.with(|cx| *cx.borrow_mut() = prev);
+                        return result;
+                    }
+                    panic!("fracture: Deadlock detected! No tasks ready and no timers pending.");
+                }
+            }
+        }
+    }
+
+    pub fn metrics(&self) -> RuntimeMetrics {
+        RuntimeMetrics
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimeMetrics;
+
+impl RuntimeMetrics {
+    pub fn num_workers(&self) -> usize {
+        1
+    }
+
+    pub fn num_blocking_threads(&self) -> usize {
+        0
+    }
+
+    pub fn active_tasks_count(&self) -> usize {
+        0 // Would need access to core to implement
     }
 }
 
@@ -208,7 +307,6 @@ impl Builder {
     where
         F: Fn() + Send + Sync + 'static,
     {
-        // In simulation mode, this is a no-op
         self
     }
 
@@ -216,7 +314,6 @@ impl Builder {
     where
         F: Fn() + Send + Sync + 'static,
     {
-        // In simulation mode, this is a no-op
         self
     }
 
@@ -224,7 +321,6 @@ impl Builder {
     where
         F: Fn() + Send + Sync + 'static,
     {
-        // In simulation mode, this is a no-op
         self
     }
 
@@ -232,7 +328,6 @@ impl Builder {
     where
         F: Fn() + Send + Sync + 'static,
     {
-        // In simulation mode, this is a no-op
         self
     }
 

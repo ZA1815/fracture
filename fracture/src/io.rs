@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 use std::future::Future;
 use pin_project::pin_project;
+use bytes::BufMut;
 
 use crate::chaos::{self, ChaosOperation};
 
@@ -43,8 +44,6 @@ impl<'a> ReadBuf<'a> {
     }
 
     pub fn uninit(buf: &'a mut [MaybeUninit<u8>]) -> Self {
-        // Safety: In simulation mode, we treat all memory as initialized
-        // This is safe because we're not actually dealing with real uninitialized memory
         let buf = unsafe { &mut *(buf as *mut [MaybeUninit<u8>] as *mut [u8]) };
         Self { buf, filled: 0, initialized: 0 }
     }
@@ -273,7 +272,6 @@ where
     let mut b_to_a_total = 0u64;
 
     std::future::poll_fn(|cx| {
-        // Try copying from A to B
         let mut a_to_b_read_buf = ReadBuf::new(&mut a_to_b_buf);
         match Pin::new(&mut *a).poll_read(cx, &mut a_to_b_read_buf) {
             Poll::Ready(Ok(())) => {
@@ -294,7 +292,6 @@ where
             Poll::Pending => {}
         }
 
-        // Try copying from B to A
         let mut b_to_a_read_buf = ReadBuf::new(&mut b_to_a_buf);
         match Pin::new(&mut *b).poll_read(cx, &mut b_to_a_read_buf) {
             Poll::Ready(Ok(())) => {
@@ -321,6 +318,14 @@ pub trait AsyncReadExt: AsyncRead {
     fn read<'a>(&'a mut self, buf: &'a mut [u8]) -> ReadFuture<'a, Self>
     where Self: Unpin + Sized {
         ReadFuture {
+            reader: self,
+            buf
+        }
+    }
+
+    fn read_buf<'a, B>(&'a mut self, buf: &'a mut B) -> ReadBufMutFuture<'a, Self, B>
+    where Self: Unpin + Sized, B: BufMut {
+        ReadBufMutFuture {
             reader: self,
             buf
         }
@@ -368,7 +373,6 @@ pub trait AsyncReadExt: AsyncRead {
         }
     }
 
-    // Primitive readers
     fn read_u8(&mut self) -> ReadU8Future<'_, Self>
     where Self: Unpin + Sized {
         ReadU8Future { reader: self }
@@ -513,7 +517,6 @@ pub trait AsyncWriteExt: AsyncWrite {
         }
     }
 
-    // Primitive writers
     fn write_u8(&mut self, n: u8) -> WriteU8Future<'_, Self>
     where Self: Unpin + Sized {
         WriteU8Future { writer: self, n }
@@ -673,6 +676,43 @@ impl<R: AsyncRead + Unpin + ?Sized> Future for ReadFuture<'_, R> {
 
         match Pin::new(&mut *this.reader).poll_read(cx, &mut buf) {
             Poll::Ready(Ok(())) => Poll::Ready(Ok(buf.filled().len())),
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Pending => Poll::Pending
+        }
+    }
+}
+
+#[pin_project::pin_project]
+pub struct ReadBufMutFuture<'a, R: ?Sized, B> {
+    reader: &'a mut R,
+    buf: &'a mut B
+}
+
+impl<R, B> Future for ReadBufMutFuture<'_, R, B>
+where
+    R: AsyncRead + Unpin + ?Sized,
+    B: BufMut,
+{
+    type Output = Result<usize>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+
+        if !this.buf.has_remaining_mut() {
+            return Poll::Ready(Ok(0));
+        }
+
+        let dst = this.buf.chunk_mut();
+        let dst_len = dst.len();
+        let mut temp_buf = vec![0u8; dst_len];
+        let mut read_buf = ReadBuf::new(&mut temp_buf);
+
+        match Pin::new(&mut *this.reader).poll_read(cx, &mut read_buf) {
+            Poll::Ready(Ok(())) => {
+                let n = read_buf.filled().len();
+                this.buf.put_slice(read_buf.filled());
+                Poll::Ready(Ok(n))
+            }
             Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
             Poll::Pending => Poll::Pending
         }
@@ -1345,7 +1385,6 @@ impl<R: AsyncRead> AsyncRead for Take<R> {
     }
 }
 
-// Macro to generate primitive read futures
 macro_rules! impl_read_primitive {
     ($name:ident, $ty:ty, $size:expr, $from_bytes:expr) => {
         pub struct $name<'a, R: ?Sized> {
@@ -1377,7 +1416,6 @@ macro_rules! impl_read_primitive {
     };
 }
 
-// Macro to generate primitive write futures
 macro_rules! impl_write_primitive {
     ($name:ident, $ty:ty, $to_bytes:expr) => {
         pub struct $name<'a, W: ?Sized> {
@@ -1412,7 +1450,6 @@ macro_rules! impl_write_primitive {
     };
 }
 
-// Primitive readers
 impl_read_primitive!(ReadU8Future, u8, 1, |buf: &[u8]| buf[0]);
 impl_read_primitive!(ReadI8Future, i8, 1, |buf: &[u8]| buf[0] as i8);
 
@@ -1498,7 +1535,6 @@ impl_read_primitive!(ReadF64LeFuture, f64, 8, |buf: &[u8]| {
     f64::from_le_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]])
 });
 
-// Primitive writers
 impl_write_primitive!(WriteU8Future, u8, |n: u8| [n]);
 impl_write_primitive!(WriteI8Future, i8, |n: i8| [n as u8]);
 
@@ -1532,7 +1568,6 @@ impl_write_primitive!(WriteF32LeFuture, f32, |n: f32| n.to_le_bytes());
 impl_write_primitive!(WriteF64Future, f64, |n: f64| n.to_be_bytes());
 impl_write_primitive!(WriteF64LeFuture, f64, |n: f64| n.to_le_bytes());
 
-// Standard streams (simulated - these just discard/provide dummy data in simulation)
 pub struct Stdout {
     _private: (),
 }
@@ -1559,7 +1594,6 @@ pub fn stdin() -> Stdin {
 
 impl AsyncWrite for Stdout {
     fn poll_write(self: Pin<&mut Self>, _cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize>> {
-        // In simulation mode, just pretend we wrote it
         Poll::Ready(Ok(buf.len()))
     }
 
@@ -1588,12 +1622,10 @@ impl AsyncWrite for Stderr {
 
 impl AsyncRead for Stdin {
     fn poll_read(self: Pin<&mut Self>, _cx: &mut Context<'_>, _buf: &mut ReadBuf<'_>) -> Poll<Result<()>> {
-        // In simulation mode, stdin returns EOF immediately
         Poll::Ready(Ok(()))
     }
 }
 
-// Utility constructors
 pub struct Sink {
     _private: (),
 }
@@ -1647,7 +1679,6 @@ impl AsyncRead for Repeat {
     }
 }
 
-// Duplex - bidirectional in-memory stream
 pub struct DuplexStream {
     read_half: Arc<std::sync::Mutex<VecDeque<u8>>>,
     write_half: Arc<std::sync::Mutex<VecDeque<u8>>>,
@@ -1697,7 +1728,6 @@ impl AsyncRead for DuplexStream {
             }
         }
 
-        // Wake the writer if there's space now
         if let Some(waker) = self.write_waker.lock().unwrap().take() {
             waker.wake();
         }
@@ -1718,7 +1748,6 @@ impl AsyncWrite for DuplexStream {
         let to_write = std::cmp::min(buf.len(), self.max_buf_size - write_buf.len());
         write_buf.extend(&buf[..to_write]);
 
-        // Wake the reader
         if let Some(waker) = self.read_waker.lock().unwrap().take() {
             waker.wake();
         }

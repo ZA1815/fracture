@@ -149,6 +149,35 @@ impl<T: ?Sized> Mutex<T> {
             Err(())
         }
     }
+
+    pub fn blocking_lock(&self) -> MutexGuard<'_, T> {
+        loop {
+            if let Ok(guard) = self.try_lock() {
+                return guard;
+            }
+            std::thread::yield_now();
+        }
+    }
+
+    pub fn blocking_lock_owned(self: Arc<Self>) -> OwnedMutexGuard<T> {
+        loop {
+            let locked = {
+                let mut state = self.state.lock().unwrap();
+                if !state.locked {
+                    state.locked = true;
+                    true
+                } else {
+                    false
+                }
+            };
+
+            if locked {
+                return OwnedMutexGuard { lock: self };
+            }
+
+            std::thread::yield_now();
+        }
+    }
 }
 
 pub struct LockFuture<'a, T: ?Sized> {
@@ -359,6 +388,24 @@ impl<T: ?Sized> RwLock<T> {
             Ok(RwLockWriteGuard { lock: self })
         } else {
             Err(())
+        }
+    }
+
+    pub fn blocking_read(&self) -> RwLockReadGuard<'_, T> {
+        loop {
+            if let Ok(guard) = self.try_read() {
+                return guard;
+            }
+            std::thread::yield_now();
+        }
+    }
+
+    pub fn blocking_write(&self) -> RwLockWriteGuard<'_, T> {
+        loop {
+            if let Ok(guard) = self.try_write() {
+                return guard;
+            }
+            std::thread::yield_now();
         }
     }
 }
@@ -619,7 +666,7 @@ impl Semaphore {
         *permits += n;
 
         let mut waiters = self.waiters.lock().unwrap();
-        
+
         // Have to improve this later
         while let Some((id, needed, _)) = waiters.waiters.front() {
             if *permits >= *needed {
@@ -630,6 +677,33 @@ impl Semaphore {
                 break;
             }
         }
+    }
+
+    pub fn try_acquire(&self) -> Result<SemaphorePermit<'_>, ()> {
+        self.try_acquire_many(1)
+    }
+
+    pub fn try_acquire_many(&self, n: u32) -> Result<SemaphorePermit<'_>, ()> {
+        if chaos::should_fail(ChaosOperation::SemaphoreAcquire) {
+            return Err(());
+        }
+
+        if *self.closed.lock().unwrap() {
+            return Err(());
+        }
+
+        let n = n as usize;
+        let mut permits = self.permits.lock().unwrap();
+        if *permits >= n {
+            *permits -= n;
+            Ok(SemaphorePermit { sem: self, permits: n })
+        } else {
+            Err(())
+        }
+    }
+
+    pub fn available_permits(&self) -> usize {
+        *self.permits.lock().unwrap()
     }
 }
 
@@ -1000,7 +1074,6 @@ pub mod mpsc {
                 fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
                     let mut this = self.project();
 
-                    // Check timeout first
                     if this.sleep.as_mut().poll(cx).is_ready() {
                         return Poll::Ready(Err(SendTimeoutError::Timeout(this.value.take().unwrap())));
                     }

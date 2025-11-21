@@ -1280,7 +1280,8 @@ pub fn channel<T>(capacity: usize) -> (Sender<T>, AsyncReceiver<T>) {
 
 pub struct UdpSocket {
     local_addr: SocketAddr,
-    mailbox: AsyncReceiver<(Bytes, SocketAddr)>
+    mailbox: AsyncReceiver<(Bytes, SocketAddr)>,
+    connected_addr: Option<SocketAddr>,
 }
 
 impl UdpSocket {
@@ -1302,7 +1303,7 @@ impl UdpSocket {
         let (tx, rx) = channel(1024);
         core.network.udp_sockets.insert(addr, tx);
 
-        Ok(Self { local_addr: addr, mailbox: rx })
+        Ok(Self { local_addr: addr, mailbox: rx, connected_addr: None })
     }
 
     pub fn from_std(socket: std::net::UdpSocket) -> Result<Self> {
@@ -1319,7 +1320,44 @@ impl UdpSocket {
         let (tx, rx) = channel(1024);
         core.network.udp_sockets.insert(local_addr, tx);
 
-        Ok(Self { local_addr, mailbox: rx })
+        Ok(Self { local_addr, mailbox: rx, connected_addr: None })
+    }
+
+    pub async fn connect<A: ToSocketAddrs>(&mut self, addr: A) -> Result<()> {
+        let addr = addr.to_socket_addrs()?.next().ok_or_else(|| Error::new(ErrorKind::InvalidInput, "fracture: Invalid address"))?;
+        self.connected_addr = Some(addr);
+        Ok(())
+    }
+
+    pub async fn send(&self, buf: &[u8]) -> Result<usize> {
+        let target = self.connected_addr.ok_or_else(|| Error::new(ErrorKind::NotConnected, "fracture: Socket not connected"))?;
+        self.send_to(buf, target).await
+    }
+
+    pub async fn recv(&self, buf: &mut [u8]) -> Result<usize> {
+        let connected = self.connected_addr.ok_or_else(|| Error::new(ErrorKind::NotConnected, "fracture: Socket not connected"))?;
+
+        loop {
+            let (n, src) = self.recv_from(buf).await?;
+            if src == connected {
+                return Ok(n);
+            }
+        }
+    }
+
+    pub async fn peek_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
+        if chaos::should_fail(ChaosOperation::UdpRecvFrom) {
+            return Err(Error::new(ErrorKind::Other, "fracture: PeekFrom failed (chaos)"));
+        }
+
+        match self.mailbox.peek().await {
+            Some((data, src)) => {
+                let n = std::cmp::min(buf.len(), data.len());
+                buf[..n].copy_from_slice(&data[..n]);
+                Ok((n, src.clone()))
+            }
+            None => Err(Error::new(ErrorKind::BrokenPipe, "fracture: Socket closed"))
+        }
     }
 
     pub fn local_addr(&self) -> Result<SocketAddr> {
@@ -1585,6 +1623,92 @@ pub mod unix {
 
         pub fn split(self) -> (crate::io::ReadHalf<UnixStream>, crate::io::WriteHalf<UnixStream>) {
             crate::io::split(self)
+        }
+
+        pub fn into_split(self) -> (OwnedUnixReadHalf, OwnedUnixWriteHalf) {
+            let this = std::mem::ManuallyDrop::new(self);
+
+            let tx = unsafe { std::ptr::read(&this.tx) };
+            let rx = unsafe { std::ptr::read(&this.rx) };
+            let read_buffer = unsafe { std::ptr::read(&this.read_buffer) };
+
+            let tx = Arc::new(std::sync::Mutex::new(tx));
+            let rx = Arc::new(std::sync::Mutex::new(rx));
+            let read_buffer = Arc::new(std::sync::Mutex::new(read_buffer));
+
+            (
+                OwnedUnixReadHalf { rx, read_buffer },
+                OwnedUnixWriteHalf { tx }
+            )
+        }
+    }
+
+    pub struct OwnedUnixReadHalf {
+        rx: Arc<std::sync::Mutex<AsyncReceiver<Bytes>>>,
+        read_buffer: Arc<std::sync::Mutex<BytesMut>>,
+    }
+
+    pub struct OwnedUnixWriteHalf {
+        tx: Arc<std::sync::Mutex<Sender<Bytes>>>,
+    }
+
+    impl AsyncRead for OwnedUnixReadHalf {
+        fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<Result<()>> {
+            let mut rx = self.rx.lock().unwrap();
+            let mut read_buffer = self.read_buffer.lock().unwrap();
+
+            if !read_buffer.is_empty() {
+                let to_copy = std::cmp::min(buf.remaining(), read_buffer.len());
+                buf.put_slice(&read_buffer[..to_copy]);
+                read_buffer.advance(to_copy);
+                return Poll::Ready(Ok(()));
+            }
+
+            match rx.poll_recv(cx) {
+                Poll::Ready(Some(data)) => {
+                    let to_copy = std::cmp::min(buf.remaining(), data.len());
+                    buf.put_slice(&data[..to_copy]);
+                    if data.len() > to_copy {
+                        read_buffer.extend_from_slice(&data[to_copy..]);
+                    }
+                    Poll::Ready(Ok(()))
+                }
+                Poll::Ready(None) => Poll::Ready(Ok(())),
+                Poll::Pending => Poll::Pending,
+            }
+        }
+    }
+
+    impl AsyncWrite for OwnedUnixWriteHalf {
+        fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize>> {
+            let tx = self.tx.lock().unwrap();
+
+            if let Poll::Pending = tx.poll_reserve(cx, buf.len()) {
+                return Poll::Pending;
+            }
+
+            let bytes = Bytes::copy_from_slice(buf);
+            match tx.try_send(bytes) {
+                Ok(_) => Poll::Ready(Ok(buf.len())),
+                Err(TrySendError::Closed(_)) => Poll::Ready(Err(Error::new(
+                    ErrorKind::BrokenPipe,
+                    "fracture: Connection reset",
+                ))),
+                Err(TrySendError::Full(_)) => {
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+            }
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
+            let tx = self.tx.lock().unwrap();
+            tx.close();
+            Poll::Ready(Ok(()))
         }
     }
 

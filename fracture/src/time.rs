@@ -84,6 +84,20 @@ pub struct Timeout<F> {
     sleep: Sleep
 }
 
+impl<F> Timeout<F> {
+    pub fn get_ref(&self) -> &F {
+        &self.future
+    }
+
+    pub fn get_mut(&mut self) -> &mut F {
+        &mut self.future
+    }
+
+    pub fn into_inner(self) -> F {
+        self.future
+    }
+}
+
 impl<F: Future> Future for Timeout<F> {
     type Output = Result<F::Output, error::Elapsed>;
 
@@ -224,7 +238,7 @@ impl Interval {
                 }
             }
             Poll::Ready(tick_time)
-            
+
         }
         else {
             let waker = cx.waker().clone();
@@ -240,6 +254,13 @@ impl Interval {
             });
             Poll::Pending
         }
+    }
+
+    pub fn reset(&mut self) {
+        let handle = Handle::current();
+        let core = handle.core.upgrade().expect("fracture: Runtime dropped");
+        let now = crate::runtime::core::Instant::from(core.borrow().current_time);
+        self.next_tick = now + self.period;
     }
 }
 
