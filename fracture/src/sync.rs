@@ -352,6 +352,20 @@ impl Notify {
         }
     }
 
+    pub fn notify_waiters(&self) {
+        if chaos::should_fail(ChaosOperation::NotifyMissed) {
+            return;
+        }
+
+        let mut state = self.state.lock().unwrap();
+
+        while let Some(waker) = state.waiters.pop() {
+            waker.wake();
+        }
+
+        state.notified = true;
+    }
+
     pub fn notified(&self) -> Notified<'_> {
         Notified {
             notify: self,
@@ -450,7 +464,6 @@ impl Semaphore {
     pub fn close(&self) {
         *self.closed.lock().unwrap() = true;
 
-        // Wake all waiters
         let mut waiters = self.waiters.lock().unwrap();
         while let Some((_, _, waker)) = waiters.waiters.pop_front() {
             waker.wake();
@@ -778,7 +791,6 @@ pub mod mpsc {
         }
 
         pub fn blocking_send(&self, value: T) -> Result<(), SendError<T>> {
-            // In simulation mode, just spin until we can send
             loop {
                 let mut s = self.state.lock().unwrap();
                 if s.closed {
@@ -842,6 +854,35 @@ pub mod mpsc {
 
             ReserveFuture { sender: self }.await
         }
+
+        pub async fn reserve_owned(self) -> Result<OwnedPermit<T>, SendError<()>> {
+            if chaos::should_fail(ChaosOperation::MpscPermitReserve) {
+                return Err(SendError(()));
+            }
+
+            struct ReserveOwnedFuture<T> { sender: Sender<T> }
+
+            impl<T> Future for ReserveOwnedFuture<T> {
+                type Output = Result<OwnedPermit<T>, SendError<()>>;
+
+                fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                    let mut s = self.sender.state.lock().unwrap();
+                    if s.closed {
+                        return Poll::Ready(Err(SendError(())));
+                    }
+
+                    if s.queue.len() + s.reserved < s.capacity {
+                        s.reserved += 1;
+                        Poll::Ready(Ok(OwnedPermit { state: self.sender.state.clone() }))
+                    } else {
+                        s.tx_waiters.push_back(cx.waker().clone());
+                        Poll::Pending
+                    }
+                }
+            }
+
+            ReserveOwnedFuture { sender: self }.await
+        }
     }
 
     impl<T> Clone for Sender<T> {
@@ -893,7 +934,6 @@ pub mod mpsc {
         }
 
         pub fn blocking_recv(&mut self) -> Option<T> {
-            // In simulation mode, just spin until we get a value
             loop {
                 let mut s = self.state.lock().unwrap();
                 if let Some(v) = s.queue.pop_front() {
@@ -927,6 +967,35 @@ pub mod mpsc {
     impl<T> Drop for Permit<'_, T> {
         fn drop(&mut self) {
             let mut s = self.sender.state.lock().unwrap();
+            s.reserved -= 1;
+            if let Some(w) = s.tx_waiters.pop_front() {
+                w.wake();
+            }
+        }
+    }
+
+    pub struct OwnedPermit<T> {
+        state: Arc<StdMutex<BoundedState<T>>>
+    }
+
+    impl<T> OwnedPermit<T> {
+        pub fn send(self, value: T) {
+            {
+                let mut s = self.state.lock().unwrap();
+                s.reserved -= 1;
+                s.queue.push_back(value);
+                if let Some(w) = s.rx_waker.take() {
+                    w.wake();
+                }
+            }
+
+            std::mem::forget(self);
+        }
+    }
+
+    impl<T> Drop for OwnedPermit<T> {
+        fn drop(&mut self) {
+            let mut s = self.state.lock().unwrap();
             s.reserved -= 1;
             if let Some(w) = s.tx_waiters.pop_front() {
                 w.wake();
@@ -1161,7 +1230,6 @@ impl<T> OnceCell<T> {
     }
 
     pub fn get(&self) -> Option<&T> {
-        // This is safe because we never remove the value once set
         let guard = self.value.lock().unwrap();
         if guard.is_some() {
             unsafe {

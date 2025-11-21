@@ -293,12 +293,9 @@ impl TcpStream {
     }
 
     pub fn from_std(stream: std::net::TcpStream) -> Result<Self> {
-        // In simulation mode, we can't actually use the std TcpStream
-        // So we extract the addresses and create a simulated connection
         let local_addr = stream.local_addr()?;
         let peer_addr = stream.peer_addr()?;
 
-        // Create dummy channels since we're simulated
         let (tx, rx) = channel(DEFAULT_TCP_WINDOW_SIZE);
 
         Ok(Self::new(tx, rx, local_addr, peer_addr))
@@ -318,7 +315,6 @@ impl TcpStream {
         let core_rc = handle.core.upgrade().ok_or_else(|| Error::new(ErrorKind::Other, "fracture: Runtime dropped"))?;
 
         let (local_addr, listener_tx) = {
-            // Use IPv4 or IPv6 localhost based on the target address
             let ip = match addr.ip() {
                 IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
                 IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),
@@ -496,12 +492,6 @@ impl TcpStream {
         }
     }
 
-    pub fn into_split(self) -> (OwnedReadHalf, OwnedWriteHalf) {
-        let stream = Arc::new(Mutex::new(self));
-        
-        (OwnedReadHalf { stream: stream.clone() }, OwnedWriteHalf { stream })
-    }
-
     pub fn poll_read_ready(&self, cx: &mut Context<'_>) -> Poll<Result<()>> {
         match self.rx.poll_peek(cx) {
             Poll::Ready(_) => Poll::Ready(Ok(())),
@@ -548,6 +538,37 @@ impl TcpStream {
 
     pub fn ttl(&self) -> Result<u32> {
         Ok(self.ttl)
+    }
+
+    pub fn into_split(self) -> (OwnedReadHalf, OwnedWriteHalf) {
+        let this = std::mem::ManuallyDrop::new(self);
+
+        let tx = unsafe { std::ptr::read(&this.tx) };
+        let rx = unsafe { std::ptr::read(&this.rx) };
+        let read_buffer = unsafe { std::ptr::read(&this.read_buffer) };
+
+        let handle = Handle::current();
+        if let Some(core_rc) = handle.core.upgrade() {
+            let mut core = core_rc.borrow_mut();
+            core.network.release_port(this.local_addr.ip(), this.local_addr.port());
+        }
+
+        let tx = Arc::new(std::sync::Mutex::new(tx));
+        let rx = Arc::new(std::sync::Mutex::new(rx));
+        let read_buffer = Arc::new(std::sync::Mutex::new(read_buffer));
+
+        let read_half = OwnedReadHalf {
+            rx,
+            read_buffer,
+            _marker: std::marker::PhantomData,
+        };
+
+        let write_half = OwnedWriteHalf {
+            tx,
+            _marker: std::marker::PhantomData,
+        };
+
+        (read_half, write_half)
     }
 }
 
@@ -670,35 +691,75 @@ impl AsyncWrite for TcpStream {
 }
 
 pub struct OwnedReadHalf {
-    stream: Arc<Mutex<TcpStream>>
+    rx: Arc<std::sync::Mutex<AsyncReceiver<Bytes>>>,
+    read_buffer: Arc<std::sync::Mutex<BytesMut>>,
+    _marker: std::marker::PhantomData<TcpStream>,
 }
+
 pub struct OwnedWriteHalf {
-    stream: Arc<Mutex<TcpStream>>
+    tx: Arc<std::sync::Mutex<Sender<Bytes>>>,
+    _marker: std::marker::PhantomData<TcpStream>,
 }
 
 impl AsyncRead for OwnedReadHalf {
     fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<Result<()>> {
-        let mut stream = self.stream.lock().unwrap();
+        let mut rx = self.rx.lock().unwrap();
+        let mut read_buffer = self.read_buffer.lock().unwrap();
 
-        Pin::new(&mut *stream).poll_read(cx, buf)
+        if !read_buffer.is_empty() {
+            let to_copy = std::cmp::min(buf.remaining(), read_buffer.len());
+            buf.put_slice(&read_buffer[..to_copy]);
+            read_buffer.advance(to_copy);
+            return Poll::Ready(Ok(()));
+        }
+
+        match rx.poll_recv(cx) {
+            Poll::Ready(Some(data)) => {
+                let to_copy = std::cmp::min(buf.remaining(), data.len());
+                buf.put_slice(&data[..to_copy]);
+
+                if data.len() > to_copy {
+                    read_buffer.extend_from_slice(&data[to_copy..]);
+                }
+
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(None) => Poll::Ready(Ok(())),
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 
 impl AsyncWrite for OwnedWriteHalf {
     fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize>> {
-        let mut stream = self.stream.lock().unwrap();
+        let tx = self.tx.lock().unwrap();
 
-        Pin::new(&mut *stream).poll_write(cx, buf)
+        if let Poll::Pending = tx.poll_reserve(cx, buf.len()) {
+            return Poll::Pending;
+        }
+
+        let bytes = Bytes::copy_from_slice(buf);
+        match tx.try_send(bytes) {
+            Ok(_) => Poll::Ready(Ok(buf.len())),
+            Err(TrySendError::Closed(_)) => Poll::Ready(Err(Error::new(
+                ErrorKind::BrokenPipe,
+                "fracture: Connection reset",
+            ))),
+            Err(TrySendError::Full(_)) => {
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        }
     }
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
-        let mut stream = self.stream.lock().unwrap();
 
-        Pin::new(&mut *stream).poll_flush(cx)
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
+        Poll::Ready(Ok(()))
     }
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
-        let mut stream = self.stream.lock().unwrap();
 
-        Pin::new(&mut *stream).poll_shutdown(cx)
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
+        let tx = self.tx.lock().unwrap();
+        tx.close();
+        Poll::Ready(Ok(()))
     }
 }
 
@@ -913,7 +974,6 @@ impl<T: ChannelItemSize + Send> Sender<T> {
             arrival_time,
         };
 
-        // Later: if queue is empty or last item arrives before this one, push back
         let insert_idx =
             if s.queue.is_empty() || s.queue.back().unwrap().arrival_time <= arrival_time {
                 s.queue.len()
@@ -1087,7 +1147,6 @@ impl<T: Clone> AsyncReceiver<T> {
 
 }
 
-// Size tracking trait for channel items
 trait ChannelItemSize {
     fn channel_size(&self) -> usize;
 }
@@ -1145,7 +1204,6 @@ impl UdpSocket {
     }
 
     pub fn from_std(socket: std::net::UdpSocket) -> Result<Self> {
-        // In simulation mode, extract the address and create a simulated socket
         let local_addr = socket.local_addr()?;
 
         let handle = Handle::current();
@@ -1347,9 +1405,6 @@ pub mod unix {
         }
 
         pub fn from_std(stream: std::os::unix::net::UnixStream) -> Result<UnixStream> {
-            // In simulation mode, create a simulated unix stream
-            // We can't get peer address from std::os::unix::net::UnixStream easily
-            // so we create dummy paths
             let handle = Handle::current();
             let core_rc = handle.core.upgrade().unwrap();
             let mut core = core_rc.borrow_mut();
@@ -1567,7 +1622,7 @@ pub mod windows {
             }
 
             pub async fn connect(&mut self) -> Result<()> {
-                // In simulation, this is a no-op
+
                 Ok(())
             }
         }

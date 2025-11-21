@@ -228,7 +228,6 @@ impl File {
     pub fn from_std(mut file: std::fs::File) -> File {
         use std::io::{Read as _, Seek as _};
 
-        // In simulation mode, extract what we can from the std file
         let path = PathBuf::from("/tmp/fracture_from_std_file");
 
         let handle = Handle::current();
@@ -237,29 +236,39 @@ impl File {
 
         let inode = core.fs.assign_inode();
 
-        // Try to extract metadata from the std file
         let (accessed, modified) = if let Ok(metadata) = file.metadata() {
-            let accessed = metadata.accessed().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| core.start_system_time + d).unwrap_or_else(|| core.sys_now());
-            let modified = metadata.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| core.start_system_time + d).unwrap_or_else(|| core.sys_now());
+            let file_size = metadata.len();
+
+            const MAX_FILE_SIZE: u64 = 100 * 1024 * 1024;
+            if file_size > MAX_FILE_SIZE {
+                panic!(
+                    "fracture: File::from_std() called on large file ({} bytes). \
+                    In simulation mode, files are loaded entirely into memory. \
+                    This file exceeds the {}MB safety limit. \
+                    Consider using File::open() instead, or increase the limit if intentional.",
+                    file_size,
+                    MAX_FILE_SIZE / 1024 / 1024
+                );
+            }
+
+            let accessed = metadata.accessed().ok().unwrap_or_else(|| std::time::UNIX_EPOCH);
+            let modified = metadata.modified().ok().unwrap_or_else(|| std::time::UNIX_EPOCH);
             (accessed, modified)
         } else {
-            let now = core.sys_now();
+            let now = std::time::SystemTime::now();
             (now, now)
         };
 
-        // Try to read the file contents
         let mut contents = Vec::new();
-        let _ = file.read_to_end(&mut contents);
+        if let Err(e) = file.read_to_end(&mut contents) {
+            eprintln!("fracture: Warning: Failed to read file in from_std: {}", e);
+        }
 
-        // Try to get current cursor position
         let cursor = file.stream_position().unwrap_or(0);
 
-        // Create the file entry with the extracted data
         let mut file_entry = FileEntry::new_file(accessed, inode);
         file_entry.modified = modified;
-        file_entry.data = contents;
+        file_entry.content = contents;
 
         let entry = Arc::new(Mutex::new(file_entry));
         core.fs.files.insert(path.clone(), entry.clone());

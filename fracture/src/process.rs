@@ -151,6 +151,8 @@ pub struct Command {
     uid: Option<u32>,
     gid: Option<u32>,
     kill_on_drop: bool,
+    #[cfg(unix)]
+    pre_exec: Option<Box<dyn FnMut() -> std::io::Result<()> + Send + Sync>>,
 }
 
 impl Command {
@@ -166,7 +168,9 @@ impl Command {
             stderr: Stdio::inherit(),
             uid: None,
             gid: None,
-            kill_on_drop: false
+            kill_on_drop: false,
+            #[cfg(unix)]
+            pre_exec: None,
         }
     }
 
@@ -231,6 +235,15 @@ impl Command {
 
     pub fn gid(&mut self, id: u32) -> &mut Self {
         self.gid = Some(id);
+        self
+    }
+
+    #[cfg(unix)]
+    pub unsafe fn pre_exec<F>(&mut self, f: F) -> &mut Self
+    where
+        F: FnMut() -> std::io::Result<()> + Send + Sync + 'static,
+    {
+        self.pre_exec = Some(Box::new(f));
         self
     }
 

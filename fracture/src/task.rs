@@ -12,6 +12,42 @@ use crate::runtime::Handle;
 use crate::runtime::task::TaskId;
 use crate::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use crate::sync::oneshot;
+
+static BLOCKING_POOL_LIMIT: std::sync::OnceLock<BlockingPoolLimiter> = std::sync::OnceLock::new();
+
+struct BlockingPoolLimiter {
+    active: std::sync::Mutex<usize>,
+    condvar: std::sync::Condvar,
+    max: usize,
+}
+
+impl BlockingPoolLimiter {
+    fn new(max: usize) -> Self {
+        Self {
+            active: std::sync::Mutex::new(0),
+            condvar: std::sync::Condvar::new(),
+            max,
+        }
+    }
+
+    fn acquire(&self) {
+        let mut active = self.active.lock().unwrap();
+        while *active >= self.max {
+            active = self.condvar.wait(active).unwrap();
+        }
+        *active += 1;
+    }
+
+    fn release(&self) {
+        let mut active = self.active.lock().unwrap();
+        *active -= 1;
+        self.condvar.notify_one();
+    }
+}
+
+fn get_blocking_limiter() -> &'static BlockingPoolLimiter {
+    BLOCKING_POOL_LIMIT.get_or_init(|| BlockingPoolLimiter::new(512))
+}
 use crate::time::sleep;
 
 pub fn spawn<F>(future: F) -> JoinHandle<F::Output>
@@ -115,13 +151,18 @@ where F: FnOnce() -> R + Send + 'static, R: Send + 'static {
     let finished_flag = finished.clone();
 
     std::thread::spawn(move || {
+        let limiter = get_blocking_limiter();
+        limiter.acquire();
+
         if chaos::should_fail(ChaosOperation::ThreadPoolExhaustion) {
             std::thread::sleep(Duration::from_secs(1));
         }
 
         let result = f();
-        tx.send(result);
+        let _ = tx.send(result);
         finished_flag.store(true, Ordering::Release);
+
+        limiter.release();
     });
 
     JoinHandle {
