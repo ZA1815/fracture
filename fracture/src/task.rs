@@ -262,7 +262,9 @@ impl AbortHandle {
             let handle = Handle::current();
             if let Some(core_rc) = handle.core.upgrade() {
                 if let Ok(mut core) = core_rc.try_borrow_mut() {
-                    core.tasks.remove(id.0);
+                    if core.tasks.contains(id.0) {
+                        core.tasks.remove(id.0);
+                    }
                 }
                 // If we can't borrow, the task will be cleaned up later
             }

@@ -129,18 +129,19 @@ pub fn test(attr: TokenStream, item: TokenStream) -> TokenStream {
                 let violations = ::fracture::chaos::invariants::get_violations();
                 let bugs = ::fracture::chaos::trace::find_bugs();
                 let seed = ::fracture::chaos::get_seed();
+                let trace = ::fracture::chaos::trace::get_trace();
 
-                if !violations.is_empty() || !bugs.is_empty() {
-                    let trace = ::fracture::chaos::trace::get_trace();
+                let has_failure = !violations.is_empty() || !bugs.is_empty() || test_result.is_err();
+
+                if has_failure {
                     let report = ::fracture::chaos::visualization::generate_report(seed, violations, bugs, trace);
-
                     let report_string = report.generate_report_string();
-                    panic!("\n\n{}\n\n", report_string);
-                }
-
-                match test_result {
-                    Ok(_) => {},
-                    Err(_) => panic!("Fracture test timed out after {:?}", #duration)
+                    
+                    if test_result.is_err() {
+                        panic!("\n\n{}\n\nFracture test timed out after {:?}\n\n", report_string, #duration);
+                    } else {
+                        panic!("\n\n{}\n\n", report_string);
+                    }
                 }
             });
         }

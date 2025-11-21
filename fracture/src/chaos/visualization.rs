@@ -60,41 +60,40 @@ impl TestReport {
         let status_icon = if self.is_success { "✅" } else { "❌" };
         let status_text = if self.is_success { "PASSED" } else { "FAILED" };
 
-        report.push_str("╔═════════════════════════════════════════════════════════════╗\n");
         report.push_str(&format!(
-            "║                  Fracture Test Report                     ║\n"
+            "                  Fracture Test Report                     \n"
         ));
-        report.push_str("╠═════════════════════════════════════════════════════════════╣\n");
+        report.push_str("                                                               \n");
         report.push_str(&format!(
-            "║ Status:   {: <48} ║\n",
+            " Status:   {: <48} \n",
             format!("{} {}", status_icon, status_text)
         ));
-        report.push_str(&format!("║ Seed:     {: <48} ║\n", self.seed));
+        report.push_str(&format!(" Seed:     {: <48} \n", self.seed));
         report.push_str(&format!(
-            "║ Duration: {: <48} ║\n",
+            " Duration: {: <48} \n",
             format!("{:?}", self.total_duration)
         ));
         report.push_str(&format!(
-            "║ Events:   {: <48} ║\n",
+            " Events:   {: <48} \n",
             self.total_events
         ));
-        report.push_str("╠═════════════════════════════════════════════════════════════╣\n");
+        report.push_str("                                                               \n");
 
         if !self.is_success {
             if !self.violations.is_empty() {
-                report.push_str("║ 🚨 Invariant Violations:                                    ║\n");
+                report.push_str(" 🚨 Invariant Violations:                                    \n");
                 for (i, violation) in self.violations.iter().enumerate() {
                     report.push_str(&format!(
-                        "║   {}. {: <51} ║\n",
+                        "   {}. {: <51} \n",
                         i + 1,
                         violation
                     ));
                 }
-                report.push_str("║                                                             ║\n");
+                report.push_str("                                                             \n");
             }
 
             if !self.bugs.is_empty() {
-                report.push_str("║ 🐛 Detected Bug Patterns:                                     ║\n");
+                report.push_str(" 🐛 Detected Bug Patterns:                                     \n");
                 for (i, bug) in self.bugs.iter().enumerate() {
                     let desc = bug.description();
                     let severity = if bug.is_critical() {
@@ -103,30 +102,30 @@ impl TestReport {
                         ""
                     };
                     report.push_str(&format!(
-                        "║   {}. {: <49} ║\n",
+                        "   {}. {: <49} \n",
                         i + 1,
                         format!("{} {}", desc, severity)
                     ));
                 }
-                report.push_str("║                                                             ║\n");
+                report.push_str("                                                             \n");
             }
         } else {
-            report.push_str("║ All invariants passed. No bug patterns detected.            ║\n");
+            report.push_str(" All invariants passed. No bug patterns detected.            \n");
         }
 
-        report.push_str("╠═════════════════════════════════════════════════════════════╣\n");
-        report.push_str("║ Event Summary:                                              ║\n");
+        report.push_str("                                                               \n");
+        report.push_str("  Event Summary:                                               \n");
         let mut sorted_summary: Vec<_> = self.summary_by_event.iter().collect();
         sorted_summary.sort_by_key(|(k, _)| *k);
 
         for (event, count) in sorted_summary {
             report.push_str(&format!(
-                "║   - {: <30}: {: <20} ║\n",
+                "   - {: <30}: {: <20} \n",
                 event, count
             ));
         }
 
-        report.push_str("╚═════════════════════════════════════════════════════════════╝\n");
+        report.push_str("                                                               \n");
 
         if !self.is_success {
             report.push_str("\n\nChaos Trace (Last 20 events):\n");
