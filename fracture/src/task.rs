@@ -203,10 +203,6 @@ pub async fn yield_now() {
 
 pub fn block_in_place<F, R>(f: F) -> R
 where F: FnOnce() -> R {
-    if chaos::should_fail(ChaosOperation::TaskBlock) {
-        std::thread::sleep(Duration::from_secs(1));
-    }
-
     f()
 }
 

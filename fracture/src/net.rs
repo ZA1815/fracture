@@ -267,6 +267,28 @@ impl Drop for TcpListener {
     }
 }
 
+#[cfg(unix)]
+impl std::os::unix::io::AsRawFd for TcpListener {
+    fn as_raw_fd(&self) -> std::os::unix::io::RawFd {
+        panic!(
+            "fracture: TcpListener::as_raw_fd() is not supported in simulation mode. \
+            Fracture uses in-memory channels instead of real OS file descriptors. \
+            If your code requires raw FD access, it cannot run in fracture's simulation environment."
+        )
+    }
+}
+
+#[cfg(windows)]
+impl std::os::windows::io::AsRawSocket for TcpListener {
+    fn as_raw_socket(&self) -> std::os::windows::io::RawSocket {
+        panic!(
+            "fracture: TcpListener::as_raw_socket() is not supported in simulation mode. \
+            Fracture uses in-memory channels instead of real OS sockets. \
+            If your code requires raw socket access, it cannot run in fracture's simulation environment."
+        )
+    }
+}
+
 pub struct TcpStream {
     tx: Sender<Bytes>,
     rx: AsyncReceiver<Bytes>,
@@ -540,6 +562,16 @@ impl TcpStream {
         Ok(self.ttl)
     }
 
+    pub fn split(&mut self) -> (ReadHalf<'_>, WriteHalf<'_>) {
+        unsafe {
+            let ptr = self as *mut TcpStream;
+            (
+                ReadHalf { stream: &mut *ptr },
+                WriteHalf { stream: &mut *ptr }
+            )
+        }
+    }
+
     pub fn into_split(self) -> (OwnedReadHalf, OwnedWriteHalf) {
         let this = std::mem::ManuallyDrop::new(self);
 
@@ -690,6 +722,28 @@ impl AsyncWrite for TcpStream {
     }
 }
 
+#[cfg(unix)]
+impl std::os::unix::io::AsRawFd for TcpStream {
+    fn as_raw_fd(&self) -> std::os::unix::io::RawFd {
+        panic!(
+            "fracture: TcpStream::as_raw_fd() is not supported in simulation mode. \
+            Fracture uses in-memory channels instead of real OS file descriptors. \
+            If your code requires raw FD access, it cannot run in fracture's simulation environment."
+        )
+    }
+}
+
+#[cfg(windows)]
+impl std::os::windows::io::AsRawSocket for TcpStream {
+    fn as_raw_socket(&self) -> std::os::windows::io::RawSocket {
+        panic!(
+            "fracture: TcpStream::as_raw_socket() is not supported in simulation mode. \
+            Fracture uses in-memory channels instead of real OS sockets. \
+            If your code requires raw socket access, it cannot run in fracture's simulation environment."
+        )
+    }
+}
+
 pub struct OwnedReadHalf {
     rx: Arc<std::sync::Mutex<AsyncReceiver<Bytes>>>,
     read_buffer: Arc<std::sync::Mutex<BytesMut>>,
@@ -760,6 +814,54 @@ impl AsyncWrite for OwnedWriteHalf {
         let tx = self.tx.lock().unwrap();
         tx.close();
         Poll::Ready(Ok(()))
+    }
+}
+
+pub struct ReadHalf<'a> {
+    stream: &'a mut TcpStream,
+}
+
+pub struct WriteHalf<'a> {
+    stream: &'a mut TcpStream,
+}
+
+impl<'a> ReadHalf<'a> {
+    pub fn peer_addr(&self) -> Result<SocketAddr> {
+        Ok(self.stream.peer_addr)
+    }
+
+    pub fn local_addr(&self) -> Result<SocketAddr> {
+        Ok(self.stream.local_addr)
+    }
+}
+
+impl<'a> WriteHalf<'a> {
+    pub fn peer_addr(&self) -> Result<SocketAddr> {
+        Ok(self.stream.peer_addr)
+    }
+
+    pub fn local_addr(&self) -> Result<SocketAddr> {
+        Ok(self.stream.local_addr)
+    }
+}
+
+impl<'a> AsyncRead for ReadHalf<'a> {
+    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<Result<()>> {
+        Pin::new(&mut *self.stream).poll_read(cx, buf)
+    }
+}
+
+impl<'a> AsyncWrite for WriteHalf<'a> {
+    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize>> {
+        Pin::new(&mut *self.stream).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
+        Pin::new(&mut *self.stream).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
+        Pin::new(&mut *self.stream).poll_shutdown(cx)
     }
 }
 
@@ -1325,6 +1427,28 @@ impl Drop for UdpSocket {
             core.network.udp_sockets.remove(&self.local_addr);
             core.network.release_port(self.local_addr.ip(), self.local_addr.port());
         }
+    }
+}
+
+#[cfg(unix)]
+impl std::os::unix::io::AsRawFd for UdpSocket {
+    fn as_raw_fd(&self) -> std::os::unix::io::RawFd {
+        panic!(
+            "fracture: UdpSocket::as_raw_fd() is not supported in simulation mode. \
+            Fracture uses in-memory channels instead of real OS file descriptors. \
+            If your code requires raw FD access, it cannot run in fracture's simulation environment."
+        )
+    }
+}
+
+#[cfg(windows)]
+impl std::os::windows::io::AsRawSocket for UdpSocket {
+    fn as_raw_socket(&self) -> std::os::windows::io::RawSocket {
+        panic!(
+            "fracture: UdpSocket::as_raw_socket() is not supported in simulation mode. \
+            Fracture uses in-memory channels instead of real OS sockets. \
+            If your code requires raw socket access, it cannot run in fracture's simulation environment."
+        )
     }
 }
 

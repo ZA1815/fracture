@@ -743,6 +743,15 @@ pub mod mpsc {
         pub fn blocking_send(&self, value: T) -> Result<(), SendError<T>> {
             self.send(value)
         }
+
+        pub fn is_closed(&self) -> bool {
+            let s = self.shared.lock().unwrap();
+            s.closed
+        }
+
+        pub fn same_channel(&self, other: &Self) -> bool {
+            Arc::ptr_eq(&self.shared, &other.shared)
+        }
     }
     impl<T> Clone for UnboundedSender<T> {
         fn clone(&self) -> Self { Self { shared: self.shared.clone() } }
@@ -963,6 +972,20 @@ pub mod mpsc {
 
             ReserveOwnedFuture { sender: self }.await
         }
+
+        pub fn is_closed(&self) -> bool {
+            let s = self.state.lock().unwrap();
+            s.closed
+        }
+
+        pub fn same_channel(&self, other: &Self) -> bool {
+            Arc::ptr_eq(&self.state, &other.state)
+        }
+
+        pub fn capacity(&self) -> usize {
+            let s = self.state.lock().unwrap();
+            s.capacity
+        }
     }
 
     impl<T> Clone for Sender<T> {
@@ -1040,6 +1063,25 @@ pub mod mpsc {
                 Err(TryRecvError::Disconnected)
             } else {
                 Err(TryRecvError::Empty)
+            }
+        }
+
+        pub fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Option<T>> {
+            if chaos::should_fail(ChaosOperation::MpscRecv) {
+                return Poll::Ready(None);
+            }
+
+            let mut s = self.state.lock().unwrap();
+            if let Some(v) = s.queue.pop_front() {
+                if let Some(w) = s.tx_waiters.pop_front() { w.wake(); }
+                Poll::Ready(Some(v))
+            }
+            else if s.closed && s.sender_count == 0 {
+                Poll::Ready(None)
+            }
+            else {
+                s.rx_waker = Some(cx.waker().clone());
+                Poll::Pending
             }
         }
     }

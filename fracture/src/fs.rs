@@ -675,6 +675,28 @@ impl AsyncSeek for File {
     }
 }
 
+#[cfg(unix)]
+impl std::os::unix::io::AsRawFd for File {
+    fn as_raw_fd(&self) -> std::os::unix::io::RawFd {
+        panic!(
+            "fracture: File::as_raw_fd() is not supported in simulation mode. \
+            Fracture uses in-memory file storage instead of real OS file descriptors. \
+            If your code requires raw FD access, it cannot run in fracture's simulation environment."
+        )
+    }
+}
+
+#[cfg(windows)]
+impl std::os::windows::io::AsRawHandle for File {
+    fn as_raw_handle(&self) -> std::os::windows::io::RawHandle {
+        panic!(
+            "fracture: File::as_raw_handle() is not supported in simulation mode. \
+            Fracture uses in-memory file storage instead of real OS file handles. \
+            If your code requires raw handle access, it cannot run in fracture's simulation environment."
+        )
+    }
+}
+
 #[derive(Debug)]
 pub struct DirEntry {
     pub path: PathBuf,
