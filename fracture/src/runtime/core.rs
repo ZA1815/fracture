@@ -71,14 +71,15 @@ pub struct Instant(pub(crate) Duration);
 
 impl Instant {
     pub fn now() -> Self {
-        let handle = crate::runtime::Handle::current();
-        if let Some(core_rc) = handle.core.upgrade() {
-            let now = core_rc.borrow().current_time;
-            Self(now)
+        if let Some(handle) = crate::runtime::Handle::try_current() {
+            if let Some(core_rc) = handle.core.upgrade() {
+                if let Ok(core) = core_rc.try_borrow() {
+                    let now = core.current_time;
+                    return Self(now);
+                }
+            }
         }
-        else {
-            Self(Duration::ZERO)
-        }
+        Self(Duration::ZERO)
     }
 
     pub fn elapsed(&self) -> Duration {

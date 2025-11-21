@@ -134,6 +134,12 @@ impl Handle {
         })
     }
 
+    pub fn try_current() -> Option<Self> {
+        CONTEXT.with(|cx| {
+            cx.borrow().clone()
+        })
+    }
+
     pub fn spawn<F>(&self, future: F) -> crate::task::JoinHandle<F::Output>
     where
         F: Future + Send + 'static,

@@ -35,24 +35,31 @@ impl Future for Sleep {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let handle = Handle::current();
         let core_rc = handle.core.upgrade().expect("fracture: Runtime dropped");
-        let mut core = core_rc.borrow_mut();
 
-        if core.current_time >= self.deadline.0 {
-            return Poll::Ready(());
+        match core_rc.try_borrow_mut() {
+            Ok(mut core) => {
+                if core.current_time >= self.deadline.0 {
+                    return Poll::Ready(());
+                }
+
+                if !self.registered {
+                    let entry = crate::runtime::core::TimerEntry {
+                        deadline: self.deadline.0,
+                        waker: cx.waker().clone(),
+                        id: core.rng.r#gen::<usize>()
+                    };
+
+                    core.timers.push(entry);
+                    self.registered = true;
+                }
+
+                Poll::Pending
+            }
+            Err(_) => {
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
         }
-
-        if !self.registered {
-            let entry = crate::runtime::core::TimerEntry {
-                deadline: self.deadline.0,
-                waker: cx.waker().clone(),
-                id: core.rng.r#gen::<usize>()
-            };
-
-            core.timers.push(entry);
-            self.registered = true;
-        }
-
-        Poll::Pending
     }
 }
 
@@ -67,7 +74,9 @@ pub fn sleep(duration: Duration) -> Sleep {
 
     let handle = Handle::current();
     let core = handle.core.upgrade().expect("fracture: Runtime dropped");
-    let now = core.borrow().current_time;
+    let now = core.try_borrow()
+        .map(|c| c.current_time)
+        .unwrap_or(Duration::ZERO);
 
     Sleep { deadline: Instant::from(now + duration), registered: false }
 }

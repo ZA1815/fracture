@@ -816,7 +816,6 @@ mod tests {
         clear_trace();
 
         record(TraceEvent::UserMarker { label: "1".to_string(), data: "first".to_string() });
-
         record(TraceEvent::UserMarker { label: "2".to_string(), data: "second".to_string() });
 
         let mut tt = TimeTravel::from_current();
