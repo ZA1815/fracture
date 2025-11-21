@@ -1,3 +1,8 @@
+use fracture::prelude::*;
+use fracture::chaos;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 /// AGGRESSIVE chaos test - pushes the system to its limits.
 /// Resilient code should PASS even with heavy chaos injection.
 #[fracture::test(duration = "10s")]
