@@ -76,7 +76,7 @@ where F: Future + 'static, F::Output: 'static {
                         let ms = core.rng.gen_range(1..100);
                         Some(Duration::from_millis(ms))
                     } else {
-                        Some(Duration::from_millis(50)) // Default if core is borrowed
+                        Some(Duration::from_millis(50))
                     }
                 }
                 else {
@@ -116,7 +116,6 @@ where F: Future + 'static, F::Output: 'static {
         match core_rc.try_borrow_mut() {
             Ok(mut core) => break core.spawn(wrapped_future),
             Err(_) => {
-                // Core is borrowed, yield and try again
                 std::thread::yield_now();
             }
         }
@@ -266,7 +265,6 @@ impl AbortHandle {
                         core.tasks.remove(id.0);
                     }
                 }
-                // If we can't borrow, the task will be cleaned up later
             }
         }
 
@@ -416,7 +414,6 @@ impl<T> JoinSet<T> {
                         core.tasks.remove(task_id.0);
                     }
                 }
-                // If we can't borrow, the tasks will be cleaned up later
             }
         }
     }

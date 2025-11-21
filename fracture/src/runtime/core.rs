@@ -165,7 +165,6 @@ impl Core {
     pub fn tick(core_rc: &Rc<RefCell<Core>>) -> usize {
         let mut polled_count = 0;
 
-        // Wake expired timers
         {
             let mut core = core_rc.borrow_mut();
             eprintln!("[Core::tick] START - ready_queue: {}, tasks: {}, timers: {}",
@@ -173,7 +172,7 @@ impl Core {
             while let Some(timer) = core.timers.peek() {
                 if timer.deadline <= core.current_time {
                     let timer = core.timers.pop().unwrap();
-                    drop(core); // Drop borrow before waking
+                    drop(core);
                     timer.waker.wake();
                     core = core_rc.borrow_mut();
                 }
@@ -183,7 +182,6 @@ impl Core {
             }
         }
 
-        // Poll ready tasks
         loop {
             let task_id = {
                 let mut core = core_rc.borrow_mut();
@@ -205,18 +203,15 @@ impl Core {
     }
 
     fn poll_task(core_rc: &Rc<RefCell<Core>>, id: TaskId) {
-        // Swap the task with a dummy to keep it at the same index
         let mut task = {
             let mut core = core_rc.borrow_mut();
             if !core.tasks.contains(id.0) {
                 return;
             }
-            // Create a dummy task to temporarily occupy the slot
             let dummy = Task::new(Box::pin(async {}), None, Duration::ZERO);
             std::mem::replace(&mut core.tasks[id.0], dummy)
         };
 
-        // Poll the task WITHOUT holding the core borrow
         let waker = make_waker(id);
         let mut cx = Context::from_waker(&waker);
 
@@ -232,16 +227,13 @@ impl Core {
             *cell.borrow_mut() = None;
         });
 
-        // Handle the result
         match result {
             Poll::Ready(()) => {
-                // Task completed, remove it (and the dummy)
                 let mut core = core_rc.borrow_mut();
                 core.tasks.remove(id.0);
                 eprintln!("[Core::poll_task] Task {:?} completed", id);
             }
             Poll::Pending => {
-                // Put the task back at its original index
                 let mut core = core_rc.borrow_mut();
                 core.tasks[id.0] = task;
                 eprintln!("[Core::poll_task] Task {:?} still pending", id);
@@ -255,7 +247,6 @@ impl Core {
 
             self.current_time = new_time;
 
-            // Collect wakers to return (caller will wake them after dropping the borrow)
             let mut wakers_to_wake = Vec::new();
             while let Some(timer) = self.timers.peek() {
                 if timer.deadline <= self.current_time {

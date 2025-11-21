@@ -65,7 +65,6 @@ impl Runtime {
                 let (advanced, wakers) = core.advance_time();
                 drop(core);
 
-                // Wake all the wakers after dropping the borrow
                 for waker in wakers {
                     waker.wake();
                 }
@@ -209,7 +208,6 @@ impl Handle {
                 let (advanced, wakers) = core.advance_time();
                 drop(core);
 
-                // Wake all the wakers after dropping the borrow
                 for waker in wakers {
                     waker.wake();
                 }
