@@ -51,7 +51,7 @@ fn get_blocking_limiter() -> &'static BlockingPoolLimiter {
 use crate::time::sleep;
 
 pub fn spawn<F>(future: F) -> JoinHandle<F::Output>
-where F: Future + Send + 'static, F::Output: Send + 'static {
+where F: Future + 'static, F::Output: 'static {
     let finished = Arc::new(AtomicBool::new(false));
 
     if chaos::should_fail(ChaosOperation::TaskSpawn) {
@@ -132,14 +132,7 @@ where F: Future + Send + 'static, F::Output: Send + 'static {
 }
 
 pub fn spawn_local<F>(future: F) -> JoinHandle<F::Output>
-where F: Future + 'static, F::Output: Send + 'static {
-    let future = unsafe { 
-        std::mem::transmute::<
-            Pin<Box<dyn Future<Output=F::Output>>>, 
-            Pin<Box<dyn Future<Output=F::Output> + Send>>
-        >(Box::pin(future)) 
-    };
-    
+where F: Future + 'static, F::Output: 'static {
     spawn(future)
 }
 

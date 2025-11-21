@@ -6,6 +6,7 @@ use rand::{SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use slab::Slab;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 use super::task::{Task, TaskId, TaskLocals};
 use super::waker::make_waker;
@@ -161,42 +162,66 @@ impl Core {
         id
     }
 
-    pub fn tick(&mut self) -> usize {
+    pub fn tick(core_rc: &Rc<RefCell<Core>>) -> usize {
         let mut polled_count = 0;
-        
-        while let Some(timer) = self.timers.peek() {
-            if timer.deadline <= self.current_time {
-                let timer = self.timers.pop().unwrap();
-                timer.waker.wake();
-            }
-            else {
-                break;
+
+        // Wake expired timers
+        {
+            let mut core = core_rc.borrow_mut();
+            eprintln!("[Core::tick] START - ready_queue: {}, tasks: {}, timers: {}",
+                core.ready_queue.len(), core.tasks.len(), core.timers.len());
+            while let Some(timer) = core.timers.peek() {
+                if timer.deadline <= core.current_time {
+                    let timer = core.timers.pop().unwrap();
+                    drop(core); // Drop borrow before waking
+                    timer.waker.wake();
+                    core = core_rc.borrow_mut();
+                }
+                else {
+                    break;
+                }
             }
         }
 
-        let count = self.ready_queue.len();
-        for _ in 0..count {
-            if let Some(task_id) = self.ready_queue.pop_front() {
-                polled_count += 1;
-                self.poll_task(task_id);
+        // Poll ready tasks
+        loop {
+            let task_id = {
+                let mut core = core_rc.borrow_mut();
+                core.ready_queue.pop_front()
+            };
+
+            match task_id {
+                Some(id) => {
+                    eprintln!("[Core::tick] Polling task {:?}", id);
+                    polled_count += 1;
+                    Self::poll_task(core_rc, id);
+                }
+                None => break,
             }
         }
 
+        eprintln!("[Core::tick] END - polled {} tasks", polled_count);
         polled_count
     }
 
-    fn poll_task(&mut self, id: TaskId) {
-        if !self.tasks.contains(id.0) {
-            return;
-        }
+    fn poll_task(core_rc: &Rc<RefCell<Core>>, id: TaskId) {
+        // Swap the task with a dummy to keep it at the same index
+        let mut task = {
+            let mut core = core_rc.borrow_mut();
+            if !core.tasks.contains(id.0) {
+                return;
+            }
+            // Create a dummy task to temporarily occupy the slot
+            let dummy = Task::new(Box::pin(async {}), None, Duration::ZERO);
+            std::mem::replace(&mut core.tasks[id.0], dummy)
+        };
 
+        // Poll the task WITHOUT holding the core borrow
         let waker = make_waker(id);
         let mut cx = Context::from_waker(&waker);
-        
-        let task = self.tasks.get_mut(id.0).unwrap();
 
         let locals_ptr: *mut TaskLocals = &mut task.locals;
-        
+
         CURRENT_TASK_LOCALS.with(|cell| {
             *cell.borrow_mut() = Some(locals_ptr);
         });
@@ -207,35 +232,45 @@ impl Core {
             *cell.borrow_mut() = None;
         });
 
+        // Handle the result
         match result {
             Poll::Ready(()) => {
-                self.tasks.remove(id.0);
+                // Task completed, remove it (and the dummy)
+                let mut core = core_rc.borrow_mut();
+                core.tasks.remove(id.0);
+                eprintln!("[Core::poll_task] Task {:?} completed", id);
             }
             Poll::Pending => {
-                // Task is still alive, waker handles re-queueing
+                // Put the task back at its original index
+                let mut core = core_rc.borrow_mut();
+                core.tasks[id.0] = task;
+                eprintln!("[Core::poll_task] Task {:?} still pending", id);
             }
         }
     }
 
-    pub fn advance_time(&mut self) -> bool {
+    pub fn advance_time(&mut self) -> (bool, Vec<Waker>) {
         if let Some(next_timer) = self.timers.peek() {
             let new_time = next_timer.deadline;
 
             self.current_time = new_time;
 
+            // Collect wakers to return (caller will wake them after dropping the borrow)
+            let mut wakers_to_wake = Vec::new();
             while let Some(timer) = self.timers.peek() {
                 if timer.deadline <= self.current_time {
                     let timer = self.timers.pop().unwrap();
-                    timer.waker.wake();
+                    wakers_to_wake.push(timer.waker);
                 }
                 else {
                     break;
                 }
             }
-            true
+
+            (true, wakers_to_wake)
         }
         else {
-            false
+            (false, Vec::new())
         }
     }
 

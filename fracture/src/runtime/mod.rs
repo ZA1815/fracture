@@ -51,17 +51,26 @@ impl Runtime {
                 return result;
             }
 
-            let mut core = self.core.borrow_mut();
-            let steps = core.tick();
+            let steps = core::Core::tick(&self.core);
 
             if steps == 0 {
+                let mut core = self.core.borrow_mut();
                 if !core.has_pending_tasks() {
+                    drop(core);
                     if let Ok(result) = rx.try_recv() { return result; }
 
                     panic!("fracture: Deadlock detected! No tasks ready and no timers pending.");
                 }
 
-                if !core.advance_time() {
+                let (advanced, wakers) = core.advance_time();
+                drop(core);
+
+                // Wake all the wakers after dropping the borrow
+                for waker in wakers {
+                    waker.wake();
+                }
+
+                if !advanced {
                     if let Ok(result) = rx.try_recv() { return result; }
 
                     panic!("fracture: Deadlock detected! No tasks ready and no timers pending.");
@@ -95,8 +104,8 @@ impl Runtime {
 
     pub fn spawn<F>(&self, future: F) -> crate::task::JoinHandle<F::Output>
     where
-        F: Future + Send + 'static,
-        F::Output: Send + 'static,
+        F: Future + 'static,
+        F::Output: 'static,
     {
         let _guard = self.enter();
         crate::task::spawn(future)
@@ -142,8 +151,8 @@ impl Handle {
 
     pub fn spawn<F>(&self, future: F) -> crate::task::JoinHandle<F::Output>
     where
-        F: Future + Send + 'static,
-        F::Output: Send + 'static,
+        F: Future + 'static,
+        F::Output: 'static,
     {
         let prev = CONTEXT.with(|cx| cx.borrow_mut().replace(self.clone()));
         let result = crate::task::spawn(future);
@@ -184,11 +193,12 @@ impl Handle {
                 return result;
             }
 
-            let mut core = core_rc.borrow_mut();
-            let steps = core.tick();
+            let steps = Core::tick(&core_rc);
 
             if steps == 0 {
+                let mut core = core_rc.borrow_mut();
                 if !core.has_pending_tasks() {
+                    drop(core);
                     if let Ok(result) = rx.try_recv() {
                         CONTEXT.with(|cx| *cx.borrow_mut() = prev);
                         return result;
@@ -196,7 +206,15 @@ impl Handle {
                     panic!("fracture: Deadlock detected! No tasks ready and no timers pending.");
                 }
 
-                if !core.advance_time() {
+                let (advanced, wakers) = core.advance_time();
+                drop(core);
+
+                // Wake all the wakers after dropping the borrow
+                for waker in wakers {
+                    waker.wake();
+                }
+
+                if !advanced {
                     if let Ok(result) = rx.try_recv() {
                         CONTEXT.with(|cx| *cx.borrow_mut() = prev);
                         return result;
