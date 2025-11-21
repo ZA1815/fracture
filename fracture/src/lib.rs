@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 #[cfg(not(feature = "simulation"))]
 pub use tokio::*;
 
@@ -33,6 +35,9 @@ pub use tokio::test;
 pub use fracture_macros::{test, main, select, join, try_join, pin, task_local};
 #[cfg(not(feature = "simulation"))]
 pub use tokio::{main, test, select, join, try_join, pin};
+
+#[cfg(feature = "simulation")]
+pub use task::{spawn, spawn_blocking, yield_now};
 
 #[cfg(feature = "simulation")]
 pub mod prelude {

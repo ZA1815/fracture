@@ -70,7 +70,7 @@ impl Runtime {
         }
     }
 
-    pub fn shutdown_timeout(&mut self, duration: std::time::Duration) {
+    pub fn shutdown_timeout(&mut self, _duration: std::time::Duration) {
         self.core.borrow_mut().tasks.clear();
     }
 

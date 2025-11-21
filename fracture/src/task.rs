@@ -102,7 +102,7 @@ where F: Future + Send + 'static, F::Output: Send + 'static {
 
         let output = future.await;
 
-        tx.send(output);
+        let _ = tx.send(output);
         finished_flag.store(true, Ordering::Release);
     };
 
@@ -568,7 +568,7 @@ impl LocalSet {
         rt.block_on(future)
     }
 
-    pub fn enter(&self) -> LocalEnterGuard {
+    pub fn enter(&self) -> LocalEnterGuard<'_> {
         LocalEnterGuard { _local_set: self }
     }
 }

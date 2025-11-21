@@ -31,9 +31,22 @@ impl MacroArgs {
                             return Err(syn::Error::new_spanned(&nv.value, "Expected duration as a string, e.g., duration = \"120s\""));
                         }
                     }
+                    else if nv.path.is_ident("flavor")
+                        || nv.path.is_ident("worker_threads")
+                        || nv.path.is_ident("crate")
+                        || nv.path.is_ident("max_blocking_threads")
+                        || nv.path.is_ident("thread_name")
+                        || nv.path.is_ident("thread_stack_size")
+                        || nv.path.is_ident("global_queue_interval")
+                        || nv.path.is_ident("event_interval") {
+                        continue;
+                    }
                     else {
                         return Err(syn::Error::new_spanned(nv.path, "Unknown argument. Did you mean 'duration'?"));
                     }
+                }
+                Meta::Path(_) => {
+                    continue;
                 }
                 _ => {
                     return Err(syn::Error::new_spanned(meta, "Unsupported attribute argument. Use key-value pairs, e.g., duration = \"120s\""));

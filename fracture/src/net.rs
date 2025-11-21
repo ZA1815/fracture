@@ -757,7 +757,7 @@ pub struct OwnedWriteHalf {
 
 impl AsyncRead for OwnedReadHalf {
     fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<Result<()>> {
-        let mut rx = self.rx.lock().unwrap();
+        let rx = self.rx.lock().unwrap();
         let mut read_buffer = self.read_buffer.lock().unwrap();
 
         if !read_buffer.is_empty() {
@@ -1249,7 +1249,7 @@ impl<T: Clone> AsyncReceiver<T> {
 
 }
 
-trait ChannelItemSize {
+pub trait ChannelItemSize {
     fn channel_size(&self) -> usize;
 }
 
@@ -1393,8 +1393,8 @@ impl UdpSocket {
         if let Some(mailbox) = target_mailbox {
             let data = Bytes::copy_from_slice(buf);
             let delay = chaos::get_delay(&target_str).unwrap_or(Duration::ZERO);
-            
-            mailbox.try_send_delayed((data, self.local_addr), delay);
+
+            let _ = mailbox.try_send_delayed((data, self.local_addr), delay);
         }
 
         Ok(buf.len())

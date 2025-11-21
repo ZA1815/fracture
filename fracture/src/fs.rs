@@ -567,7 +567,7 @@ impl AsyncRead for File {
         };
 
         let available = &locked.content[pos..];
-        let to_copy = std::cmp::min(available.len(), buf.remaining());
+        let to_copy = std::cmp::min(available.len(), max_read);
 
         if chaos::should_fail(ChaosOperation::FsCorruption) {
             let mut garbage = vec![0u8; to_copy];
@@ -625,13 +625,13 @@ impl AsyncWrite for File {
              buf.len()
         };
 
-        let end = pos + buf.len();
+        let end = pos + to_write_len;
         if end > locked.content.len() {
             locked.content.resize(end, 0);
         }
 
-        locked.content[pos..end].copy_from_slice(buf);
-        let written = buf.len();
+        locked.content[pos..end].copy_from_slice(&buf[..to_write_len]);
+        let written = to_write_len;
         drop(locked);
 
         self.cursor += written as u64;
@@ -810,7 +810,7 @@ pub async fn create_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
             let mut current = PathBuf::new();
             for component in components {
                 current.push(component);
-                create_dir(&current).await;
+                let _ = create_dir(&current).await;
             }
             return Ok(());
         }

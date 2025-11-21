@@ -107,7 +107,7 @@ impl ProcessState {
     }
 
     fn simulate_execution(&mut self) -> ExitStatus {
-        let command_hash = self.command.bytes()
+        let _command_hash = self.command.bytes()
             .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
 
         if self.command.contains("fail") {
@@ -445,7 +445,7 @@ impl ChildStdin {
 impl AsyncWrite for ChildStdin {
     fn poll_write(
             mut self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
+            _cx: &mut Context<'_>,
             buf: &[u8],
         ) -> Poll<std::result::Result<usize, io::Error>> {
         if chaos::should_fail(ChaosOperation::ProcessStdin) {
@@ -467,11 +467,11 @@ impl AsyncWrite for ChildStdin {
         Poll::Ready(Ok(buf.len()))
     }
 
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::result::Result<(), io::Error>> {
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::result::Result<(), io::Error>> {
         Poll::Ready(Ok(()))
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::result::Result<(), io::Error>> {
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::result::Result<(), io::Error>> {
         Poll::Ready(Ok(()))
     }
 }
@@ -612,7 +612,7 @@ impl Stdio {
 }
 
 impl From<StdStdio> for Stdio {
-    fn from(value: StdStdio) -> Self {
+    fn from(_value: StdStdio) -> Self {
         // Simplified, change later
         Self::Inherit
     }

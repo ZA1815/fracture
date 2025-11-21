@@ -668,7 +668,7 @@ impl Semaphore {
         let mut waiters = self.waiters.lock().unwrap();
 
         // Have to improve this later
-        while let Some((id, needed, _)) = waiters.waiters.front() {
+        while let Some((_id, needed, _)) = waiters.waiters.front() {
             if *permits >= *needed {
                 let (_, _, waker) = waiters.waiters.pop_front().unwrap();
                 waker.wake();
@@ -1828,7 +1828,7 @@ pub mod broadcast {
                 return Err(TryRecvError::Closed);
             }
 
-            let mut s = self.state.lock().unwrap();
+            let s = self.state.lock().unwrap();
 
             if !s.buffer.is_empty() {
                 let head_seq = s.buffer.front().unwrap().seq;

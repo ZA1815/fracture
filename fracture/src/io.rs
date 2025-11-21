@@ -670,7 +670,7 @@ pub struct ReadFuture<'a, R: ?Sized> {
 impl<R: AsyncRead + Unpin + ?Sized> Future for ReadFuture<'_, R> {
     type Output = Result<usize>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let mut buf = ReadBuf::new(this.buf);
 
@@ -695,7 +695,7 @@ where
 {
     type Output = Result<usize>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
 
         if !this.buf.has_remaining_mut() {
@@ -729,7 +729,7 @@ pub struct ReadExactFuture<'a, R: ?Sized> {
 impl<R: AsyncRead + Unpin + ?Sized> Future for ReadExactFuture<'_, R> {
     type Output = Result<usize>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
 
         loop {
@@ -763,7 +763,7 @@ pub struct ReadToEndFuture<'a, R: ?Sized> {
 impl<R: AsyncRead + Unpin + ?Sized> Future for ReadToEndFuture<'_, R> {
     type Output = Result<usize>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let start_len = this.buf.len();
 
@@ -809,8 +809,7 @@ impl<R: AsyncRead + Unpin + ?Sized> Future for ReadToStringFuture<'_, R> {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // Simplistic implementation, upgrade to UTF-8 validation incrementally later
         let mut bytes = std::mem::take(unsafe { self.buf.as_mut_vec() });
-        let start_len = bytes.len();
-        
+
         let mut read_fut = ReadToEndFuture {
             reader: self.reader,
             buf: &mut bytes
@@ -849,7 +848,7 @@ pub struct WriteFuture<'a, W: ?Sized> {
 impl<W: AsyncWrite + Unpin + ?Sized> Future for WriteFuture<'_, W> {
     type Output = Result<usize>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         Pin::new(&mut *this.writer).poll_write(cx, this.buf)
     }
@@ -864,7 +863,7 @@ pub struct WriteAllFuture<'a, W: ?Sized> {
 impl<W: AsyncWrite + Unpin + ?Sized> Future for WriteAllFuture<'_, W> {
     type Output = Result<()>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         while this.pos < this.buf.len() {
             match Pin::new(&mut *this.writer).poll_write(cx, &this.buf[this.pos..]) {
@@ -923,7 +922,7 @@ pub struct SeekFuture<'a, S: ?Sized> {
 impl<S: AsyncSeek + Unpin + ?Sized> Future for SeekFuture<'_, S> {
     type Output = Result<u64>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         match Pin::new(&mut *this.seeker).start_seek(this.pos) {
             Ok(_) => {},
@@ -1201,7 +1200,7 @@ pub struct ReadLineFuture<'a, R: ?Sized> {
 impl<R: AsyncBufRead + Unpin + ?Sized> Future for ReadLineFuture<'_, R> {
     type Output = Result<usize>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if chaos::should_fail(ChaosOperation::IoReadLine) {
              return Poll::Ready(Err(Error::new(ErrorKind::Other, "fracture: ReadLine failed (chaos)")));
         }
