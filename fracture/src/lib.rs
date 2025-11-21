@@ -39,7 +39,7 @@ pub mod prelude {
     pub use crate::net::{TcpListener, TcpStream, UdpSocket};
     pub use crate::time::{sleep, timeout, interval, ChaosInstant as Instant};
     pub use crate::fs::{File, OpenOptions};
-    pub use crate::task::{spawn, spawn_blocking, yield_now, JoinHandle};
+    pub use crate::task::{spawn, spawn_blocking, yield_now, JoinHandle, unconstrained};
     pub use crate::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
     pub use crate::sync::{Mutex, RwLock, Semaphore, Notify, mpsc, oneshot, watch, broadcast, Barrier};
     pub use crate::{select, join, try_join, pin};

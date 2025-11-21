@@ -108,6 +108,34 @@ impl<T: ?Sized> Mutex<T> {
         MutexGuard { lock: self }
     }
 
+    pub async fn lock_owned(self: Arc<Self>) -> OwnedMutexGuard<T> {
+        if chaos::should_fail(ChaosOperation::MutexDeadlock) {
+            std::future::pending::<()>().await;
+        }
+
+        struct LockOwnedFuture<T: ?Sized> { mutex: Arc<Mutex<T>> }
+        impl<T: ?Sized> Future for LockOwnedFuture<T> {
+            type Output = ();
+            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+                if chaos::should_fail(ChaosOperation::MutexLockTimeout) {
+                    return Poll::Pending;
+                }
+
+                let mut state = self.mutex.state.lock().unwrap();
+                if !state.locked {
+                    state.locked = true;
+                    Poll::Ready(())
+                }
+                else {
+                    state.waiters.push_back(cx.waker().clone());
+                    Poll::Pending
+                }
+            }
+        }
+        LockOwnedFuture { mutex: self.clone() }.await;
+        OwnedMutexGuard { lock: self }
+    }
+
     pub fn try_lock(&self) -> Result<MutexGuard<'_, T>, ()> {
         if chaos::should_fail(ChaosOperation::MutexTryLock) {
             return Err(());
@@ -196,6 +224,29 @@ impl<T: ?Sized> std::ops::Deref for MutexGuard<'_, T> {
     fn deref(&self) -> &Self::Target { unsafe { &*self.lock.data.get() } }
 }
 impl<T: ?Sized> std::ops::DerefMut for MutexGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target { unsafe { &mut *self.lock.data.get() } }
+}
+
+pub struct OwnedMutexGuard<T: ?Sized> {
+    lock: Arc<Mutex<T>>
+}
+
+impl<T: ?Sized> Drop for OwnedMutexGuard<T> {
+    fn drop(&mut self) {
+        let mut state = self.lock.state.lock().unwrap();
+        state.locked = false;
+        if let Some(waker) = state.waiters.pop() {
+            waker.wake();
+        }
+    }
+}
+
+impl<T: ?Sized> std::ops::Deref for OwnedMutexGuard<T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target { unsafe { &*self.lock.data.get() } }
+}
+
+impl<T: ?Sized> std::ops::DerefMut for OwnedMutexGuard<T> {
     fn deref_mut(&mut self) -> &mut Self::Target { unsafe { &mut *self.lock.data.get() } }
 }
 
@@ -698,6 +749,23 @@ pub mod mpsc {
 
     impl<T: std::fmt::Debug> std::error::Error for TrySendError<T> {}
 
+    #[derive(Debug)]
+    pub enum SendTimeoutError<T> {
+        Timeout(T),
+        Closed(T),
+    }
+
+    impl<T> std::fmt::Display for SendTimeoutError<T> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                SendTimeoutError::Timeout(_) => write!(f, "timed out waiting on send operation"),
+                SendTimeoutError::Closed(_) => write!(f, "channel closed"),
+            }
+        }
+    }
+
+    impl<T: std::fmt::Debug> std::error::Error for SendTimeoutError<T> {}
+
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum TryRecvError {
         Empty,
@@ -913,6 +981,57 @@ pub mod mpsc {
             else {
                 Err(TrySendError::Full(value))
             }
+        }
+
+        pub async fn send_timeout(&self, value: T, duration: std::time::Duration) -> Result<(), SendTimeoutError<T>> {
+            use crate::time::sleep;
+
+            #[pin_project::pin_project]
+            struct SendTimeout<'a, T> {
+                sender: &'a Sender<T>,
+                #[pin]
+                sleep: crate::time::Sleep,
+                value: Option<T>,
+            }
+
+            impl<T> Future for SendTimeout<'_, T> {
+                type Output = Result<(), SendTimeoutError<T>>;
+
+                fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                    let mut this = self.project();
+
+                    // Check timeout first
+                    if this.sleep.as_mut().poll(cx).is_ready() {
+                        return Poll::Ready(Err(SendTimeoutError::Timeout(this.value.take().unwrap())));
+                    }
+
+                    if chaos::should_fail(ChaosOperation::MpscSend) {
+                        return Poll::Ready(Err(SendTimeoutError::Closed(this.value.take().unwrap())));
+                    }
+
+                    let mut s = this.sender.state.lock().unwrap();
+
+                    if s.closed {
+                        return Poll::Ready(Err(SendTimeoutError::Closed(this.value.take().unwrap())));
+                    }
+
+                    if s.queue.len() + s.reserved < s.capacity {
+                        s.queue.push_back(this.value.take().unwrap());
+                        if let Some(w) = s.rx_waker.take() { w.wake(); }
+                        Poll::Ready(Ok(()))
+                    }
+                    else {
+                        s.tx_waiters.push_back(cx.waker().clone());
+                        Poll::Pending
+                    }
+                }
+            }
+
+            SendTimeout {
+                sender: self,
+                sleep: sleep(duration),
+                value: Some(value),
+            }.await
         }
 
         pub async fn reserve(&self) -> Result<Permit<'_, T>, SendError<()>> {

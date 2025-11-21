@@ -69,6 +69,46 @@ impl Runtime {
             }
         }
     }
+
+    pub fn shutdown_timeout(&mut self, duration: std::time::Duration) {
+        // In simulation mode, we just drop all tasks immediately
+        // The duration parameter is ignored since we have full control over time
+        self.core.borrow_mut().tasks.clear();
+    }
+
+    pub fn shutdown_background(self) {
+        // In simulation mode, dropping the runtime is sufficient
+        // This method consumes self, so the core will be dropped
+        drop(self);
+    }
+
+    pub fn enter(&self) -> EnterGuard<'_> {
+        let handle = Handle {
+            core: Rc::downgrade(&self.core)
+        };
+
+        let prev = CONTEXT.with(|cx| {
+            cx.borrow_mut().replace(handle)
+        });
+
+        EnterGuard {
+            _runtime: self,
+            prev_context: prev,
+        }
+    }
+}
+
+pub struct EnterGuard<'a> {
+    _runtime: &'a Runtime,
+    prev_context: Option<Handle>,
+}
+
+impl Drop for EnterGuard<'_> {
+    fn drop(&mut self) {
+        CONTEXT.with(|cx| {
+            *cx.borrow_mut() = self.prev_context.take();
+        });
+    }
 }
 
 #[derive(Clone)]

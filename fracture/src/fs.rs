@@ -823,6 +823,48 @@ pub async fn create_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct DirBuilder {
+    recursive: bool,
+    #[cfg(unix)]
+    mode: Option<u32>,
+}
+
+impl DirBuilder {
+    pub fn new() -> Self {
+        Self {
+            recursive: false,
+            #[cfg(unix)]
+            mode: None,
+        }
+    }
+
+    pub fn recursive(&mut self, recursive: bool) -> &mut Self {
+        self.recursive = recursive;
+        self
+    }
+
+    #[cfg(unix)]
+    pub fn mode(&mut self, mode: u32) -> &mut Self {
+        self.mode = Some(mode);
+        self
+    }
+
+    pub async fn create<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        if self.recursive {
+            create_dir_all(path).await
+        } else {
+            create_dir(path).await
+        }
+    }
+}
+
+impl Default for DirBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub async fn remove_file<P: AsRef<Path>>(path: P) -> Result<()> {
     if chaos::should_fail(ChaosOperation::FsRemoveFile) {
          return Err(Error::new(ErrorKind::Other, "fracture: RemoveFile failed (chaos)"));
