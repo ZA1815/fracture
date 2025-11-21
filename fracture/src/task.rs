@@ -288,7 +288,7 @@ impl<T> Future for JoinHandle<T> {
                 return Poll::Ready(Err(JoinError::Cancelled));
             }
             JoinHandleChaos::AlwaysPanic => {
-                return Poll::Ready(Err(JoinError::Panic));
+                return Poll::Ready(Err(JoinError::Panic(Box::new("fracture: Chaos-injected panic"))));
             }
             JoinHandleChaos::Timeout => {
                 return Poll::Pending;
@@ -313,10 +313,18 @@ impl<T> Future for JoinHandle<T> {
     }
 }
 
-#[derive(Debug)]
 pub enum JoinError {
     Cancelled,
-    Panic
+    Panic(Box<dyn std::any::Any + Send>)
+}
+
+impl std::fmt::Debug for JoinError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JoinError::Cancelled => write!(f, "Cancelled"),
+            JoinError::Panic(_) => write!(f, "Panic(<payload>)")
+        }
+    }
 }
 
 impl JoinError {
@@ -325,7 +333,14 @@ impl JoinError {
     }
 
     pub fn is_panic(&self) -> bool {
-        matches!(self, JoinError::Panic)
+        matches!(self, JoinError::Panic(_))
+    }
+
+    pub fn try_into_panic(self) -> Result<Box<dyn std::any::Any + Send>, Self> {
+        match self {
+            JoinError::Panic(payload) => Ok(payload),
+            _ => Err(self)
+        }
     }
 }
 
@@ -333,7 +348,7 @@ impl std::fmt::Display for JoinError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             JoinError::Cancelled => write!(f, "fracture: Task was cancelled"),
-            JoinError::Panic => write!(f, "fracture: Task panicked")
+            JoinError::Panic(_) => write!(f, "fracture: Task panicked")
         }
     }
 }
@@ -521,4 +536,60 @@ where F: Future + std::panic::UnwindSafe {
     }
 
     Ok(f.await)
+}
+
+pub struct LocalSet {
+    _private: ()
+}
+
+impl LocalSet {
+    pub fn new() -> Self {
+        LocalSet { _private: () }
+    }
+
+    pub fn spawn_local<F>(&self, future: F) -> JoinHandle<F::Output>
+    where F: Future + 'static, F::Output: 'static {
+        unsafe {
+            let boxed: Pin<Box<dyn Future<Output = F::Output>>> = Box::pin(future);
+            let future_send: Pin<Box<dyn Future<Output = F::Output> + Send>> =
+                std::mem::transmute(boxed);
+
+            let future_all_send: Pin<Box<dyn Future<Output = Box<u8>> + Send>> =
+                std::mem::transmute(future_send);
+
+            let handle_send = spawn(future_all_send);
+            std::mem::transmute(handle_send)
+        }
+    }
+
+    pub async fn run_until<F>(&self, future: F) -> F::Output
+    where F: Future {
+        future.await
+    }
+
+    pub fn block_on<F>(&self, rt: &crate::runtime::Runtime, future: F) -> F::Output
+    where F: Future + 'static, F::Output: 'static {
+        rt.block_on(future)
+    }
+
+    pub fn enter(&self) -> LocalEnterGuard {
+        LocalEnterGuard { _local_set: self }
+    }
+}
+
+impl Default for LocalSet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub struct LocalEnterGuard<'a> {
+    _local_set: &'a LocalSet
+}
+
+impl<'a> LocalEnterGuard<'a> {
+    pub fn block_on<F>(&mut self, rt: &crate::runtime::Runtime, future: F) -> F::Output
+    where F: Future + 'static, F::Output: 'static {
+        rt.block_on(future)
+    }
 }

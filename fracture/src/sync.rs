@@ -66,12 +66,16 @@ unsafe impl<T: Send + ?Sized> Sync for Mutex<T> {}
 impl<T> Mutex<T> {
     pub fn new(data: T) -> Self {
         Self {
-            state: StdMutex::new(MutexState { 
-                locked: false, 
-                waiters: WaitList::new() 
+            state: StdMutex::new(MutexState {
+                locked: false,
+                waiters: WaitList::new()
             }),
             data: UnsafeCell::new(data),
         }
+    }
+
+    pub fn into_inner(self) -> T {
+        self.data.into_inner()
     }
 }
 
@@ -278,6 +282,34 @@ impl<T: ?Sized> RwLock<T> {
         WriteFuture { lock: self }.await;
         RwLockWriteGuard { lock: self }
     }
+
+    pub fn try_read(&self) -> Result<RwLockReadGuard<'_, T>, ()> {
+        if chaos::should_fail(ChaosOperation::RwLockRead) {
+            return Err(());
+        }
+
+        let mut state = self.state.lock().unwrap();
+        if !state.writer {
+            state.readers += 1;
+            Ok(RwLockReadGuard { lock: self })
+        } else {
+            Err(())
+        }
+    }
+
+    pub fn try_write(&self) -> Result<RwLockWriteGuard<'_, T>, ()> {
+        if chaos::should_fail(ChaosOperation::RwLockWrite) {
+            return Err(());
+        }
+
+        let mut state = self.state.lock().unwrap();
+        if !state.writer && state.readers == 0 {
+            state.writer = true;
+            Ok(RwLockWriteGuard { lock: self })
+        } else {
+            Err(())
+        }
+    }
 }
 
 pub struct RwLockReadGuard<'a, T: ?Sized> { lock: &'a RwLock<T> }
@@ -318,6 +350,23 @@ impl<T: ?Sized> std::ops::Deref for RwLockWriteGuard<'_, T> {
 }
 impl<T: ?Sized> std::ops::DerefMut for RwLockWriteGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target { unsafe { &mut *self.lock.data.get() } }
+}
+
+impl<'a, T: ?Sized> RwLockWriteGuard<'a, T> {
+    pub fn downgrade(self) -> RwLockReadGuard<'a, T> {
+        let mut state = self.lock.state.lock().unwrap();
+        state.writer = false;
+        state.readers = 1;
+
+        while let Some(waker) = state.reader_waiters.pop_front() {
+            waker.wake();
+        }
+
+        let lock = self.lock;
+        std::mem::forget(self);
+
+        RwLockReadGuard { lock }
+    }
 }
 
 pub struct Notify {
@@ -649,6 +698,23 @@ pub mod mpsc {
 
     impl<T: std::fmt::Debug> std::error::Error for TrySendError<T> {}
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum TryRecvError {
+        Empty,
+        Disconnected,
+    }
+
+    impl std::fmt::Display for TryRecvError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                TryRecvError::Empty => write!(f, "channel empty"),
+                TryRecvError::Disconnected => write!(f, "channel closed"),
+            }
+        }
+    }
+
+    impl std::error::Error for TryRecvError {}
+
     pub fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
         let shared = Arc::new(StdMutex::new(UnboundedState {
             queue: VecDeque::new(),
@@ -710,6 +776,20 @@ pub mod mpsc {
             s.queue.pop_front().or_else(|| {
                 if s.closed { None } else { s.queue.pop_front() }
             })
+        }
+
+        pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
+            if chaos::should_fail(ChaosOperation::MpscRecv) {
+                return Err(TryRecvError::Disconnected);
+            }
+            let mut s = self.shared.lock().unwrap();
+            if let Some(v) = s.queue.pop_front() {
+                Ok(v)
+            } else if s.closed {
+                Err(TryRecvError::Disconnected)
+            } else {
+                Err(TryRecvError::Empty)
+            }
         }
 
         pub fn close(&mut self) {
@@ -947,6 +1027,21 @@ pub mod mpsc {
                 std::thread::yield_now();
             }
         }
+
+        pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
+            if chaos::should_fail(ChaosOperation::MpscRecv) {
+                return Err(TryRecvError::Disconnected);
+            }
+            let mut s = self.state.lock().unwrap();
+            if let Some(v) = s.queue.pop_front() {
+                if let Some(w) = s.tx_waiters.pop_front() { w.wake(); }
+                Ok(v)
+            } else if s.closed && s.sender_count == 0 {
+                Err(TryRecvError::Disconnected)
+            } else {
+                Err(TryRecvError::Empty)
+            }
+        }
     }
 
     pub struct Permit<'a, T> { sender: &'a Sender<T> }
@@ -1018,6 +1113,23 @@ pub mod oneshot {
 
     impl std::error::Error for RecvError {}
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum TryRecvError {
+        Empty,
+        Closed,
+    }
+
+    impl std::fmt::Display for TryRecvError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                TryRecvError::Empty => write!(f, "channel empty"),
+                TryRecvError::Closed => write!(f, "channel closed"),
+            }
+        }
+    }
+
+    impl std::error::Error for TryRecvError {}
+
     pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
         let shared = Arc::new(StdMutex::new(State { value: None, waker: None, closed: false }));
         (Sender { shared: shared.clone() }, Receiver { shared })
@@ -1054,6 +1166,23 @@ pub mod oneshot {
     }
 
     pub struct Receiver<T> { shared: Arc<StdMutex<State<T>>> }
+
+    impl<T> Receiver<T> {
+        pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
+            if chaos::should_fail(ChaosOperation::OneshotRecv) {
+                return Err(TryRecvError::Closed);
+            }
+            let mut s = self.shared.lock().unwrap();
+            if let Some(v) = s.value.take() {
+                Ok(v)
+            } else if s.closed {
+                Err(TryRecvError::Closed)
+            } else {
+                Err(TryRecvError::Empty)
+            }
+        }
+    }
+
     impl<T> Future for Receiver<T> {
         type Output = Result<T, RecvError>;
         fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -1213,6 +1342,14 @@ pub mod watch {
             }
             ChangedFuture { rx: self }.await
         }
+
+        pub fn has_changed(&self) -> Result<bool, RecvError> {
+            let s = self.state.lock().unwrap();
+            if s.closed {
+                return Err(RecvError);
+            }
+            Ok(s.version > self.version)
+        }
     }
 }
 
@@ -1314,6 +1451,25 @@ pub mod broadcast {
     }
 
     impl std::error::Error for RecvError {}
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum TryRecvError {
+        Empty,
+        Closed,
+        Lagged(u64),
+    }
+
+    impl std::fmt::Display for TryRecvError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                TryRecvError::Empty => write!(f, "channel empty"),
+                TryRecvError::Closed => write!(f, "channel closed"),
+                TryRecvError::Lagged(n) => write!(f, "channel lagged by {} messages", n),
+            }
+        }
+    }
+
+    impl std::error::Error for TryRecvError {}
 
     #[derive(Clone)]
     struct Message<T> {
@@ -1431,6 +1587,37 @@ pub mod broadcast {
                 }
             }
             RecvFuture { rx: self }.await
+        }
+
+        pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
+            if chaos::should_fail(ChaosOperation::BroadcastRecv) {
+                return Err(TryRecvError::Closed);
+            }
+
+            let mut s = self.state.lock().unwrap();
+
+            if !s.buffer.is_empty() {
+                let head_seq = s.buffer.front().unwrap().seq;
+                if self.next_seq < head_seq {
+                    let missed = head_seq - self.next_seq;
+                    self.next_seq = s.tail_seq;
+                    return Err(TryRecvError::Lagged(missed));
+                }
+            }
+
+            for msg in &s.buffer {
+                if msg.seq == self.next_seq {
+                    let val = msg.val.clone();
+                    self.next_seq += 1;
+                    return Ok(val);
+                }
+            }
+
+            if s.closed && s.senders == 0 {
+                Err(TryRecvError::Closed)
+            } else {
+                Err(TryRecvError::Empty)
+            }
         }
 
         pub fn resubscribe(&self) -> Self {

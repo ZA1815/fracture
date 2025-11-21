@@ -265,3 +265,11 @@ pub mod error {
 
     impl std::error::Error for Elapsed {}
 }
+
+pub fn pause() {
+    // No-op in simulation mode - time is always manually controlled
+}
+
+pub fn resume() {
+    // No-op in simulation mode - time is always manually controlled
+}
