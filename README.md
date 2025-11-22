@@ -205,7 +205,7 @@ In your Cargo.toml, add a patch directive to redirect tokio to the shim included
 [patch.crates-io]
 
 ⚠️ This forces every library in your tree to use Fracture as its runtime
-tokio = { git = "https://github.com/ZA1815/fracture", path = "shims/tokio" }
+tokio = { git = "https://github.com/ZA1815/fracture", path = "tokio-shim" }
 ```
 
 2. The Rules
