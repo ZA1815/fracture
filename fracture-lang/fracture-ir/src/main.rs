@@ -1,37 +1,81 @@
-use fracture_ir::{Program, Function, Compiler, hsir::*};
-use std::collections::HashMap;
+use fracture_ir::{SyntaxConfig, SyntaxProjector, Compiler, printer};
 
 fn main() {
-    let mut program = Program {
-        functions: HashMap::new(),
-        entry: "main".to_string()
-    };
+    let python_code = r#"
+def add(x, y):
+    result = x + y
+    return result
 
-    let main_func = Function {
-        name: "main".to_string(),
-        params: vec![],
-        return_type: Type::I32,
-        body: vec![
-            Inst::Move { dst: Reg(0), src: Value::Const(Const::I32(35)), ty: Type::I32 },
+def main():
+    a = 10
+    b = 32  
+    c = add(a, b)
+    return c
+"#;
 
-            Inst::Move { dst: Reg(1), src: Value::Const(Const::I32(7)), ty: Type::I32 },
-
-            Inst::Add { dst: Reg(2), lhs: Value::Reg(Reg(0)), rhs: Value::Reg(Reg(1)), ty: Type::I32 },
-
-            Inst::Return { val: Some(Value::Reg(Reg(2))) }
-        ],
-        locals: HashMap::new()
-    };
-
-    program.functions.insert("main".to_string(), main_func);
-
-    let compiler = Compiler::new(program);
-    match compiler.compile_to_file("test_program") {
-        Ok(_) => {
-            println!("\nSuccess. Run with:");
-            println!("  ./test_program");
-            println!("  echo $?");
+    println!("Python-like code:");
+    println!("{}", python_code);
+    
+    let config = SyntaxConfig::python();
+    let mut projector = SyntaxProjector::new(python_code, config);
+    
+    match projector.project_to_hsir() {
+        Ok(program) => {
+            println!("\nGenerated HSIR:");
+            for (name, func) in &program.functions {
+                println!("Function {}:", name);
+                for inst in &func.body {
+                    println!("  {}", printer::print_inst(inst));
+                }
+            }
+            
+            let compiler = Compiler::new(program);
+            match compiler.compile_to_file("rust_style_program") {
+                Ok(_) => {
+                    println!("\nCompiled! Run with:");
+                    println!("  ./rust_style_program");
+                    println!("  echo $?");
+                }
+                Err(e) => println!("Compilation error: {}", e),
+            }
         }
-        Err(e) => println!("Compilation failed: {}", e)
+        Err(e) => println!("Projection error: {}", e),
+    }
+    
+    let rust_code = r#"
+fn main() -> i32 {
+    let x = 25;
+    let y = 17;
+    return x + y;
+}
+"#;
+
+    println!("\n\nRust-like code:");
+    println!("{}", rust_code);
+    
+    let config = SyntaxConfig::rust();
+    let mut projector = SyntaxProjector::new(rust_code, config);
+    
+    match projector.project_to_hsir() {
+        Ok(program) => {
+            println!("\nGenerated HSIR:");
+            for (name, func) in &program.functions {
+                println!("Function {}:", name);
+                for inst in &func.body {
+                    println!("  {}", printer::print_inst(inst));
+                }
+            }
+
+            let compiler = Compiler::new(program);
+            match compiler.compile_to_file("python_style_program") {
+                Ok(_) => {
+                    println!("\nCompiled! Run with:");
+                    println!("  ./python_style_program");
+                    println!("  echo $?");
+                }
+                Err(e) => println!("Compilation error: {}", e),
+            }
+        }
+        Err(e) => println!("Projection error: {}", e),
     }
 }
