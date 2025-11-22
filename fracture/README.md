@@ -437,7 +437,7 @@ Because we intentionally **break** your code to make it stronger. Chaos testing 
 
 ## License
 
-[Add your license here]
+MIT License. See [LICENSE](../LICENSE) for details.
 
 ## Acknowledgments
 
