@@ -1,2 +1,3 @@
 [workspace]
-members = ["fracture", "fracture-macros"]
+default-members = ["fracture", "fracture-macros"]
+members = ["fracture", "fracture-macros", "fracture-lang/fracture-ir"]
