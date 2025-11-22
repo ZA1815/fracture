@@ -1,6 +1,9 @@
 pub mod hsir;
 pub mod parser;
 pub mod printer;
+pub mod codegen_x86;
+pub mod compiler;
 
-pub use hsir::{Inst, Type, Value, Reg, Program};
+pub use hsir::{Inst, Type, Value, Reg, Program, Function, Const};
 pub use parser::Parser;
+pub use compiler::Compiler;
