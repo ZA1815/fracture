@@ -1,6 +1,6 @@
 # Fracture
 
-> ⚠️ **PROJECT IS IN ALPHA** - Fracture is in early development (v0.1.0). The core concepts work, but there are likely edge cases and bugs we haven't found yet. **Please report any issues you encounter!** The irony is not lost on us that a chaos testing tool needs help finding its own bugs. 🙃
+> ⚠️ **PROJECT IS IN ALPHA** - Fracture is in early development (v0.1.1). The core concepts work, but there are likely edge cases and bugs we haven't found yet. **Please report any issues you encounter!** The irony is not lost on us that a chaos testing tool needs help finding its own bugs. 🙃
 
 **Deterministic chaos testing for async Rust. Drop-in for Tokio.**
 

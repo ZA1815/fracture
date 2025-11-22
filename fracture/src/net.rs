@@ -1265,6 +1265,12 @@ impl ChannelItemSize for (Bytes, SocketAddr) {
     }
 }
 
+impl ChannelItemSize for (Bytes, std::path::PathBuf) {
+    fn channel_size(&self) -> usize {
+        self.0.len()
+    }
+}
+
 pub fn channel<T>(capacity: usize) -> (Sender<T>, AsyncReceiver<T>) {
     let state = Arc::new(Mutex::new(ChannelState {
         queue: VecDeque::new(),
@@ -1566,7 +1572,7 @@ pub mod unix {
             Self { tx, rx, read_buffer: BytesMut::new(), local_path: local, peer_path: peer }
         }
 
-        pub fn from_std(stream: std::os::unix::net::UnixStream) -> Result<UnixStream> {
+        pub fn from_std(_stream: std::os::unix::net::UnixStream) -> Result<UnixStream> {
             let handle = Handle::current();
             let core_rc = handle.core.upgrade().unwrap();
             let mut core = core_rc.borrow_mut();
@@ -1654,7 +1660,7 @@ pub mod unix {
 
     impl AsyncRead for OwnedUnixReadHalf {
         fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<Result<()>> {
-            let mut rx = self.rx.lock().unwrap();
+            let rx = self.rx.lock().unwrap();
             let mut read_buffer = self.read_buffer.lock().unwrap();
 
             if !read_buffer.is_empty() {

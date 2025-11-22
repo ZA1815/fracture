@@ -1,6 +1,6 @@
 [package]
 name = "fracture"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["Zaid Ahmed <zaahme18@gmail.com>"]
 description = "Zero-config chaos testing, drop-in replacement for Tokio"
@@ -35,9 +35,6 @@ arc-swap = "1.6"
 parking_lot = "0.12"
 num_cpus = "1.17.0"
 slab = "0.4.11"
-
-[target.'cfg(unix)'.dependencies]
-unix = "0.6.12"
 
 [dependencies.tokio]
 version = "1.41"
