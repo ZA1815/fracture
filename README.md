@@ -70,14 +70,56 @@ use fracture::prelude::*;
 #[fracture::test]
 async fn my_async_test() {
     let (tx, mut rx) = mpsc::unbounded();
-    
+
     spawn(async move {
         tx.send("hello").unwrap();
     });
-    
+
     assert_eq!(rx.recv().await, Some("hello"));
 }
 ```
+
+### Running Applications with `#[fracture::main]`
+
+Use `#[fracture::main]` as a drop-in replacement for `#[tokio::main]`:
+
+```rust
+use fracture::prelude::*;
+
+#[fracture::main]
+async fn main() {
+    println!("Starting server...");
+
+    let listener = TcpListener::bind("127.0.0.1:8080").await.unwrap();
+
+    loop {
+        let (socket, _) = listener.accept().await.unwrap();
+        spawn(async move {
+            handle_connection(socket).await;
+        });
+    }
+}
+```
+
+**How it works:**
+- **With `simulation` feature enabled**: Runs using Fracture's deterministic runtime (for development/testing with chaos injection)
+- **Without `simulation` feature**: Falls back to the real Tokio runtime (for production)
+
+This lets you develop and test with Fracture's chaos testing capabilities, then deploy to production with zero code changes by simply disabling the `simulation` feature.
+
+**Example Cargo.toml setup:**
+
+```toml
+[dependencies]
+# Production: Uses real Tokio runtime
+fracture = "0.1"
+
+[dev-dependencies]
+# Testing: Uses simulation runtime with chaos
+fracture = { version = "0.1", features = ["simulation"] }
+```
+
+With this setup, `cargo run` uses the real Tokio runtime, while `cargo test` uses Fracture's simulation.
 
 ### With Chaos Injection
 
@@ -308,6 +350,14 @@ async fn test_with_real_conditions() {
 **Fracture forces you to write resilient code from the start.**
 
 ## API Overview
+
+### Main Entry Point
+
+```rust
+#[fracture::main]                    // Basic async main (switches between Fracture/Tokio)
+#[fracture::main(duration = "10s")]  // Optional duration parameter (when using simulation)
+async fn main() { }
+```
 
 ### Testing
 
