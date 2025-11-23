@@ -1,5 +1,7 @@
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{Read, Write};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Type {
@@ -89,4 +91,84 @@ pub struct Function {
 pub struct Program {
     pub functions: HashMap<String, Function>,
     pub entry: String
+}
+
+impl Program {
+    pub fn to_file(&self, path: &str) -> Result<(), String> {
+        let encoded = bincode::serialize(self)
+            .map_err(|e| format!("Serialization failed: {}", e))?;
+
+        let mut file = File::create(path)
+            .map_err(|e| format!("Failed to create file: {}", e))?;
+
+        file.write_all(&encoded)
+            .map_err(|e| format!("Failed to write file: {}", e))?;
+
+        Ok(())
+    }
+
+    pub fn from_file(path: &str) -> Result<Self, String> {
+        let mut file = File::open(path)
+            .map_err(|e| format!("Failed to open file: {}", e))?;
+
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)
+            .map_err(|e| format!("Failed to read file: {}", e))?;
+
+        let program: Program = bincode::deserialize(&buffer)
+            .map_err(|e| format!("Deserialization failed: {}", e));
+
+        Ok(program)
+    }
+
+    pub fn to_text(&self) -> String {
+        use crate::printer;
+
+        let mut output = String::new();
+        output.push_str(&format!("; Program entry: {}\n\n", self.entry));
+
+        for (name, func) in &self.functions {
+            output.push_str(&format!("; Function: {}\n", name));
+            output.push_str(&format!(";   params: {:?}\n", func.params));
+            output.push_str(&format!(";   return: {:?}\n", func.return_type));
+            output.push_str(&format!("    locals: {:?}\n\n", func.locals));
+
+            for inst in &func.body {
+                output.push_str(&format!("  {}\n", printer::print_inst(inst)));
+            }
+
+            output.push_str("\n");
+        }
+
+        output
+    }
+
+    pub fn stats(&self) -> ProgramStats {
+        let mut total_insts = 0;
+        let mut total_regs = 0;
+
+        for func in self.functions.values() {
+            total_insts += func.body.len();
+            total_regs += func.locals.len();
+        }
+
+        ProgramStats {
+            num_functions: self.functions.len(),
+            total_instructions: total_insts,
+            total_registers: total_regs
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ProgramStats {
+    pub num_functions: usize,
+    pub total_instructions: usize,
+    pub total_registers: usize
+}
+
+impl std::fmt::Display for ProgramStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Functions: {}, Instructions: {}, Registers: {}", self.num_functions, self.total_instructions, self.total_instructions)
+    }
 }

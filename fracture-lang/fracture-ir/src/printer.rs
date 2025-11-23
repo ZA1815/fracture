@@ -25,6 +25,10 @@ pub fn print_inst(inst: &Inst) -> String {
     }
 }
 
+pub fn print_program(program: &crate::hsir::Program) -> String {
+    program.to_text()
+}
+
 fn print_value(val: &Value) -> String {
     match val {
         Value::Reg(r) => format!("r{}", r.0),
