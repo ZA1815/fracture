@@ -7,10 +7,12 @@ pub struct SyntaxProjector {
     config: SyntaxConfig,
     lexer: Lexer,
     current: Token,
+    peek_buffer: Option<Token>,
 
     var_types: HashMap<String, Type>,
     next_reg: u32,
-    var_regs: HashMap<String, Reg>
+    var_regs: HashMap<String, Reg>,
+    next_label: u32
 }
 
 impl SyntaxProjector {
@@ -22,10 +24,23 @@ impl SyntaxProjector {
             config,
             lexer,
             current,
+            peek_buffer: None,
             var_types: HashMap::new(),
             next_reg: 0,
-            var_regs: HashMap::new()
+            var_regs: HashMap::new(),
+            next_label: 0
         }
+    }
+
+    pub fn peek(&mut self) -> Token {
+        if let Some(token) = &self.peek_buffer {
+            return token.clone();
+        }
+
+        let next = self.lexer.next_token();
+        self.peek_buffer = Some(next.clone());
+
+        next
     }
 
     pub fn project_to_hsir(&mut self) -> Result<Program, String> {
@@ -45,7 +60,7 @@ impl SyntaxProjector {
         }
 
         if !program.functions.contains_key("main") {
-            // Wrap all top-level statements into main automatically
+            return Err("Program must have a main function".to_string());
         }
 
         Ok(program)
@@ -54,6 +69,7 @@ impl SyntaxProjector {
     fn parse_function(&mut self) -> Result<Function, String> {
         self.var_regs.clear();
         self.var_types.clear();
+        self.next_reg = 0;
 
         self.expect(Token::Function)?;
 
@@ -61,7 +77,27 @@ impl SyntaxProjector {
 
         self.expect(Token::LeftParentheses)?;
 
-        // Parse params later
+        let mut params = Vec::new();
+        while self.current != Token::RightParentheses {
+            let param_name = self.expect_ident()?;
+
+            let param_type = if self.current == Token::Colon {
+                self.advance();
+                self.parse_type()?
+            }
+            else {
+                Type::Unknown // Infer the type later
+            };
+
+            let param_reg = self.alloc_reg();
+            self.var_regs.insert(param_name.clone(), param_reg.clone());
+            self.var_types.insert(param_name, param_type.clone());
+            params.push((param_reg, param_type));
+
+            if self.current == Token::Comma {
+                self.advance();
+            }
+        }
 
         self.expect(Token::RightParentheses)?;
 
@@ -128,18 +164,17 @@ impl SyntaxProjector {
     fn parse_statement(&mut self) -> Result<Vec<Inst>, String> {
         let mut instructions = Vec::new();
 
-        match &self.current {
-            Token::Let | Token::Ident(_) => {
-                let is_declaration = self.current == Token::Let;
-                if is_declaration {
+        let token = self.current.clone();
+        let mut requires_semicolon = true;
+
+        match token {
+            Token::Let => {
+                self.advance();
+                if self.current == Token::Mut {
                     self.advance();
-                    if self.current == Token::Mut {
-                        self.advance();
-                    }
                 }
 
                 let var_name = self.expect_ident()?;
-
                 let var_type = if self.current == Token::Colon {
                     self.advance();
                     self.parse_type()?
@@ -148,17 +183,22 @@ impl SyntaxProjector {
                     Type::Unknown
                 };
 
-                self.expect(Token::Equals)?;
+                if self.current == Token::Equals {
+                    self.advance();
 
-                let (expr_insts, result_reg) = self.parse_expression()?;
-                instructions.extend(expr_insts);
+                    let (expr_insts, result_reg) = self.parse_expression()?;
+                    instructions.extend(expr_insts);
 
-                let var_reg = self.get_or_create_var(&var_name, &var_type);
-                instructions.push(Inst::Move {
-                    dst: var_reg,
-                    src: Value::Reg(result_reg),
-                    ty: var_type
-                });
+                    let var_reg = self.get_or_create_var(&var_name, &var_type);
+                    instructions.push(Inst::Move {
+                        dst: var_reg,
+                        src: Value::Reg(result_reg),
+                        ty: var_type
+                    });
+                }
+                else {
+                    // Placeholder for declaring a var with no value
+                }
             }
             Token::Return => {
                 self.advance();
@@ -172,7 +212,43 @@ impl SyntaxProjector {
                 }
             }
             Token::If => {
-                // Placeholder
+                self.advance();
+                instructions.extend(self.parse_if_statement()?);
+                requires_semicolon = false;
+            }
+            Token::While => {
+                self.advance();
+                instructions.extend(self.parse_while_statement()?);
+                requires_semicolon = false;
+            }
+            Token::Ident(name) => {
+                let peek_token = self.peek();
+                if peek_token == Token::Equals || peek_token == Token::Colon {
+                    let var_name = name.clone();
+                    self.advance();
+                    let mut var_type = Type::Unknown;
+                    if peek_token == Token::Colon {
+                        self.advance();
+                        var_type = self.parse_type()?;
+                    }
+                    
+                    self.expect(Token::Equals)?;
+
+                    let (expr_insts, result_reg) = self.parse_expression()?;
+                    instructions.extend(expr_insts);
+
+                    let var_reg = self.get_or_create_var(&var_name, &var_type);
+
+                    instructions.push(Inst::Move {
+                        dst: var_reg,
+                        src: Value::Reg(result_reg),
+                        ty: var_type
+                    });
+                }
+                else {
+                    let (expr_insts, _) = self.parse_expression()?;
+                    instructions.extend(expr_insts);
+                }
             }
             _ => {
                 let (expr_insts, _) = self.parse_expression()?;
@@ -180,21 +256,125 @@ impl SyntaxProjector {
             }
         }
 
-        if self.config.style.needs_semicolon {
+        if self.config.style.needs_semicolon && requires_semicolon {
             self.expect(Token::Semicolon)?;
         }
 
         Ok(instructions)
     }
 
+    fn parse_if_statement(&mut self) -> Result<Vec<Inst>, String> {
+        let mut instructions = Vec::new();
+
+        let (cond_insts, cond_reg) = self.parse_expression()?;
+        instructions.extend(cond_insts);
+
+        let else_label = self.alloc_label();
+        let end_label = self.alloc_label();
+
+        // Need to add comparison ops
+        instructions.push(Inst::JumpIfFalse { cond: Value::Reg(cond_reg), target: else_label.clone() });
+
+        let if_body = self.parse_block()?;
+        instructions.extend(if_body);
+
+        instructions.push(Inst::Jump { target: end_label.clone() });
+
+        instructions.push(Inst::Label { target: else_label });
+
+        if self.current == Token::ElseIf {
+            self.advance();
+            instructions.extend(self.parse_if_statement()?);
+        }
+
+        if self.current == Token::Else {
+            self.advance();
+            let else_body = self.parse_block()?;
+            instructions.extend(else_body);
+        }
+
+        instructions.push(Inst::Label { target: end_label });
+
+        Ok(instructions)
+    }
+
+    // This is missing critical logic to actually exit the loop
+    fn parse_while_statement(&mut self) -> Result<Vec<Inst>, String> {
+        let mut instructions = Vec::new();
+
+        let loop_start = self.alloc_label();
+        let loop_end = self.alloc_label();
+
+        instructions.push(Inst::Label { target: loop_start.clone() });
+
+        let (cond_insts, cond_reg) = self.parse_expression()?;
+        instructions.extend(cond_insts);
+
+        instructions.push(Inst::JumpIfFalse { cond: Value::Reg(cond_reg), target: loop_end.clone() });
+
+        let body = self.parse_block()?;
+        instructions.extend(body);
+
+        instructions.push(Inst::Jump { target: loop_start });
+
+        instructions.push(Inst::Label { target: loop_end });
+
+        Ok(instructions)
+    }
+
     fn parse_expression(&mut self) -> Result<(Vec<Inst>, Reg), String> {
-        let (mut instructions, mut left_reg) = self.parse_term()?;
+        self.parse_comparison()
+    }
+
+    fn parse_comparison(&mut self) -> Result<(Vec<Inst>, Reg), String> {
+        let (mut instructions, mut left_reg) = self.parse_additive()?;
+
+        while self.current == Token::DoubleEquals || self.current == Token::Less || self.current == Token::Greater {
+            let op = self.current.clone();
+            self.advance();
+
+            let (right_insts, right_reg) = self.parse_additive()?;
+            instructions.extend(right_insts);
+
+            let result_reg = self.alloc_reg();
+
+            let inst = match op {
+                Token::DoubleEquals => Inst::Eq {
+                    dst: result_reg.clone(),
+                    lhs: Value::Reg(left_reg),
+                    rhs: Value::Reg(right_reg),
+                    ty: Type::I32 // Add type inference later
+                },
+                Token::Less => Inst::Lt {
+                    dst: result_reg.clone(),
+                    lhs: Value::Reg(left_reg),
+                    rhs: Value::Reg(right_reg),
+                    ty: Type::I32 // Add type inference later
+                },
+                Token::Greater => Inst::Gt {
+                    dst: result_reg.clone(),
+                    lhs: Value::Reg(left_reg),
+                    rhs: Value::Reg(right_reg),
+                    ty: Type::I32 // Add type inference later
+                },
+                _ => return Err(format!("Comparison operator {:?} not yet implemented", op))
+            };
+
+            instructions.push(inst);
+            left_reg = result_reg;
+        }
+
+        Ok((instructions, left_reg))
+    }
+
+    fn parse_additive(&mut self) -> Result<(Vec<Inst>, Reg), String> {
+        let (mut instructions, mut left_reg) = self.parse_multiplicative()?;
 
         while self.current == Token::Plus || self.current == Token::Minus {
             let op = self.current.clone();
             self.advance();
 
-            let (right_insts, right_reg) = self.parse_term()?;
+            let (right_insts, right_reg) = self.parse_multiplicative()?;
             instructions.extend(right_insts);
 
             let result_reg = self.alloc_reg();
@@ -204,13 +384,48 @@ impl SyntaxProjector {
                     dst: result_reg.clone(),
                     lhs: Value::Reg(left_reg),
                     rhs: Value::Reg(right_reg),
-                    ty: Type::I32 // Need proper type inference
+                    ty: Type::I32 // Add type inference later
                 },
                 Token::Minus => Inst::Sub {
                     dst: result_reg.clone(),
                     lhs: Value::Reg(left_reg),
                     rhs: Value::Reg(right_reg),
-                    ty: Type::I32 // Need proper type inference
+                    ty: Type::I32 // Add type inference later
+                },
+                _ => unreachable!()
+            };
+
+            instructions.push(inst);
+            left_reg = result_reg
+        }
+
+        Ok((instructions, left_reg))
+    }
+
+    fn parse_multiplicative(&mut self) -> Result<(Vec<Inst>, Reg), String> {
+        let (mut instructions, mut left_reg) = self.parse_term()?;
+
+        while self.current == Token::Star || self.current == Token::Slash {
+            let op = self.current.clone();
+            self.advance();
+
+            let (right_insts, right_reg) = self.parse_term()?;
+            instructions.extend(right_insts);
+
+            let result_reg = self.alloc_reg();
+
+            let inst = match op {
+                Token::Star => Inst::Mul {
+                    dst: result_reg.clone(),
+                    lhs: Value::Reg(left_reg),
+                    rhs: Value::Reg(right_reg),
+                    ty: Type::I32 // Add type inference later
+                },
+                Token::Slash => Inst::Div {
+                    dst: result_reg.clone(),
+                    lhs: Value::Reg(left_reg),
+                    rhs: Value::Reg(right_reg),
+                    ty: Type::I32 // Add type inference later
                 },
                 _ => unreachable!()
             };
@@ -236,17 +451,43 @@ impl SyntaxProjector {
                 self.advance();
             }
             Token::Ident(name) => {
-                if let Some(var_reg) = self.var_regs.get(name) {
-                    instructions.push(Inst::Move {
-                        dst: result_reg.clone(),
-                        src: Value::Reg(var_reg.clone()),
-                        ty: self.var_types.get(name).cloned().unwrap_or(Type::Unknown)
+                self.advance();
+
+                if self.current == Token::LeftParentheses {
+                    self.advance();
+
+                    let mut args = Vec::new();
+                    while self.current != Token::RightParentheses {
+                        let (arg_insts, arg_reg) = self.parse_expression()?;
+                        instructions.extend(arg_insts);
+                        args.push(Value::Reg(arg_reg));
+
+                        if self.current == Token::Comma {
+                            self.advance();
+                        }
+                    }
+
+                    self.expect(Token::RightParentheses)?;
+
+                    instructions.push(Inst::Call {
+                        dst: Some(result_reg.clone()),
+                        func: Value::Label(Label(name.to_string())),
+                        args,
+                        ty: Type::Unknown // Need type inference
                     });
                 }
                 else {
-                    return Err(format!("Unknown variable: {}", name));
+                    if let Some(var_reg) = self.var_regs.get(name) {
+                        instructions.push(Inst::Move {
+                            dst: result_reg.clone(),
+                            src: Value::Reg(var_reg.clone()),
+                            ty: self.var_types.get(name).cloned().unwrap_or(Type::Unknown)
+                        });
+                    }
+                    else {
+                        return Err(format!("Unknown variable: {}", name));
+                    }
                 }
-                self.advance();
             }
             Token::LeftParentheses => {
                 self.advance();
@@ -302,12 +543,29 @@ impl SyntaxProjector {
         reg
     }
 
+    fn alloc_label(&mut self) -> Label {
+        let label = Label(format!("l{}", self.next_label));
+        self.next_label += 1;
+
+        label
+    }
+
     fn advance(&mut self) {
-        self.current = self.lexer.next_token();
+        if let Some(token) = self.peek_buffer.take() {
+            self.current = token;
+        }
+        else {
+            self.current = self.lexer.next_token();
+        }
 
         if !matches!(self.config.style.block_style, BlockStyle::Indentation) {
             while self.current == Token::Newline {
-                self.current = self.lexer.next_token();
+                if let Some(token) = self.peek_buffer.take() {
+                    self.current = token;
+                }
+                else {
+                    self.current = self.lexer.next_token();
+                }
             }
         }
     }

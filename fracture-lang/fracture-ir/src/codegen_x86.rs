@@ -5,7 +5,6 @@ pub struct X86CodeGen {
     output: Vec<String>,
     reg_offsets: HashMap<Reg, i32>,
     next_stack_offset: i32,
-    label_counter: usize,
     current_function_stack_size: i32
 }
 
@@ -15,7 +14,6 @@ impl X86CodeGen {
             output: Vec::new(),
             reg_offsets: HashMap::new(),
             next_stack_offset: 8,
-            label_counter: 0,
             current_function_stack_size: 0
         }
     }
@@ -131,13 +129,20 @@ impl X86CodeGen {
                 self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", offset));
             }
             Inst::Jump { target } => {
-                self.emit(&format!("    jmp label_{}", target.0));
+                self.emit(&format!("    jmp {}", target.0));
             }
             Inst::JumpIf { cond, target } => {
-                // Placeholder
+                self.load_value_to_rax(cond, &Type::Bool);
+                self.emit("    cmp rax, 0");
+                self.emit(&format!("jne {}", target.0));
             }
             Inst::JumpIfFalse { cond, target } => {
-                // Placeholder
+                self.load_value_to_rax(cond, &Type::Bool);
+                self.emit("    cmp rax, 0");
+                self.emit(&format!("je {}", target.0));
+            }
+            Inst::Label { target } => {
+                self.emit(&format!("{}:", target.0));
             }
             Inst::Call { dst, func, args, ty } => {
                 let param_regs = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
