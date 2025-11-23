@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use fracture_ir::SyntaxConfig;
+
 use crate::syntax_config::*;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -22,10 +25,18 @@ pub enum Token {
     Minus,
     Star,
     Slash,
-    Equals,
+
+    Assignment,
     DoubleEquals,
+    NotEquals,
+    
     Less,
     Greater,
+    LessEquals,
+    GreaterEquals,
+
+    ImmutableRef,
+    MutableRef,
 
     LeftParentheses,
     RightParentheses,
@@ -47,18 +58,93 @@ pub struct Lexer {
     pos: usize,
     config: SyntaxConfig,
     indent_stack: Vec<usize>,
-    at_line_start: bool
+    at_line_start: bool,
+    token_map: HashMap<String, Token>
 }
 
 impl Lexer {
     pub fn new(input: &str, config: SyntaxConfig) -> Self {
+        let token_map = Self::build_token_map(&config);
+
         Self {
             input: input.chars().collect(),
             pos: 0,
             config,
             indent_stack: vec![0],
-            at_line_start: true
+            at_line_start: true,
+            token_map
         }
+    }
+
+    fn build_token_map(config: &SyntaxConfig) -> HashMap<String, Token> {
+        let tc = &config.tokens;
+        let mut map = HashMap::new();
+
+        if !tc.mutable_ref.is_empty() { 
+            map.insert(tc.mutable_ref.clone(), Token::MutableRef); 
+        }
+        if !tc.immutable_ref.is_empty() { 
+            map.insert(tc.immutable_ref.clone(), Token::ImmutableRef); 
+        }
+        if !tc.arrow.is_empty() { 
+            map.insert(tc.arrow.clone(), Token::Arrow); 
+        }
+        if !tc.double_equals.is_empty() { 
+            map.insert(tc.double_equals.clone(), Token::DoubleEquals); 
+        }
+        if !tc.not_equals.is_empty() { 
+            map.insert(tc.not_equals.clone(), Token::NotEquals); 
+        }
+        if !tc.less_equal.is_empty() { 
+            map.insert(tc.less_equal.clone(), Token::LessEqual); 
+        }
+        if !tc.greater_equal.is_empty() { 
+            map.insert(tc.greater_equal.clone(), Token::GreaterEqual); 
+        }
+        if !tc.assignment.is_empty() { 
+            map.insert(tc.assignment.clone(), Token::Assignment); 
+        }
+        if !tc.plus.is_empty() { 
+            map.insert(tc.plus.clone(), Token::Plus); 
+        }
+        if !tc.minus.is_empty() { 
+            map.insert(tc.minus.clone(), Token::Minus); 
+        }
+        if !tc.star.is_empty() { 
+            map.insert(tc.star.clone(), Token::Star); 
+        }
+        if !tc.slash.is_empty() { 
+            map.insert(tc.slash.clone(), Token::Slash); 
+        }
+        if !tc.less.is_empty() { 
+            map.insert(tc.less.clone(), Token::Less); 
+        }
+        if !tc.greater.is_empty() { 
+            map.insert(tc.greater.clone(), Token::Greater); 
+        }
+        if !tc.left_paren.is_empty() { 
+            map.insert(tc.left_paren.clone(), Token::LeftParentheses); 
+        }
+        if !tc.right_paren.is_empty() { 
+            map.insert(tc.right_paren.clone(), Token::RightParentheses); 
+        }
+        if !tc.left_brace.is_empty() { 
+            map.insert(tc.left_brace.clone(), Token::LeftBrace); 
+        }
+        if !tc.right_brace.is_empty() { 
+            map.insert(tc.right_brace.clone(), Token::RightBrace); 
+        }
+        if !tc.comma.is_empty() { 
+            map.insert(tc.comma.clone(), Token::Comma); 
+        }
+        if !tc.semicolon.is_empty() { 
+            map.insert(tc.semicolon.clone(), Token::Semicolon); 
+        }
+        if !tc.colon.is_empty() { 
+            map.insert(tc.colon.clone(), Token::Colon); 
+        }
+        
+        map
     }
 
     pub fn next_token(&mut self) -> Token {
@@ -83,56 +169,52 @@ impl Lexer {
             return Token::Eof;
         }
 
-        let ch = self.input[self.pos];
+        for (token_str, token) in &self.token_map {
+            if self.matches_at_pos(token_str) {
+                self.pos += token_str.len();
+                return token.clone();
+            }
+        }
 
-        let token = match ch {
-            '+' => { self.pos += 1; Token::Plus }
-            '-' => {
-                if self.peek_next() == Some('>') {
-                    self.pos += 2;
-                    Token::Arrow
-                }
-                else {
-                    self.pos += 1;
-                    Token::Minus
-                }
-            }
-            '*' => { self.pos += 1; Token::Star }
-            '/' => { self.pos += 1; Token::Slash }
-            '(' => { self.pos += 1; Token::LeftParentheses }
-            ')' => { self.pos += 1; Token::RightParentheses }
-            '{' => { self.pos += 1; Token::LeftBrace }
-            '}' => { self.pos += 1; Token::RightBrace }
-            ':' => { self.pos += 1; Token::Colon }
-            ';' => { self.pos += 1; Token::Semicolon }
-            ',' => { self.pos += 1; Token::Comma },
-            '=' => {
-                if self.peek_next() == Some('=') {
-                    self.pos += 2;
-                    Token::DoubleEquals
-                }
-                else {
-                    self.pos += 1;
-                    Token::Equals
-                }
-            }
-            '<' => { self.pos += 1; Token::Less }
-            '>' => { self.pos += 1; Token::Greater }
-            '\n' => {
-                self.pos += 1;
-                self.at_line_start = true;
-                Token::Newline
-            }
-            '"' => self.lex_string(),
-            _ if ch.is_ascii_digit() => self.lex_number(),
-            _ if ch.is_ascii_alphabetic() || ch == '_' => self.lex_ident_or_keyword(),
-            _ => {
-                self.pos += 1;
-                self.next_token()
-            }
-        };
+        // Add customization for this later
+        if self.input[self.pos] == '\n' {
+            self.pos += 1;
+            self.at_line_start = true;
+            return Token::Newline;
+        }
 
-        token
+        // Add customization for this later
+        if self.input[self.pos] == '"' {
+            return self.lex_string();
+        }
+
+        if self.input[self.pos].is_ascii_digit() {
+            return self.lex_number();
+        }
+
+        // Maybe add customization?
+        if self.input[self.pos].is_ascii_alphabetic() || self.input[self.pos] == "_" {
+            return self.lex_ident_or_keyword();
+        }
+
+        // Likely return error later instead of just skipping
+        self.pos += 1;
+        self.next_token();
+    }
+
+    fn matches_at_pos(&self, s: &str) -> bool {
+        let chars: Vec<char> = s.chars().collect();
+        if self.pos + chars.len() > self.input.len() {
+            return false;
+        }
+
+        for (i, ch) in chars.iter().enumerate() {
+            if self.input[self.pos + 1] != *ch {
+                return false;
+            }
+        }
+
+        true
     }
 
     fn lex_ident_or_keyword(&mut self) -> Token {
@@ -240,5 +322,39 @@ impl Lexer {
         else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_greedy_matching() {
+        let config = SyntaxConfig::rust();
+        let mut lexer = Lexer::new("x == y", config);
+        
+        assert_eq!(lexer.next_token(), Token::Ident("x".to_string()));
+        assert_eq!(lexer.next_token(), Token::DoubleEquals);
+        assert_eq!(lexer.next_token(), Token::Ident("y".to_string()));
+    }
+
+    #[test]
+    fn test_mutable_ref() {
+        let config = SyntaxConfig::rust();
+        let mut lexer = Lexer::new("&mut x", config);
+        
+        assert_eq!(lexer.next_token(), Token::MutableRef);
+        assert_eq!(lexer.next_token(), Token::Ident("x".to_string()));
+    }
+
+    #[test]
+    fn test_arrow() {
+        let config = SyntaxConfig::rust();
+        let mut lexer = Lexer::new("x -> y", config);
+        
+        assert_eq!(lexer.next_token(), Token::Ident("x".to_string()));
+        assert_eq!(lexer.next_token(), Token::Arrow);
+        assert_eq!(lexer.next_token(), Token::Ident("y".to_string()));
     }
 }
