@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-fracture = { path = "../../fracture", version = "0.1.0", features = ["simulation", "full"] }
+fracture = { version = "0.1.0", features = ["simulation", "full"] }
 
 [features]
 default = []

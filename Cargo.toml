@@ -1,2 +1,2 @@
 [workspace]
-members = ["fracture", "fracture-macros"]
+members = ["fracture", "fracture-macros", "tokio-shim"]
