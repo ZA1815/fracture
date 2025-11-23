@@ -1,4 +1,4 @@
-use crate::hsir::*;
+use fracture_ir::hsir::*;
 use std::collections::HashMap;
 
 pub struct X86CodeGen {
@@ -86,7 +86,7 @@ impl X86CodeGen {
                 self.load_value_to_rax(lhs, ty);
                 self.emit("    mov rcx, rax");
                 self.load_value_to_rax(rhs, ty);
-                self.emit("sub rcx, rax");
+                self.emit("    sub rcx, rax");
                 self.emit("    mov rax, rcx");
                 let offset = self.get_or_alloc_reg_offset(dst);
                 self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", offset));
@@ -100,9 +100,9 @@ impl X86CodeGen {
                 self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", offset));
             }
             Inst::Div { dst, lhs, rhs, ty } => {
-                self.load_value_to_rax(lhs, ty);
-                self.emit("    mov rcx, rax");
                 self.load_value_to_rax(rhs, ty);
+                self.emit("    mov rcx, rax");
+                self.load_value_to_rax(lhs, ty);
                 self.emit("    xor rdx, rdx");
                 self.emit("    idiv rcx");
                 let offset = self.get_or_alloc_reg_offset(dst);
@@ -134,12 +134,12 @@ impl X86CodeGen {
             Inst::JumpIf { cond, target } => {
                 self.load_value_to_rax(cond, &Type::Bool);
                 self.emit("    cmp rax, 0");
-                self.emit(&format!("jne {}", target.0));
+                self.emit(&format!("    jne {}", target.0));
             }
             Inst::JumpIfFalse { cond, target } => {
                 self.load_value_to_rax(cond, &Type::Bool);
                 self.emit("    cmp rax, 0");
-                self.emit(&format!("je {}", target.0));
+                self.emit(&format!("    je {}", target.0));
             }
             Inst::Label { target } => {
                 self.emit(&format!("{}:", target.0));
