@@ -1,4 +1,4 @@
-use crate::hsir::*;
+use fracture_ir::hsir::*;
 use crate::syntax_config::*;
 use crate::lexer::*;
 use std::collections::HashMap;
@@ -121,7 +121,7 @@ impl SyntaxProjector {
 
         Ok(Function {
             name,
-            params: vec![],
+            params,
             return_type,
             body,
             locals
@@ -298,7 +298,7 @@ impl SyntaxProjector {
         Ok(instructions)
     }
 
-    // This is missing critical logic to actually exit the loop
+    // This is missing critical logic to actually exit the loop (break and continue)
     fn parse_while_statement(&mut self) -> Result<Vec<Inst>, String> {
         let mut instructions = Vec::new();
 
