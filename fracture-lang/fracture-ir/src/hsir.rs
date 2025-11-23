@@ -52,6 +52,7 @@ pub enum Inst {
 
     Eq { dst: Reg, lhs: Value, rhs: Value, ty: Type },
     Lt { dst: Reg, lhs: Value, rhs: Value, ty: Type },
+    Gt { dst: Reg, lhs: Value, rhs: Value, ty: Type },
 
     Alloc { dst: Reg, size: Value, ty: Type },
     Load { dst: Reg, ptr: Value, ty: Type },
@@ -60,6 +61,8 @@ pub enum Inst {
 
     Jump { target: Label },
     JumpIf { cond: Value, target: Label },
+    JumpIfFalse { cond: Value, target: Label },
+    Label { target: Label },
     Call { dst: Option<Reg>, func: Value, args: Vec<Value>, ty: Type },
     Return { val: Option<Value> },
 
