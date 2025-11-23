@@ -1,3 +1,10 @@
 [workspace]
 default-members = ["fracture", "fracture-macros"]
-members = ["fracture", "fracture-macros", "fracture-lang/fracture-ir"]
+members = [
+    "fracture",
+    "fracture-macros",
+    "fracture-lang/fracture-ir",
+    "fracture-lang/fracture-linter",
+    "fracture-lang/fracture-compiler",
+    "fracture-lang/fracture-cli"
+]
