@@ -209,6 +209,11 @@ In your Cargo.toml, add a patch directive to redirect tokio to the shim included
 tokio = { git = "https://github.com/ZA1815/fracture", path = "tokio-shim" }
 ```
 
+Alternatively, you can create a .cargo/config.toml file with the same content, this will apply the patch globally to your project without modifying Cargo.toml.
+
+**Make sure that for both of these, you delete the patch section before releasing to production.**
+```
+
 2. The Rules
 
 When patching is active:
@@ -443,7 +448,7 @@ Check out the [tests/](fracture/tests/) directory for complete examples:
 
 ## Limitations & Alpha Status
 
-⚠️ **This is alpha software (v0.1.0).** We've tested it extensively, but async runtimes are complex and there are undoubtedly edge cases we haven't hit yet.
+⚠️ **This is alpha software (v0.1.1).** We've tested it extensively, but async runtimes are complex and there are undoubtedly edge cases we haven't hit yet.
 
 **Known limitations:**
 
