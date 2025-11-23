@@ -1,12 +1,12 @@
 use crate::hsir::*;
-use std::io::Write;
 use std::collections::HashMap;
 
 pub struct X86CodeGen {
     output: Vec<String>,
     reg_offsets: HashMap<Reg, i32>,
     next_stack_offset: i32,
-    label_counter: usize
+    label_counter: usize,
+    current_function_stack_size: i32
 }
 
 impl X86CodeGen {
@@ -15,7 +15,8 @@ impl X86CodeGen {
             output: Vec::new(),
             reg_offsets: HashMap::new(),
             next_stack_offset: 8,
-            label_counter: 0
+            label_counter: 0,
+            current_function_stack_size: 0
         }
     }
 
@@ -43,11 +44,20 @@ impl X86CodeGen {
         self.emit("    push rbp");
         self.emit("    mov rbp, rsp");
 
-        let stack_size = func.body.len() * 16;
+        let stack_size = (func.locals.len() + func.params.len() + 4) * 16;
+        self.current_function_stack_size = stack_size as i32;
         self.emit(&format!("    sub rsp, {}", stack_size));
 
         self.reg_offsets.clear();
         self.next_stack_offset = 8;
+
+        let param_regs = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
+        for (i, (param_reg, _)) in func.params.iter().enumerate() {
+            if i < param_regs.len() {
+                let offset = self.get_or_alloc_reg_offset(param_reg);
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], {}", offset, param_regs[i]));
+            }
+        }
 
         for inst in &func.body {
             self.compile_inst(inst);
@@ -63,32 +73,105 @@ impl X86CodeGen {
         match inst {
             Inst::Move { dst, src, ty } => {
                 self.load_value_to_rax(src, ty);
-
                 let offset = self.get_or_alloc_reg_offset(dst);
                 self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", offset));
             }
             Inst::Add { dst, lhs, rhs, ty } => {
                 self.load_value_to_rax(lhs, ty);
                 self.emit("    mov rcx, rax");
-
                 self.load_value_to_rax(rhs, ty);
-
                 self.emit("    add rax, rcx");
-
                 let offset = self.get_or_alloc_reg_offset(dst);
                 self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", offset));
             }
             Inst::Sub { dst, lhs, rhs, ty } => {
                 self.load_value_to_rax(lhs, ty);
                 self.emit("    mov rcx, rax");
-                
                 self.load_value_to_rax(rhs, ty);
-
                 self.emit("sub rcx, rax");
                 self.emit("    mov rax, rcx");
-
                 let offset = self.get_or_alloc_reg_offset(dst);
                 self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", offset));
+            }
+            Inst::Mul { dst, lhs, rhs, ty } => {
+                self.load_value_to_rax(lhs, ty);
+                self.emit("    mov rcx, rax");
+                self.load_value_to_rax(rhs, ty);
+                self.emit("    imul rax, rcx");
+                let offset = self.get_or_alloc_reg_offset(dst);
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", offset));
+            }
+            Inst::Div { dst, lhs, rhs, ty } => {
+                self.load_value_to_rax(lhs, ty);
+                self.emit("    mov rcx, rax");
+                self.load_value_to_rax(rhs, ty);
+                self.emit("    xor rdx, rdx");
+                self.emit("    idiv rcx");
+                let offset = self.get_or_alloc_reg_offset(dst);
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", offset));
+            }
+            Inst::Eq { dst, lhs, rhs, ty } => {
+                self.load_value_to_rax(lhs, ty);
+                self.emit("    mov rcx, rax");
+                self.load_value_to_rax(rhs, ty);
+                self.emit("    cmp rcx, rax");
+                self.emit("    sete al");
+                self.emit("    movzx rax, al");
+                let offset = self.get_or_alloc_reg_offset(dst);
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", offset));
+            }
+            Inst::Lt { dst, lhs, rhs, ty } => {
+                self.load_value_to_rax(lhs, ty);
+                self.emit("    mov rcx, rax");
+                self.load_value_to_rax(rhs, ty);
+                self.emit("    cmp rcx, rax");
+                self.emit("    setl al");
+                self.emit("    movzx rax, al");
+                let offset = self.get_or_alloc_reg_offset(dst);
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", offset));
+            }
+            Inst::Jump { target } => {
+                self.emit(&format!("    jmp label_{}", target.0));
+            }
+            Inst::JumpIf { cond, target } => {
+                // Placeholder
+            }
+            Inst::JumpIfFalse { cond, target } => {
+                // Placeholder
+            }
+            Inst::Call { dst, func, args, ty } => {
+                let param_regs = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
+
+                for (i, arg) in args.iter().enumerate() {
+                    if i < param_regs.len() {
+                        self.load_value_to_rax(arg, ty);
+                        self.emit(&format!("    mov {}, rax", param_regs[i]));
+                    }
+                    else {
+                        self.load_value_to_rax(arg, ty);
+                        self.emit("    push rax");
+                    }
+                }
+
+                match func {
+                    Value::Label(label) => {
+                        self.emit(&format!("    call {}", label.0));
+                    }
+                    _ => {
+                        self.load_value_to_rax(func, ty);
+                        self.emit("    call rax");
+                    }
+                }
+
+                if args.len() > param_regs.len() {
+                    let stack_bytes = (args.len() - param_regs.len()) * 8;
+                    self.emit(&format!("    add rsp, {}", stack_bytes));
+                }
+
+                if let Some(dst_reg) = dst {
+                    let offset = self.get_or_alloc_reg_offset(dst_reg);
+                    self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", offset));
+                }
             }
             Inst::Return { val } => {
                 if let Some(v) = val {
