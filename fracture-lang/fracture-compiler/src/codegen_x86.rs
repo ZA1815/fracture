@@ -412,30 +412,34 @@ impl X86CodeGen {
                 let total_size: usize = element_types.iter()
                     .map(|ty| self.type_size(ty))
                     .sum();
-
-                let tuple_offset = self.next_stack_offset;
-                self.next_stack_offset += total_size as i32;
-
-                self.emit(&format!("    lea rax, [rbp-{}]", tuple_offset));
                 let dst_offset = self.get_or_alloc_reg_offset(dst);
+                let tuple_base = self.next_stack_offset + total_size as i32;
+                self.next_stack_offset = tuple_base + 8;
+                self.emit(&format!("    lea rax, [rbp-{}]", tuple_base));
                 self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
             }
             Inst::TupleLoad { dst, tuple_reg, index, ty } => {
                 let tuple_offset = self.get_or_alloc_reg_offset(tuple_reg);
                 self.emit(&format!("    mov rcx, QWORD PTR [rbp-{}]", tuple_offset));
-                // Need to improve after implementing type tracking
-                let field_offset = index * 8;
-                self.emit(&format!("    mov rax, QWORD PTR [rcx+{}]", field_offset));
+                let element_size = self.type_size(ty);
+                let field_offset = index * element_size;
+                match element_size {
+                    4 => self.emit(&format!("    mov eax, DWORD PTR [rcx+{}]", field_offset)),
+                    _ => self.emit(&format!("    mov rax, QWORD PTR [rcx+{}]", field_offset)),
+                }
                 let dst_offset = self.get_or_alloc_reg_offset(dst);
-                self.emit(&format!("mov QWORD PTR [rbp-{}], rax", dst_offset));
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
             }
             Inst::TupleStore { tuple_reg, index, value, ty } => {
                 let tuple_offset = self.get_or_alloc_reg_offset(tuple_reg);
                 self.emit(&format!("    mov rcx, QWORD PTR [rbp-{}]", tuple_offset));
-                // Need to improve after implementing type tracking
-                let field_offset = index * 8;
+                let element_size = self.type_size(ty);
+                let field_offset = index * element_size;
                 self.load_value_to_rax(value, ty);
-                self.emit(&format!("    mov QWORD PTR [rcx+{}], rax", field_offset));
+                match element_size {
+                    4 => self.emit(&format!("   mov DWORD PTR [rcx+{}], eax", field_offset)),
+                    _ => self.emit(&format!("   mov QWORD PTR [rcx+{}], rax", field_offset))
+                }
             }
             Inst::SimPoint { id, metadata } => {
                 self.emit(&format!("    # SimPoint: {}", id));
