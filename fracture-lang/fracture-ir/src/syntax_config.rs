@@ -24,7 +24,9 @@ pub struct Keywords {
     pub string_type: String,
 
     pub let_kw: String,
-    pub mut_kw: String
+    pub mut_kw: String,
+
+    pub struct_kw: String
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,7 +100,8 @@ impl SyntaxConfig {
                 bool_type: "bool".to_string(),
                 string_type: "str".to_string(),
                 let_kw: "".to_string(),
-                mut_kw: "".to_string()
+                mut_kw: "".to_string(),
+                struct_kw: "class".to_string()
             },
             tokens: TokenConfig {
                 arrow: "->".to_string(),
@@ -150,7 +153,8 @@ impl SyntaxConfig {
                 bool_type: "bool".to_string(),
                 string_type: "String".to_string(),
                 let_kw: "let".to_string(),
-                mut_kw: "mut".to_string()
+                mut_kw: "mut".to_string(),
+                struct_kw: "struct".to_string()
             },
             tokens: TokenConfig {
                 arrow: "->".to_string(),

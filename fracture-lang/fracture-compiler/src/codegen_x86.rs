@@ -5,7 +5,9 @@ pub struct X86CodeGen {
     output: Vec<String>,
     reg_offsets: HashMap<Reg, i32>,
     next_stack_offset: i32,
-    current_function_stack_size: i32
+    current_function_stack_size: i32,
+    program: Option<Program>,
+    struct_layouts: HashMap<String, Vec<(String, usize, Type)>>
 }
 
 impl X86CodeGen {
@@ -14,11 +16,16 @@ impl X86CodeGen {
             output: Vec::new(),
             reg_offsets: HashMap::new(),
             next_stack_offset: 8,
-            current_function_stack_size: 0
+            current_function_stack_size: 0,
+            program: None,
+            struct_layouts: HashMap::new()
         }
     }
 
     pub fn compile_program(&mut self, program: &Program) -> String {
+        self.program = Some(program.clone());
+        self.compute_struct_layouts(program);
+
         self.emit(".intel_syntax noprefix");
         self.emit(".global _start");
         self.emit("");
@@ -34,6 +41,60 @@ impl X86CodeGen {
         self.emit("    syscall");
 
         self.output.join("\n")
+    }
+
+    fn compute_struct_layouts(&mut self, program: &Program) {
+        for (struct_name, struct_def) in &program.structs {
+            let mut layout = Vec::new();
+            let mut offset = 0;
+
+            for (field_name, field_type) in &struct_def.fields {
+                let size = self.type_size(field_type);
+                layout.push((field_name.clone(), offset, field_type.clone()));
+                offset += size;
+            }
+
+            self.struct_layouts.insert(struct_name.clone(), layout);
+        }
+    }
+
+    fn type_size(&self, ty: &Type) -> usize {
+        match ty {
+            Type::I32 | Type::U32 | Type::F32 => 4,
+            Type::I64 | Type::U64 | Type::F64 | Type::Ptr(_) | Type::Ref(_, _) => 8,
+            Type::Bool => 1,
+            Type::String => 16,
+            Type::Struct(name) => {
+                if let Some(layout) = self.struct_layouts.get(name) {
+                    layout.iter().map(|(_, _, ty)| self.type_size(ty)).sum()
+                }
+                else {
+                    8
+                }
+            }
+            _ => 8
+        }
+    }
+
+    fn get_struct_size(&self, struct_name: &str) -> usize {
+        if let Some(layout) = self.struct_layouts.get(struct_name) {
+            layout.iter().map(|(_, _, ty)| self.type_size(ty)).sum()
+        }
+        else {
+            0
+        }
+    }
+
+    fn get_field_offset(&self, struct_name: &str, field_name: &str) -> Option<usize> {
+        let layout = self.struct_layouts.get(struct_name)?;
+
+        for (fname, offset, _) in layout {
+            if fname == field_name {
+                return Some(*offset);
+            }
+        }
+
+        None
     }
 
     fn compile_function(&mut self, name: &str, func: &Function) {
@@ -207,7 +268,7 @@ impl X86CodeGen {
                 let offset = self.get_or_alloc_reg_offset(dst);
                 self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", offset));
             }
-            Inst::Store { ptr, src, ty } => {
+            Inst::Store { ptr, src, .. } => {
                 self.load_value_to_rax(ptr, &Type::I64);
                 self.emit("    mov rcx, rax");
 
@@ -215,13 +276,48 @@ impl X86CodeGen {
 
                 self.emit("    mov QWORD PTR [rcx], rax");
             }
-            Inst::Load { dst, ptr, ty } => {
+            Inst::Load { dst, ptr, .. } => {
                 self.load_value_to_rax(ptr, &Type::I64);
 
                 self.emit("    mov rax, QWORD PTR [rax]");
 
                 let offset = self.get_or_alloc_reg_offset(dst);
                 self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", offset));
+            }
+            Inst::StructAlloc { dst, struct_name } => {
+                let size = self.get_struct_size(struct_name);
+
+                // Allocate to heap later
+                let struct_offset = self.next_stack_offset;
+                self.next_stack_offset += size as i32;
+
+                self.emit(&format!("    lea rax, [rbp-{}]", struct_offset));
+                let dst_offset = self.get_or_alloc_reg_offset(dst);
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+            }
+            Inst::FieldStore { struct_reg, field_name, value, ty } => {
+                let struct_offset = self.get_or_alloc_reg_offset(struct_reg);
+                self.emit(&format!("    mov rcx, QWORD PTR [rbp-{}]", struct_offset));
+
+                if let Value::Reg(reg) = value {
+                    if let Some(ty) = self.reg_offsets.get(reg) {
+                        // Simplification, need type tracking
+                        if let Some(field_offset) = self.get_field_offset_without_struct(field_name) {
+                            self.load_value_to_rax(value, &Type::I64);
+                            self.emit(&format!("    mov QWORD PTR [rcx+{}], rax", field_offset));
+                        }
+                    }
+                }
+            }
+            Inst::FieldLoad { dst, struct_reg, field_name, ty } => {
+                let struct_offset = self.get_or_alloc_reg_offset(struct_reg);
+                self.emit(&format!("    mov rcx, QWORD PTR [rbp-{}]", struct_offset));
+
+                if let Some(field_offset) = self.get_field_offset_without_struct(field_name) {
+                    self.emit(&format!("    mov rax, QWORD PTR [rcx+{}]", field_offset));
+                    let dst_offset = self.get_or_alloc_reg_offset(dst);
+                    self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+                }
             }
             Inst::SimPoint { id, metadata } => {
                 self.emit(&format!("    # SimPoint: {}", id));
@@ -230,6 +326,18 @@ impl X86CodeGen {
                 self.emit(&format!("    # TODO: {:?}", inst));
             }
         }
+    }
+
+    fn get_field_offset_without_struct(&self, field_name: &str) -> Option<usize> {
+        for layout in self.struct_layouts.values() {
+            for (fname, offset, _) in layout {
+                if fname == field_name {
+                    return Some(*offset);
+                }
+            }
+        }
+
+        None
     }
 
     fn load_value_to_rax(&mut self, val: &Value, ty: &Type) {

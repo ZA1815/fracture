@@ -75,7 +75,17 @@ pub enum Inst {
     SimPoint { id: String, metadata: HashMap<String, String> },
 
     BeginBorrow { reg: Reg, is_mut: bool },
-    EndBorrow { reg: Reg }
+    EndBorrow { reg: Reg },
+
+    StructAlloc { dst: Reg, struct_name: String },
+    FieldStore { struct_reg: Reg, field_name: String, value: Value, ty: Type },
+    FieldLoad { dst: Reg, struct_reg: Reg, field_name: String, ty: Type }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StructDef {
+    pub name: String,
+    pub fields: Vec<(String, Type)>
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +101,7 @@ pub struct Function {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Program {
     pub functions: HashMap<String, Function>,
+    pub structs: HashMap<String, StructDef>,
     pub entry: String
 }
 
@@ -128,6 +139,14 @@ impl Program {
         let mut output = String::new();
         output.push_str(&format!("; Program entry: {}\n\n", self.entry));
 
+        for (name, struct_def) in &self.structs {
+            output.push_str(&format!("; Struct: {}\n", name));
+            for (field_name, field_type) in &struct_def.fields {
+                output.push_str(&format!(";    {}: {:?}\n", field_name, field_type));
+            }
+            output.push_str("\n");
+        }
+
         for (name, func) in &self.functions {
             output.push_str(&format!("; Function: {}\n", name));
             output.push_str(&format!(";   params: {:?}\n", func.params));
@@ -155,9 +174,26 @@ impl Program {
 
         ProgramStats {
             num_functions: self.functions.len(),
+            num_structs: self.structs.len(),
             total_instructions: total_insts,
             total_registers: total_regs
         }
+    }
+
+    pub fn get_struct(&self, name: &str) -> Option<&StructDef> {
+        self.structs.get(name)
+    }
+
+    pub fn field_offset(&self, struct_name: &str, field_name: &str) -> Option<(usize, &Type)> {
+        let struct_def = self.get_struct(struct_name)?;
+
+        for (i, (fname, ftype)) in struct_def.fields.iter().enumerate() {
+            if fname == field_name {
+                return Some((i, ftype));
+            }
+        }
+
+        None
     }
 }
 
@@ -174,6 +210,7 @@ impl Function {
 #[derive(Debug, Clone)]
 pub struct ProgramStats {
     pub num_functions: usize,
+    pub num_structs: usize,
     pub total_instructions: usize,
     pub total_registers: usize
 }

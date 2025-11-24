@@ -11,6 +11,7 @@ pub enum Token {
     For,
     Let,
     Mut,
+    Struct,
 
     Ident(String),
     Number(i64),
@@ -46,6 +47,7 @@ pub enum Token {
     Comma,
     Arrow,
     Hash,
+    Dot,
 
     Newline,
     Indent,
@@ -147,6 +149,7 @@ impl Lexer {
         list.push(("[".to_string(), Token::LeftBracket));
         list.push(("]".to_string(), Token::RightBracket));
         list.push(("#".to_string(), Token::Hash));
+        list.push((".".to_string(), Token::Dot));
 
         list.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
         
@@ -258,6 +261,9 @@ impl Lexer {
         else if text == self.config.keywords.mut_kw {
             Token::Mut
         }
+        else if text == self.config.keywords.struct_kw {
+            Token::Struct
+        }
         else if text == "true" {
             Token::Bool(true)
         }
@@ -362,5 +368,15 @@ mod tests {
         assert_eq!(lexer.next_token(), Token::Ident("x".to_string()));
         assert_eq!(lexer.next_token(), Token::Arrow);
         assert_eq!(lexer.next_token(), Token::Ident("y".to_string()));
+    }
+
+    #[test]
+    fn test_dot() {
+        let config = SyntaxConfig::rust();
+        let mut lexer = Lexer::new("user.age", config);
+        
+        assert_eq!(lexer.next_token(), Token::Ident("user".to_string()));
+        assert_eq!(lexer.next_token(), Token::Dot);
+        assert_eq!(lexer.next_token(), Token::Ident("age".to_string()));
     }
 }

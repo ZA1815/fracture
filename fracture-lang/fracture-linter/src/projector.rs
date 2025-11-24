@@ -12,7 +12,9 @@ pub struct SyntaxProjector {
     var_types: HashMap<String, Type>,
     next_reg: u32,
     var_regs: HashMap<String, Reg>,
-    next_label: u32
+    next_label: u32,
+
+    struct_defs: HashMap<String, StructDef>
 }
 
 impl SyntaxProjector {
@@ -28,7 +30,8 @@ impl SyntaxProjector {
             var_types: HashMap::new(),
             next_reg: 0,
             var_regs: HashMap::new(),
-            next_label: 0
+            next_label: 0,
+            struct_defs: HashMap::new()
         }
     }
 
@@ -46,10 +49,23 @@ impl SyntaxProjector {
     pub fn project_to_hsir(&mut self) -> Result<Program, String> {
         let mut program = Program {
             functions: HashMap::new(),
+            structs: HashMap::new(),
             entry: "main".to_string()
         };
 
         while self.current != Token::Eof {
+            if self.current == Token::Newline {
+                self.advance();
+                continue;
+            }
+
+            if self.current == Token::Struct {
+                let struct_def = self.parse_struct()?;
+                self.struct_defs.insert(struct_def.name.clone(), struct_def.clone());
+                program.structs.insert(struct_def.name.clone(), struct_def);
+                continue;
+            }
+
             if self.current == Token::Hash {
                 let attrs = self.parse_attributes()?;
 
@@ -139,6 +155,41 @@ impl SyntaxProjector {
             locals,
             attributes: Vec::new()
         })
+    }
+
+    fn parse_struct(&mut self) -> Result<StructDef, String> {
+        self.advance();
+
+        let struct_name = self.expect_ident()?;
+
+        self.expect(Token::LeftBrace)?;
+
+        let mut fields = Vec::new();
+        while self.current != Token::RightBrace && self.current != Token::Eof {
+            if self.current == Token::Newline {
+                self.advance();
+                continue;
+            }
+
+            let field_name = self.expect_ident()?;
+            // Maybe customize this later
+            self.expect(Token::Colon)?;
+            let field_type = self.parse_type()?;
+
+            fields.push((field_name, field_type));
+
+            if self.current == Token::Comma {
+                self.advance();
+            }
+
+            while self.current == Token::Newline {
+                self.advance();
+            }
+        }
+
+        self.advance();
+
+        Ok(StructDef { name: struct_name, fields })
     }
 
     fn parse_block(&mut self) -> Result<Vec<Inst>, String> {
@@ -416,13 +467,13 @@ impl SyntaxProjector {
     }
 
     fn parse_multiplicative(&mut self) -> Result<(Vec<Inst>, Reg), String> {
-        let (mut instructions, mut left_reg) = self.parse_term()?;
+        let (mut instructions, mut left_reg) = self.parse_postfix()?;
 
         while self.current == Token::Star || self.current == Token::Slash {
             let op = self.current.clone();
             self.advance();
 
-            let (right_insts, right_reg) = self.parse_term()?;
+            let (right_insts, right_reg) = self.parse_postfix()?;
             instructions.extend(right_insts);
 
             let result_reg = self.alloc_reg();
@@ -448,6 +499,40 @@ impl SyntaxProjector {
         }
 
         Ok((instructions, left_reg))
+    }
+
+    fn parse_postfix(&mut self) -> Result<(Vec<Inst>, Reg), String> {
+        let (mut instructions, mut reg) = self.parse_term()?;
+
+        loop {
+            if let Token::Ident(dot) = &self.current {
+                if dot == "." {
+                    self.advance();
+                    let field_name = self.expect_ident()?;
+
+                    let result_reg = self.alloc_reg();
+
+                    let struct_type = self.var_types.values()
+                        .find(|ty| matches!(ty, Type::Struct(_)))
+                        .cloned()
+                        .unwrap_or(Type::Unknown);
+
+                    instructions.push(Inst::FieldLoad {
+                        dst: result_reg.clone(),
+                        struct_reg: reg,
+                        field_name,
+                        ty: struct_type
+                    });
+
+                    reg = result_reg;
+
+                    continue;
+                }
+            }
+            break;
+        }
+
+        Ok((instructions, reg))
     }
 
     fn parse_term(&mut self) -> Result<(Vec<Inst>, Reg), String> {
@@ -487,6 +572,42 @@ impl SyntaxProjector {
                         func: Value::Label(Label(name.to_string())),
                         args,
                         ty: Type::Unknown // Need type inference
+                    });
+                }
+                else if self.current == Token::LeftBrace {
+                    self.advance();
+
+                    let struct_reg = self.alloc_reg();
+                    instructions.push(Inst::StructAlloc {
+                        dst: struct_reg.clone(),
+                        struct_name: name.to_string()
+                    });
+
+                    while self.current != Token::RightBrace && self.current != Token::Eof {
+                        let field_name = self.expect_ident()?;
+                        self.expect(Token::Colon)?;
+
+                        let (field_insts, field_reg) = self.parse_expression()?;
+                        instructions.extend(field_insts);
+
+                        instructions.push(Inst::FieldStore {
+                            struct_reg: struct_reg.clone(),
+                            field_name,
+                            value: Value::Reg(field_reg),
+                            ty: Type::Unknown
+                        });
+
+                        if self.current == Token::Comma {
+                            self.advance();
+                        }
+                    }
+
+                    self.advance();
+
+                    instructions.push(Inst::Move {
+                        dst: result_reg.clone(),
+                        src: Value::Reg(struct_reg),
+                        ty: Type::Struct(name.to_string())
                     });
                 }
                 else {
