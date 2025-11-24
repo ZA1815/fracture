@@ -30,7 +30,7 @@ pub struct Linter {
 }
 
 impl Linter {
-    pub fn new(options: LinterOptions) -> {
+    pub fn new(options: LinterOptions) -> Self {
         Self {
             options
         }
@@ -77,7 +77,7 @@ impl Linter {
     }
 
     pub fn load_config(config_path: Option<&str>) -> Result<SyntaxConfig, String> {
-        match config_path => {
+        match config_path {
             Some(path) => {
                 if Path::new(path).exists() {
                     SyntaxConfig::from_file(path)

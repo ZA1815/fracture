@@ -8,3 +8,13 @@ members = [
     "fracture-lang/fracture-compiler",
     "fracture-lang/fracture-cli"
 ]
+
+[workspace.dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+bincode = "1.3"
+toml = "0.8"
+clap = { version = "4.4", features = ["derive"] }
+
+fracture-ir = { path = "./fracture-lang/fracture-ir" }
+fracture-linter = { path = "./fracture-lang/fracture-linter" }
+fracture-compiler = { path = "./fracture-lang/fracture-compiler" }

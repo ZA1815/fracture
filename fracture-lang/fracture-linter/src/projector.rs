@@ -1,5 +1,5 @@
 use fracture_ir::hsir::*;
-use crate::syntax_config::*;
+use fracture_ir::{SyntaxConfig, syntax_config::BlockStyle};
 use crate::lexer::*;
 use std::collections::HashMap;
 
@@ -183,7 +183,7 @@ impl SyntaxProjector {
                     Type::Unknown
                 };
 
-                if self.current == Token::Equals {
+                if self.current == Token::Assignment {
                     self.advance();
 
                     let (expr_insts, result_reg) = self.parse_expression()?;
@@ -223,7 +223,7 @@ impl SyntaxProjector {
             }
             Token::Ident(name) => {
                 let peek_token = self.peek();
-                if peek_token == Token::Equals || peek_token == Token::Colon {
+                if peek_token == Token::Assignment || peek_token == Token::Colon {
                     let var_name = name.clone();
                     self.advance();
                     let mut var_type = Type::Unknown;
@@ -232,7 +232,7 @@ impl SyntaxProjector {
                         var_type = self.parse_type()?;
                     }
                     
-                    self.expect(Token::Equals)?;
+                    self.expect(Token::Assignment)?;
 
                     let (expr_insts, result_reg) = self.parse_expression()?;
                     instructions.extend(expr_insts);

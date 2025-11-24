@@ -2,3 +2,9 @@
 name = "fracture-cli"
 version = "0.1.0"
 edition = "2024"
+
+[dependencies]
+fracture-ir = { workspace = true }
+fracture-linter = { workspace = true }
+fracture-compiler = { workspace = true }
+clap = { workspace = true }

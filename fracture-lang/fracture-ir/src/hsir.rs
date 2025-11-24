@@ -116,7 +116,7 @@ impl Program {
             .map_err(|e| format!("Failed to read file: {}", e))?;
 
         let program: Program = bincode::deserialize(&buffer)
-            .map_err(|e| format!("Deserialization failed: {}", e));
+            .map_err(|e| format!("Deserialization failed: {}", e))?;
 
         Ok(program)
     }

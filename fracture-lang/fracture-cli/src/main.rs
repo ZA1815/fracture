@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
-use fracture_linter::{Linter, LinterOptions, SyntaxConfig};
+use fracture_linter::{Linter, LinterOptions};
 use fracture_compiler::{Compiler, CompilerMode, CompilerOptions, Target};
-use std::process::{Command as SysCommand, exit};
+use std::process::Command as SysCommand;
 
 #[derive(Parser, Debug)]
 #[command(name = "fracture")]
@@ -125,7 +125,7 @@ fn cmd_build(input: &str, output: Option<&str>, mode: &str, config: Option<&str>
 
     let program = linter.lint_and_output(input, base_name).unwrap_or_else(|e| {
         eprintln!("Linting failed: {}", e);
-        std::process:exit(1);
+        std::process::exit(1);
     });
 
     // Allow for case-insensitivity later
@@ -196,7 +196,12 @@ fn cmd_check(input: &str, config: Option<&str>) {
         output_text: false
     });
 
-    let program = Compiler::new(CompilerOptions {
+    let program = linter.lint_file(input).unwrap_or_else(|e| {
+        eprintln!("Linting failed: {}", e);
+        std::process::exit(1);
+    });
+
+    let compiler = Compiler::new(CompilerOptions {
         mode: CompilerMode::Safe,
         target: Target::X86_64Linux,
         optimization_level: 0

@@ -1,5 +1,5 @@
 use fracture_ir::{Program, Function, Inst, Reg};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 struct BorrowState {
@@ -43,7 +43,7 @@ impl BorrowState {
                     reg.0, existing.0
                 ));
             }
-            self.immutable_borrows.entry(reg.clone()).or_insert_with(Vec::new()).push(borrower.clone());
+            self.immutable_borrows.entry(reg.clone()).or_insert_with(Vec::new).push(borrower.clone());
         }
 
         Ok(())

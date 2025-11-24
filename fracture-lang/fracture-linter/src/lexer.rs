@@ -1,7 +1,5 @@
 use std::collections::HashMap;
-use fracture_ir::SyntaxConfig;
-
-use crate::syntax_config::*;
+use fracture_ir::{SyntaxConfig, syntax_config::BlockStyle};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
@@ -95,11 +93,11 @@ impl Lexer {
         if !tc.not_equals.is_empty() { 
             map.insert(tc.not_equals.clone(), Token::NotEquals); 
         }
-        if !tc.less_equal.is_empty() { 
-            map.insert(tc.less_equal.clone(), Token::LessEqual); 
+        if !tc.less_equals.is_empty() { 
+            map.insert(tc.less_equals.clone(), Token::LessEquals); 
         }
-        if !tc.greater_equal.is_empty() { 
-            map.insert(tc.greater_equal.clone(), Token::GreaterEqual); 
+        if !tc.greater_equals.is_empty() { 
+            map.insert(tc.greater_equals.clone(), Token::GreaterEquals); 
         }
         if !tc.assignment.is_empty() { 
             map.insert(tc.assignment.clone(), Token::Assignment); 
@@ -193,13 +191,13 @@ impl Lexer {
         }
 
         // Maybe add customization?
-        if self.input[self.pos].is_ascii_alphabetic() || self.input[self.pos] == "_" {
+        if self.input[self.pos].is_ascii_alphabetic() || self.input[self.pos] == '_' {
             return self.lex_ident_or_keyword();
         }
 
         // Likely return error later instead of just skipping
         self.pos += 1;
-        self.next_token();
+        self.next_token()
     }
 
     fn matches_at_pos(&self, s: &str) -> bool {
@@ -315,7 +313,7 @@ impl Lexer {
         count
     }
 
-    fn peek_next(&self) -> Option<char> {
+    pub fn peek_next(&self) -> Option<char> {
         if self.pos + 1 < self.input.len() {
             Some(self.input[self.pos + 1])
         }
