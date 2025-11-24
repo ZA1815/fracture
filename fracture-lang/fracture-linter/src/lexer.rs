@@ -57,7 +57,7 @@ pub struct Lexer {
     config: SyntaxConfig,
     indent_stack: Vec<usize>,
     at_line_start: bool,
-    token_map: HashMap<String, Token>
+    token_map: Vec<(String, Token)>
 }
 
 impl Lexer {
@@ -74,75 +74,77 @@ impl Lexer {
         }
     }
 
-    fn build_token_map(config: &SyntaxConfig) -> HashMap<String, Token> {
+    fn build_token_map(config: &SyntaxConfig) -> Vec<(String, Token)> {
         let tc = &config.tokens;
-        let mut map = HashMap::new();
+        let mut list = Vec::new();
 
         if !tc.mutable_ref.is_empty() { 
-            map.insert(tc.mutable_ref.clone(), Token::MutableRef); 
+            list.push((tc.mutable_ref.clone(), Token::MutableRef)); 
         }
         if !tc.immutable_ref.is_empty() { 
-            map.insert(tc.immutable_ref.clone(), Token::ImmutableRef); 
+            list.push((tc.immutable_ref.clone(), Token::ImmutableRef)); 
         }
         if !tc.arrow.is_empty() { 
-            map.insert(tc.arrow.clone(), Token::Arrow); 
+            list.push((tc.arrow.clone(), Token::Arrow)); 
         }
         if !tc.double_equals.is_empty() { 
-            map.insert(tc.double_equals.clone(), Token::DoubleEquals); 
+            list.push((tc.double_equals.clone(), Token::DoubleEquals)); 
         }
         if !tc.not_equals.is_empty() { 
-            map.insert(tc.not_equals.clone(), Token::NotEquals); 
+            list.push((tc.not_equals.clone(), Token::NotEquals)); 
         }
         if !tc.less_equals.is_empty() { 
-            map.insert(tc.less_equals.clone(), Token::LessEquals); 
+            list.push((tc.less_equals.clone(), Token::LessEquals)); 
         }
         if !tc.greater_equals.is_empty() { 
-            map.insert(tc.greater_equals.clone(), Token::GreaterEquals); 
+            list.push((tc.greater_equals.clone(), Token::GreaterEquals)); 
         }
         if !tc.assignment.is_empty() { 
-            map.insert(tc.assignment.clone(), Token::Assignment); 
+            list.push((tc.assignment.clone(), Token::Assignment)); 
         }
         if !tc.plus.is_empty() { 
-            map.insert(tc.plus.clone(), Token::Plus); 
+            list.push((tc.plus.clone(), Token::Plus)); 
         }
         if !tc.minus.is_empty() { 
-            map.insert(tc.minus.clone(), Token::Minus); 
+            list.push((tc.minus.clone(), Token::Minus)); 
         }
         if !tc.star.is_empty() { 
-            map.insert(tc.star.clone(), Token::Star); 
+            list.push((tc.star.clone(), Token::Star)); 
         }
         if !tc.slash.is_empty() { 
-            map.insert(tc.slash.clone(), Token::Slash); 
+            list.push((tc.slash.clone(), Token::Slash)); 
         }
         if !tc.less.is_empty() { 
-            map.insert(tc.less.clone(), Token::Less); 
+            list.push((tc.less.clone(), Token::Less)); 
         }
         if !tc.greater.is_empty() { 
-            map.insert(tc.greater.clone(), Token::Greater); 
+            list.push((tc.greater.clone(), Token::Greater)); 
         }
         if !tc.left_paren.is_empty() { 
-            map.insert(tc.left_paren.clone(), Token::LeftParentheses); 
+            list.push((tc.left_paren.clone(), Token::LeftParentheses)); 
         }
         if !tc.right_paren.is_empty() { 
-            map.insert(tc.right_paren.clone(), Token::RightParentheses); 
+            list.push((tc.right_paren.clone(), Token::RightParentheses)); 
         }
         if !tc.left_brace.is_empty() { 
-            map.insert(tc.left_brace.clone(), Token::LeftBrace); 
+            list.push((tc.left_brace.clone(), Token::LeftBrace)); 
         }
         if !tc.right_brace.is_empty() { 
-            map.insert(tc.right_brace.clone(), Token::RightBrace); 
+            list.push((tc.right_brace.clone(), Token::RightBrace)); 
         }
         if !tc.comma.is_empty() { 
-            map.insert(tc.comma.clone(), Token::Comma); 
+            list.push((tc.comma.clone(), Token::Comma)); 
         }
         if !tc.semicolon.is_empty() { 
-            map.insert(tc.semicolon.clone(), Token::Semicolon); 
+            list.push((tc.semicolon.clone(), Token::Semicolon)); 
         }
         if !tc.colon.is_empty() { 
-            map.insert(tc.colon.clone(), Token::Colon); 
+            list.push((tc.colon.clone(), Token::Colon)); 
         }
+
+        list.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
         
-        map
+        list
     }
 
     pub fn next_token(&mut self) -> Token {
@@ -207,7 +209,7 @@ impl Lexer {
         }
 
         for (i, ch) in chars.iter().enumerate() {
-            if self.input[self.pos + 1] != *ch {
+            if self.input[self.pos + i] != *ch {
                 return false;
             }
         }
