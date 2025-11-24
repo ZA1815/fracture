@@ -235,6 +235,53 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
+        Inst::TupleAlloc { dst, element_types } => {
+            env.insert(dst.clone(), Type::Tuple(element_types.clone()));
+
+            Ok(())
+        }
+        Inst::TupleLoad { dst, tuple_reg, index, ty } => {
+            let tuple_ty = env.get(tuple_reg)
+                .ok_or_else(|| format!("Register r{} not found for tuple load", tuple_reg.0))?;
+
+            if let Type::Tuple(elem_types) = tuple_ty {
+                if *index >= elem_types.len() {
+                    return Err(format!("Tuple index out of bounds: {} >= {}", index, elem_types.len()));
+                }
+
+                env.insert(dst.clone(), elem_types[*index].clone());
+            }
+            else {
+                return Err(format!("Register r{} is not a tuple, got {:?}", tuple_reg.0, tuple_ty));
+            }
+
+            Ok(())
+        }
+        Inst::TupleStore { tuple_reg, index, value, ty } => {
+            let tuple_ty = env.get(tuple_reg)
+                .ok_or_else(|| format!("Register r{} not found ofr tuple store", tuple_reg.0))?;
+
+            if let Type::Tuple(elem_types) = tuple_ty {
+                if *index >= elem_types.len() {
+                    return Err(format!("Tuple index out of bounds: {} >= {}", index, elem_types.len()));
+                }
+
+                let val_ty = infer_value_type(value, env)?;
+                let expected_ty = &elem_types[*index];
+
+                if !types_compatible(expected_ty, &val_ty) {
+                    return Err(format!(
+                        "Type mismatch in tuple store at index {}: expected {:?}, got {:?}",
+                        index, expected_ty, val_ty
+                    ));
+                }
+            }
+            else {
+                return Err(format!("Register r{} is not a tuple, got {:?}", tuple_reg.0, tuple_ty));
+            }
+
+            Ok(())
+        }
         // Implement type checking for other insts later
         _ => Ok(())
     }
