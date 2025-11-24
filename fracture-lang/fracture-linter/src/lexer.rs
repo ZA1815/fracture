@@ -48,6 +48,7 @@ pub enum Token {
     Arrow,
     Hash,
     Dot,
+    SliceDot,
 
     Newline,
     Indent,
@@ -149,6 +150,7 @@ impl Lexer {
         list.push(("[".to_string(), Token::LeftBracket));
         list.push(("]".to_string(), Token::RightBracket));
         list.push(("#".to_string(), Token::Hash));
+        list.push(("..".to_string(), Token::SliceDot));
         list.push((".".to_string(), Token::Dot));
 
         list.sort_by(|a, b| b.0.len().cmp(&a.0.len()));

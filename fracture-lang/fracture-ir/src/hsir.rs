@@ -84,7 +84,11 @@ pub enum Inst {
     // Maybe allow any types in array like JS later
     ArrayAlloc { dst: Reg, element_ty: Type, size: Value},
     IndexLoad { dst: Reg, array: Reg, index: Value, element_ty: Type },
-    IndexStore { array: Reg, index: Value, value: Value, element_ty: Type }
+    IndexStore { array: Reg, index: Value, value: Value, element_ty: Type },
+
+    SliceCreate { dst: Reg, array: Reg, start: Value, end: Value, element_ty: Type },
+    SliceLen { dst: Reg, slice: Reg },
+    SliceIndexLoad { dst: Reg, slice: Reg, index: Value, element_ty: Type }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

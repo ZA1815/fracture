@@ -367,6 +367,47 @@ impl X86CodeGen {
                     _ => self.emit("    mov QWORD PTR [rdx], rax")
                 }
             }
+            Inst::SliceCreate { dst, array, start, end, element_ty } => {
+                let element_size = self.type_size(element_ty);
+                let array_offset = self.get_or_alloc_reg_offset(array);
+                self.emit(&format!("    mov rcx, QWORD PTR [rbp-{}]", array_offset));
+                self.load_value_to_rax(start, &Type::I64);
+                self.emit(&format!("    imul rax, {}", element_size));
+                self.emit("    add rcx, rax");
+                self.load_value_to_rax(end, &Type::I64);
+                self.emit("    push rax");
+                self.load_value_to_rax(start, &Type::I64);
+                self.emit("    pop rdx");
+                self.emit("    sub rdx, rax");
+                let slice_offset = self.get_or_alloc_reg_offset(dst);
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rcx", slice_offset));
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rdx", slice_offset + 8));
+            }
+            Inst::SliceLen { dst, slice } => {
+                let slice_offset = self.get_or_alloc_reg_offset(slice);
+                self.emit(&format!("    mov rax, QWORD PTR [rbp-{}]", slice_offset + 8));
+                let dst_offset = self.get_or_alloc_reg_offset(dst);
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+            }
+            Inst::SliceIndexLoad { dst, slice, index, element_ty } => {
+                let element_size = self.type_size(element_ty);
+                let slice_offset = self.get_or_alloc_reg_offset(slice);
+                self.emit(&format!("    mov rcx, QWORD PTR [rbp-{}]", slice_offset));
+                self.load_value_to_rax(index, &Type::I64);
+                self.emit(&format!("    imul rax, {}", element_size));
+                self.emit("    add rcx, rax");
+
+                match element_size {
+                    1 => self.emit("    movzx rax, BYTE PTR [rcx]"),
+                    2 => self.emit("    movzx rax, WORD PTR [rcx]"),
+                    4 => self.emit("    mov eax, DWORD PTR [rcx]"),
+                    8 => self.emit("    mov rax, QWORD PTR [rcx]"),
+                    _ => self.emit("    mov rax, QWORD PTR [rcx]"),
+                }
+
+                let dst_offset = self.get_or_alloc_reg_offset(dst);
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+            }
             Inst::SimPoint { id, metadata } => {
                 self.emit(&format!("    # SimPoint: {}", id));
             }

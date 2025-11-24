@@ -14,7 +14,8 @@ pub struct SyntaxProjector {
     var_regs: HashMap<String, Reg>,
     next_label: u32,
 
-    struct_defs: HashMap<String, StructDef>
+    struct_defs: HashMap<String, StructDef>,
+    reg_types: HashMap<Reg, Type>
 }
 
 impl SyntaxProjector {
@@ -31,7 +32,8 @@ impl SyntaxProjector {
             next_reg: 0,
             var_regs: HashMap::new(),
             next_label: 0,
-            struct_defs: HashMap::new()
+            struct_defs: HashMap::new(),
+            reg_types: HashMap::new()
         }
     }
 
@@ -531,24 +533,62 @@ impl SyntaxProjector {
             if self.current == Token::LeftBracket {
                 self.advance();
 
-                let (index_insts, index_reg) = self.parse_expression()?;
-                instructions.extend(index_insts);
+                let (first_insts, first_reg) = self.parse_expression()?;
+                instructions.extend(first_insts);
 
-                self.expect(Token::RightBracket)?;
+                if self.current == Token::SliceDot {
+                    self.advance();
 
-                let result_reg = self.alloc_reg();
+                    let (end_insts, end_reg) = self.parse_expression()?;
+                    instructions.extend(end_insts);
 
-                // Improve with type tracking later
-                instructions.push(Inst::IndexLoad {
-                    dst: result_reg.clone(),
-                    array: reg,
-                    index: Value::Reg(index_reg),
-                    element_ty: Type::I32
-                });
+                    self.expect(Token::RightBracket)?;
 
-                reg = result_reg;
+                    let result_reg = self.alloc_reg();
 
-                continue;
+                    instructions.push(Inst::SliceCreate {
+                        dst: result_reg.clone(),
+                        array: reg,
+                        start: Value::Reg(first_reg),
+                        end: Value::Reg(end_reg),
+                        element_ty: Type::I32 // Default, change later
+                    });
+
+                    self.reg_types.insert(result_reg.clone(), Type::Slice(Box::new(Type::I32)));
+
+                    reg = result_reg;
+                }
+                else {
+                    self.expect(Token::RightBracket)?;
+
+                    let result_reg = self.alloc_reg();
+
+                    let is_slice = self.reg_types.get(&reg)
+                        .map(|ty| matches!(ty, Type::Slice(_)))
+                        .unwrap_or(false);
+
+                    if is_slice {
+                        instructions.push(Inst::SliceIndexLoad {
+                            dst: result_reg.clone(),
+                            slice: reg,
+                            index: Value::Reg(first_reg),
+                            element_ty: Type::I32 // Default, change later
+                        });
+                    }
+                    else {
+                        // Improve with type tracking later
+                        instructions.push(Inst::IndexLoad {
+                            dst: result_reg.clone(),
+                            array: reg,
+                            index: Value::Reg(first_reg),
+                            element_ty: Type::I32
+                        });
+                    }
+
+                    reg = result_reg;
+
+                    continue;
+                }
             }
             break;
         }
