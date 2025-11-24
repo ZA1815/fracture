@@ -84,7 +84,8 @@ pub struct Function {
     pub params: Vec<(Reg, Type)>,
     pub return_type: Type,
     pub body: Vec<Inst>,
-    pub locals: HashMap<Reg, Type>
+    pub locals: HashMap<Reg, Type>,
+    pub attributes: Vec<String>
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,6 +158,16 @@ impl Program {
             total_instructions: total_insts,
             total_registers: total_regs
         }
+    }
+}
+
+impl Function {
+    pub fn has_attribute(&self, attr: &str) -> bool {
+        self.attributes.iter().any(|a| a == attr)
+    }
+
+    pub fn is_unsafe(&self) -> bool {
+        self.has_attribute("unsafe")
     }
 }
 

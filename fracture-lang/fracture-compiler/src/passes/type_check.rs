@@ -3,6 +3,11 @@ use std::collections::HashMap;
 
 pub fn check(program: &Program) -> Result<(), String> {
     for (name, func) in &program.functions {
+        if func.is_unsafe() {
+            println!("  Skipping type check for #[unsafe] function: {}", name);
+            continue;
+        }
+
         check_function(name, func)?;
     }
 

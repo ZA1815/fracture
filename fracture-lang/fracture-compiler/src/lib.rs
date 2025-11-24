@@ -66,6 +66,15 @@ impl Compiler {
     }
 
     fn run_safe_passes(&self, program: &Program) -> Result<(), String> {
+        let safe_funcs = program.functions.values()
+            .filter(|f| !f.is_unsafe())
+            .count();
+        let unsafe_funcs = program.functions.values()
+            .filter(|f| f.is_unsafe())
+            .count();
+
+        println!("  Checking {} safe function(s), skipping {} unsafe function(s)", safe_funcs, unsafe_funcs);
+
         passes::type_check::check(program)?;
         println!("  Type check passed.");
 

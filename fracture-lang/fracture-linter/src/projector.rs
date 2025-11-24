@@ -50,6 +50,18 @@ impl SyntaxProjector {
         };
 
         while self.current != Token::Eof {
+            if self.current == Token::Hash {
+                let attrs = self.parse_attributes()?;
+
+                if self.current != Token::Function {
+                    return Err(format!("Attributes can only be applied to functions, found {:?}", self.current));
+                }
+
+                let mut func = self.parse_function()?;
+                func.attributes = attrs;
+                program.functions.insert(func.name.clone(), func);
+            }
+
             if self.current == Token::Function {
                 let func = self.parse_function()?;
                 program.functions.insert(func.name.clone(), func);
@@ -124,7 +136,8 @@ impl SyntaxProjector {
             params,
             return_type,
             body,
-            locals
+            locals,
+            attributes: Vec::new()
         })
     }
 
@@ -521,6 +534,22 @@ impl SyntaxProjector {
         else {
             Ok(Type::Struct(type_name))
         }
+    }
+
+    fn parse_attributes(&mut self) -> Result<Vec<String>, String> {
+        let mut attributes = Vec::new();
+
+        while self.current == Token::Hash {
+            self.expect(Token::Hash)?;
+            self.expect(Token::LeftBracket)?;
+
+            let attr_name = self.expect_ident()?;
+            attributes.push(attr_name);
+
+            self.expect(Token::RightBracket)?;
+        }
+
+        Ok(attributes)
     }
 
     fn get_or_create_var(&mut self, name: &str, ty: &Type) -> Reg {

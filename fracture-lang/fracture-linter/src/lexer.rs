@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use fracture_ir::{SyntaxConfig, syntax_config::BlockStyle};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -40,10 +39,13 @@ pub enum Token {
     RightParentheses,
     LeftBrace,
     RightBrace,
+    LeftBracket,
+    RightBracket,
     Colon,
     Semicolon,
     Comma,
     Arrow,
+    Hash,
 
     Newline,
     Indent,
@@ -141,6 +143,10 @@ impl Lexer {
         if !tc.colon.is_empty() { 
             list.push((tc.colon.clone(), Token::Colon)); 
         }
+        // Always the same (essentially reserved)
+        list.push(("[".to_string(), Token::LeftBracket));
+        list.push(("]".to_string(), Token::RightBracket));
+        list.push(("#".to_string(), Token::Hash));
 
         list.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
         
