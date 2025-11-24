@@ -282,8 +282,12 @@ impl Lexer {
         while self.pos < self.input.len() && self.input[self.pos].is_ascii_digit() {
             self.pos += 1;
         }
-
-        if self.pos < self.input.len() && self.input[self.pos] == '.' {
+        
+        // If we ever make slice op customizable, this has to change
+        let is_dot = self.pos < self.input.len() && self.input[self.pos] == '.';
+        let is_range_start = is_dot && self.pos + 1 < self.input.len() && self.input[self.pos + 1] == '.';
+        
+        if is_dot && !is_range_start {
             self.pos += 1;
             while self.pos < self.input.len() && self.input[self.pos].is_ascii_digit() {
                 self.pos += 1;

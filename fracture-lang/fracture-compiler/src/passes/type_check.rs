@@ -196,6 +196,45 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
+        Inst::SliceCreate { dst, array, start, end, element_ty } => {
+            if !env.contains_key(array) {
+                return Err(format!("Source register r{} not found for slicing", array.0));
+            }
+
+            let start_ty = infer_value_type(start, env)?;
+            let end_ty = infer_value_type(end, env)?;
+
+            if !is_numeric(&start_ty) || !is_numeric(&end_ty) {
+                return Err(format!("Slice indices must be numeric"));
+            }
+
+            env.insert(dst.clone(), Type::Slice(Box::new(element_ty.clone())));
+
+            Ok(())
+        }
+        Inst::SliceLen { dst, slice } => {
+            if !env.contains_key(slice) {
+                return Err(format!("Slice register r{} not found", slice.0));
+            }
+
+            env.insert(dst.clone(), Type::I64);
+
+            Ok(())
+        }
+        Inst::SliceIndexLoad { dst, slice, index, element_ty } => {
+            if !env.contains_key(slice) {
+                return Err(format!("Slice register r{} not found", slice.0));
+            }
+
+            let idx_ty = infer_value_type(index, env)?;
+            if !is_numeric(&idx_ty) {
+                return Err(format!("Slice index must be numeric"));
+            }
+
+            env.insert(dst.clone(), element_ty.clone());
+
+            Ok(())
+        }
         // Implement type checking for other insts later
         _ => Ok(())
     }
