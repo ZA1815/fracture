@@ -527,6 +527,29 @@ impl SyntaxProjector {
 
                 continue;
             }
+
+            if self.current == Token::LeftBracket {
+                self.advance();
+
+                let (index_insts, index_reg) = self.parse_expression()?;
+                instructions.extend(index_insts);
+
+                self.expect(Token::RightBracket)?;
+
+                let result_reg = self.alloc_reg();
+
+                // Improve with type tracking later
+                instructions.push(Inst::IndexLoad {
+                    dst: result_reg.clone(),
+                    array: reg,
+                    index: Value::Reg(index_reg),
+                    element_ty: Type::I32
+                });
+
+                reg = result_reg;
+
+                continue;
+            }
             break;
         }
 
@@ -639,6 +662,53 @@ impl SyntaxProjector {
                     ty: Type::String
                 });
                 self.advance();
+            }
+            Token::LeftBracket => {
+                self.advance();
+
+                let mut elements = Vec::new();
+                let mut element_type = Type::Unknown;
+
+                while self.current != Token::RightBracket && self.current != Token::Eof {
+                    let (elem_insts, elem_reg) = self.parse_expression()?;
+                    instructions.extend(elem_insts);
+                    elements.push(elem_reg);
+
+                    // Hardcoded, fix later
+                    if element_type == Type::Unknown {
+                        element_type = Type::I32
+                    }
+
+                    if self.current == Token::Comma {
+                        self.advance();
+                    }
+                }
+
+                self.expect(Token::RightBracket)?;
+
+                let array_size = elements.len();
+
+                let array_reg = self.alloc_reg();
+                instructions.push(Inst::ArrayAlloc {
+                    dst: array_reg.clone(),
+                    element_ty: element_type.clone(),
+                    size: Value::Const(Const::I32(array_size as i32))
+                });
+
+                for (i, elem_reg) in elements.iter().enumerate() {
+                    instructions.push(Inst::IndexStore {
+                        array: array_reg.clone(),
+                        index: Value::Const(Const::I32(i as i32)),
+                        value: Value::Reg(elem_reg.clone()),
+                        element_ty: element_type.clone()
+                    });
+                }
+
+                instructions.push(Inst::Move {
+                    dst: result_reg.clone(),
+                    src: Value::Reg(array_reg),
+                    ty: Type::Array(Box::new(element_type), array_size)
+                });
             }
             _ => return Err(format!("Unexpected token in expression: {:?}", self.current))
         }

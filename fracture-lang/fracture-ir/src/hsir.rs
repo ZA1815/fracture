@@ -79,7 +79,12 @@ pub enum Inst {
 
     StructAlloc { dst: Reg, struct_name: String },
     FieldStore { struct_reg: Reg, field_name: String, value: Value, ty: Type },
-    FieldLoad { dst: Reg, struct_reg: Reg, field_name: String, ty: Type }
+    FieldLoad { dst: Reg, struct_reg: Reg, field_name: String, ty: Type },
+
+    // Maybe allow any types in array like JS later
+    ArrayAlloc { dst: Reg, element_ty: Type, size: Value},
+    IndexLoad { dst: Reg, array: Reg, index: Value, element_ty: Type },
+    IndexStore { array: Reg, index: Value, value: Value, element_ty: Type }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

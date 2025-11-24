@@ -85,7 +85,7 @@ impl X86CodeGen {
         }
     }
 
-    fn get_field_offset(&self, struct_name: &str, field_name: &str) -> Option<usize> {
+    pub fn get_field_offset(&self, struct_name: &str, field_name: &str) -> Option<usize> {
         let layout = self.struct_layouts.get(struct_name)?;
 
         for (fname, offset, _) in layout {
@@ -317,6 +317,56 @@ impl X86CodeGen {
                     self.emit(&format!("    mov rax, QWORD PTR [rcx+{}]", field_offset));
                     let dst_offset = self.get_or_alloc_reg_offset(dst);
                     self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+                }
+            }
+            // On stack for rn, move to heap later
+            Inst::ArrayAlloc { dst, element_ty, size } => {
+                let element_size = self.type_size(element_ty);
+                self.load_value_to_rax(size, &Type::I64);
+                self.emit(&format!("    imul rax, {}", element_size));
+                let array_offset = self.next_stack_offset;
+                // Fixed space allocation, change later
+                self.next_stack_offset += 256;
+                self.emit(&format!("    lea rax, [rbp-{}]", array_offset));
+                let dst_offset = self.get_or_alloc_reg_offset(dst);
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+            }
+            Inst::IndexLoad { dst, array, index, element_ty } => {
+                let element_size = self.type_size(element_ty);
+                let array_offset = self.get_or_alloc_reg_offset(array);
+                self.emit(&format!("    mov rcx, QWORD PTR [rbp-{}]", array_offset));
+                self.load_value_to_rax(index, &Type::I64);
+                self.emit(&format!("    imul rax, {}", element_size));
+                self.emit("    add rcx, rax");
+
+                match element_size {
+                    1 => self.emit("    movzx rax, BYTE PTR [rcx]"),
+                    2 => self.emit("    movzx rax, WORD PTR [rcx]"),
+                    4 => self.emit("    mov eax, DWORD PTR [rcx]"),
+                    8 => self.emit("    mov rax, QWORD PTR [rcx]"),
+                    _ => self.emit("    mov rax, QWORD PTR [rcx]"),
+                }
+
+                let dst_offset = self.get_or_alloc_reg_offset(dst);
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+            }
+            Inst::IndexStore { array, index, value, element_ty } => {
+                let element_size = self.type_size(element_ty);
+                let array_offset = self.get_or_alloc_reg_offset(array);
+                self.emit(&format!("    mov rcx, QWORD PTR [rbp-{}]", array_offset));
+                self.load_value_to_rax(index, &Type::I64);
+                self.emit(&format!("    imul rax, {}", element_size));
+                self.emit("    add rcx, rax");
+                self.emit("    push rcx");
+                self.load_value_to_rax(value, element_ty);
+                self.emit("    pop rax");
+
+                match element_size {
+                    1 => self.emit("    mov BYTE PTR [rcx], al"),
+                    2 => self.emit("    mov WORD PTR [rcx], ax"),
+                    4 => self.emit("    mov DWORD PTR [rcx], eax"),
+                    8 => self.emit("    mov QWORD PTR [rcx], rax"),
+                    _ => self.emit("    mov QWORD PTR [rcx], rax")
                 }
             }
             Inst::SimPoint { id, metadata } => {
