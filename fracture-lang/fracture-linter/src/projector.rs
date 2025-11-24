@@ -505,29 +505,27 @@ impl SyntaxProjector {
         let (mut instructions, mut reg) = self.parse_term()?;
 
         loop {
-            if let Token::Ident(dot) = &self.current {
-                if dot == "." {
-                    self.advance();
-                    let field_name = self.expect_ident()?;
+            if self.current == Token::Dot {
+                self.advance();
+                let field_name = self.expect_ident()?;
 
-                    let result_reg = self.alloc_reg();
+                let result_reg = self.alloc_reg();
 
-                    let struct_type = self.var_types.values()
-                        .find(|ty| matches!(ty, Type::Struct(_)))
-                        .cloned()
-                        .unwrap_or(Type::Unknown);
+                let struct_type = self.var_types.values()
+                    .find(|ty| matches!(ty, Type::Struct(_)))
+                    .cloned()
+                    .unwrap_or(Type::Unknown);
 
-                    instructions.push(Inst::FieldLoad {
-                        dst: result_reg.clone(),
-                        struct_reg: reg,
-                        field_name,
-                        ty: struct_type
-                    });
+                instructions.push(Inst::FieldLoad {
+                    dst: result_reg.clone(),
+                    struct_reg: reg,
+                    field_name,
+                    ty: struct_type
+                });
 
-                    reg = result_reg;
+                reg = result_reg;
 
-                    continue;
-                }
+                continue;
             }
             break;
         }
@@ -633,6 +631,14 @@ impl SyntaxProjector {
                     ty: Type::Unknown
                 });
                 self.expect(Token::RightParentheses)?;
+            }
+            Token::String(s) => {
+                instructions.push(Inst::Move {
+                    dst: result_reg.clone(),
+                    src: Value::Const(Const::String(s.clone())),
+                    ty: Type::String
+                });
+                self.advance();
             }
             _ => return Err(format!("Unexpected token in expression: {:?}", self.current))
         }

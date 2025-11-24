@@ -283,6 +283,7 @@ fn cmd_compile(input: &str, output: Option<&str>, mode: &str) {
     });
 }
 
+// These templates aren't supported yet, have to fix that later
 fn cmd_new(name: &str, template: &str) {
     println!("Creating new Fracture project: {}", name);
 

@@ -8,13 +8,13 @@ pub fn check(program: &Program) -> Result<(), String> {
             continue;
         }
 
-        check_function(name, func)?;
+        check_function(name, func, program)?;
     }
 
     Ok(())
 }
 
-fn check_function(name: &str, func: &Function) -> Result<(), String> {
+fn check_function(name: &str, func: &Function, program: &Program) -> Result<(), String> {
     let mut env: HashMap<Reg, Type> = HashMap::new();
 
     for (reg, ty) in &func.params {
@@ -26,23 +26,32 @@ fn check_function(name: &str, func: &Function) -> Result<(), String> {
     }
 
     for inst in &func.body {
-        check_instruction(inst, &mut env, name)?;
+        check_instruction(inst, &mut env, name, program)?;
     }
 
     Ok(())
 }
 
-fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str) -> Result<(), String> {
+fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str, program: &Program) -> Result<(), String> {
     match inst {
         Inst::Move { dst, src, ty } => {
             let src_ty = infer_value_type(src, env)?;
-            if !types_compatible(&src_ty, ty) {
-                return Err(format!(
-                    "Type mismatch in {}: expected {:?}, got {:?}",
-                    func_name, ty, src_ty
-                ));
+
+            let final_ty = if *ty == Type::Unknown {
+                src_ty.clone()
             }
-            env.insert(dst.clone(), ty.clone());
+            else {
+                if !types_compatible(&src_ty, ty) {
+                    return Err(format!(
+                        "Type mismatch in {}: expected {:?}, got {:?}",
+                        func_name, ty, src_ty
+                    ));
+                }
+
+                ty.clone()
+            };
+            
+            env.insert(dst.clone(), final_ty.clone());
 
             Ok(())
         }
@@ -96,6 +105,52 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str)
         Inst::Return { val } => {
             if let Some(v) = val {
                 infer_value_type(v, env)?;
+            }
+
+            Ok(())
+        }
+        Inst::StructAlloc { dst, struct_name } => {
+            if !program.structs.contains_key(struct_name) {
+                return Err(format!("Unknown struct '{}' in function {}", struct_name, func_name))
+            }
+            env.insert(dst.clone(), Type::Struct(struct_name.clone()));
+
+            Ok(())
+        }
+        Inst::FieldStore { struct_reg, field_name, value, ty } => {
+            let struct_ty = env.get(struct_reg)
+                .ok_or_else(|| format!("Register r{} not found for field access", struct_reg.0))?;
+
+            if let Type::Struct(struct_name) = struct_ty {
+                let field_ty = program.field_offset(&struct_name, field_name)
+                    .map(|(_, ty)| ty)
+                    .ok_or_else(|| format!("Struct '{}' has no field '{}'", struct_name, field_name))?;
+
+                let val_ty = infer_value_type(value, env)?;
+
+                if !types_compatible(field_ty, &val_ty) {
+                    return Err(format!("Type mismatch in field '{}': expected {:?}, got {:?}", field_name, field_ty, val_ty));
+                }
+            }
+            else {
+                return Err(format!("Cannot access field of non-struct type {:?}", struct_ty));
+            }
+
+            Ok(())
+        }
+        Inst::FieldLoad { dst, struct_reg, field_name, ty } => {
+            let struct_ty = env.get(struct_reg)
+                .ok_or_else(|| format!("Register r{} not found for field access", struct_reg.0))?;
+
+            if let Type::Struct(struct_name) = struct_ty {
+                let field_ty = program.field_offset(&struct_name, field_name)
+                    .map(|(_, ty)| ty)
+                    .ok_or_else(|| format!("Struct '{}' has no field '{}'", struct_name, field_name))?;
+
+                env.insert(dst.clone(), field_ty.clone());
+            }
+            else {
+                return Err(format!("Cannot access field of non-struct type {:?}", struct_ty));
             }
 
             Ok(())
