@@ -293,41 +293,34 @@ fn cmd_new(name: &str, template: &str) {
 
     let config_content = match template {
         "rust" => {
-            let main_content = r#"
-            fn main() -> i32 {
-                let x = 42;
-                return x;
-            }
-            "#;
+            let main_content = r#"fn main() -> i32 {
+    let x = 42;
+    return x;
+}"#;
 
             std::fs::write(format!("{}/main.frac", name), main_content).unwrap();
 
-            r#"
-            [syntax]
-            name = "rust"
-            style = "rust"
+r#"[syntax]
+name = "rust"
+style = "rust"
 
-            [compiler]
-            mode = "safe"
-            "#
+[compiler]
+mode = "safe""#
         }
         "python" => {
             let main_content = r#"
-            def main() -> int:
-                x = 42;
-                return x
-            "#;
+def main() -> int:
+    x = 42;
+    return x"#;
 
             std::fs::write(format!("{}/main.frac", name), main_content).unwrap();
 
-            r#"
-            [syntax]
-            name = "python"
-            style = "python"
+r#"[syntax]
+name = "python"
+style = "python"
 
-            [compiler]
-            mode = "unsafe"
-            "#
+[compiler]
+mode = "unsafe""#
         }
         _ => {
             // Eventually move to using custom templates based on users config
