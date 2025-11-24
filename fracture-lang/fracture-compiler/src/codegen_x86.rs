@@ -322,13 +322,12 @@ impl X86CodeGen {
             // On stack for rn, move to heap later
             Inst::ArrayAlloc { dst, element_ty, size } => {
                 let element_size = self.type_size(element_ty);
+                let dst_offset = self.get_or_alloc_reg_offset(dst);
                 self.load_value_to_rax(size, &Type::I64);
                 self.emit(&format!("    imul rax, {}", element_size));
-                let array_offset = self.next_stack_offset;
-                // Fixed space allocation, change later
-                self.next_stack_offset += 256;
-                self.emit(&format!("    lea rax, [rbp-{}]", array_offset));
-                let dst_offset = self.get_or_alloc_reg_offset(dst);
+                let array_base = self.next_stack_offset + 256;
+                self.emit(&format!("    sub rsp, 256"));
+                self.emit(&format!("    lea rax, [rbp-{}]", array_base));
                 self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
             }
             Inst::IndexLoad { dst, array, index, element_ty } => {
@@ -357,16 +356,15 @@ impl X86CodeGen {
                 self.load_value_to_rax(index, &Type::I64);
                 self.emit(&format!("    imul rax, {}", element_size));
                 self.emit("    add rcx, rax");
-                self.emit("    push rcx");
+                self.emit("    mov rdx, rcx");
                 self.load_value_to_rax(value, element_ty);
-                self.emit("    pop rax");
 
                 match element_size {
-                    1 => self.emit("    mov BYTE PTR [rcx], al"),
-                    2 => self.emit("    mov WORD PTR [rcx], ax"),
-                    4 => self.emit("    mov DWORD PTR [rcx], eax"),
-                    8 => self.emit("    mov QWORD PTR [rcx], rax"),
-                    _ => self.emit("    mov QWORD PTR [rcx], rax")
+                    1 => self.emit("    mov BYTE PTR [rdx], al"),
+                    2 => self.emit("    mov WORD PTR [rdx], ax"),
+                    4 => self.emit("    mov DWORD PTR [rdx], eax"),
+                    8 => self.emit("    mov QWORD PTR [rdx], rax"),
+                    _ => self.emit("    mov QWORD PTR [rdx], rax")
                 }
             }
             Inst::SimPoint { id, metadata } => {

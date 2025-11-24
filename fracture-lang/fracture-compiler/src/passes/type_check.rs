@@ -155,6 +155,47 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
+        Inst::ArrayAlloc { dst, element_ty, size } => {
+            let count = match size {
+                Value::Const(fracture_ir::Const::I32(n)) => *n as usize,
+                _ => 0 // Placeholder for dynamic sizing
+            };
+
+            env.insert(dst.clone(), Type::Array(Box::new(element_ty.clone()), count));
+
+            Ok(())
+        }
+        Inst::IndexLoad { dst, array, index, element_ty } => {
+            if !env.contains_key(array) {
+                return Err(format!("Array register r{} not found", array.0));
+            }
+
+            let idx_type = infer_value_type(index, env)?;
+            if !is_numeric(&idx_type) {
+                return Err(format!("Array index must be numeric, got {:?}", idx_type));
+            }
+
+            env.insert(dst.clone(), element_ty.clone());
+
+            Ok(())
+        }
+        Inst::IndexStore { array, index, value, element_ty } => {
+            if !env.contains_key(array) {
+                return Err(format!("Array register r{} not found", array.0));
+            }
+
+            let idx_type = infer_value_type(index, env)?;
+            if !is_numeric(&idx_type) {
+                return Err(format!("Array index must be numeric, got {:?}", idx_type));
+            }
+
+            let val_type = infer_value_type(value, env)?;
+            if !types_compatible(element_ty, &val_type) {
+                return Err(format!("Type mismatch in array store: expected {:?}, got {:?}", element_ty, val_type));
+            }
+
+            Ok(())
+        }
         // Implement type checking for other insts later
         _ => Ok(())
     }
