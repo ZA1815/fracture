@@ -507,24 +507,40 @@ impl SyntaxProjector {
         let (mut instructions, mut reg) = self.parse_term()?;
 
         loop {
+            let result_reg = self.alloc_reg();
             if self.current == Token::Dot {
                 self.advance();
-                let field_name = self.expect_ident()?;
 
-                let result_reg = self.alloc_reg();
+                match &self.current {
+                    Token::Number(n) => {
+                        let index = *n as usize;
+                        self.advance();
 
-                let struct_type = self.var_types.values()
-                    .find(|ty| matches!(ty, Type::Struct(_)))
-                    .cloned()
-                    .unwrap_or(Type::Unknown);
+                        instructions.push(Inst::TupleLoad {
+                            dst: result_reg.clone(),
+                            tuple_reg: reg,
+                            index,
+                            ty: Type::Unknown
+                        });
+                    }
+                    Token::Ident(field_name) => {
+                        let field = field_name.clone();
+                        self.advance();
 
-                instructions.push(Inst::FieldLoad {
-                    dst: result_reg.clone(),
-                    struct_reg: reg,
-                    field_name,
-                    ty: struct_type
-                });
+                        let struct_type = self.var_types.values()
+                            .find(|ty| matches!(ty, Type::Struct(_)))
+                            .cloned()
+                            .unwrap_or(Type::Unknown);
 
+                        instructions.push(Inst::FieldLoad {
+                            dst: result_reg.clone(),
+                            struct_reg: reg,
+                            field_name: field,
+                            ty: struct_type
+                        });
+                    }
+                    _ => return Err(format!("Expected field name or number after '.', got {:?}", self.current))
+                }
                 reg = result_reg;
 
                 continue;
@@ -686,14 +702,64 @@ impl SyntaxProjector {
             }
             Token::LeftParentheses => {
                 self.advance();
-                let (expr_insts, expr_reg) = self.parse_expression()?;
-                instructions.extend(expr_insts);
-                instructions.push(Inst::Move {
-                    dst: result_reg.clone(),
-                    src: Value::Reg(expr_reg),
-                    ty: Type::Unknown
-                });
-                self.expect(Token::RightParentheses)?;
+
+                let (first_insts, first_reg) = self.parse_expression()?;
+                instructions.extend(first_insts);
+
+                if self.current == Token::Comma {
+                    self.advance();
+
+                    let mut elements = vec![first_reg];
+                    let mut element_types = vec![Type::Unknown];
+
+                    while self.current != Token::RightParentheses && self.current != Token::Eof {
+                        let (elem_insts, elem_reg) = self.parse_expression()?;
+                        instructions.extend(elem_insts);
+                        elements.push(elem_reg);
+                        element_types.push(Type::Unknown);
+
+                        if self.current == Token::Comma {
+                            self.advance();
+                        }
+                        else {
+                            break;
+                        }
+                    }
+
+                    self.expect(Token::RightParentheses)?;
+
+                    let tuple_reg = self.alloc_reg();
+                    instructions.push(Inst::TupleAlloc {
+                        dst: tuple_reg.clone(),
+                        element_types: element_types.clone()
+                    });
+
+                    for (i, elem_reg) in elements.iter().enumerate() {
+                        instructions.push(Inst::TupleStore {
+                            tuple_reg: tuple_reg.clone(),
+                            index: i,
+                            value: Value::Reg(elem_reg.clone()),
+                            ty: element_types[i].clone()
+                        });
+                    }
+
+                    instructions.push(Inst::Move {
+                        dst: result_reg.clone(),
+                        src: Value::Reg(tuple_reg),
+                        ty: Type::Tuple(element_types)
+                    });
+
+                    self.reg_types.insert(result_reg.clone(), Type::Tuple(vec![Type::Unknown; elements.len()]));
+                }
+                else {
+                    self.expect(Token::RightParentheses)?;
+
+                        instructions.push(Inst::Move {
+                        dst: result_reg.clone(),
+                        src: Value::Reg(first_reg),
+                        ty: Type::Unknown
+                    });
+                }        
             }
             Token::String(s) => {
                 instructions.push(Inst::Move {

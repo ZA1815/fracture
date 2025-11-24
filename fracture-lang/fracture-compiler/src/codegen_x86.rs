@@ -408,6 +408,35 @@ impl X86CodeGen {
                 let dst_offset = self.get_or_alloc_reg_offset(dst);
                 self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
             }
+            Inst::TupleAlloc { dst, element_types } => {
+                let total_size: usize = element_types.iter()
+                    .map(|ty| self.type_size(ty))
+                    .sum();
+
+                let tuple_offset = self.next_stack_offset;
+                self.next_stack_offset += total_size as i32;
+
+                self.emit(&format!("    lea rax, [rbp-{}]", tuple_offset));
+                let dst_offset = self.get_or_alloc_reg_offset(dst);
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+            }
+            Inst::TupleLoad { dst, tuple_reg, index, ty } => {
+                let tuple_offset = self.get_or_alloc_reg_offset(tuple_reg);
+                self.emit(&format!("    mov rcx, QWORD PTR [rbp-{}]", tuple_offset));
+                // Need to improve after implementing type tracking
+                let field_offset = index * 8;
+                self.emit(&format!("    mov rax, QWORD PTR [rcx+{}]", field_offset));
+                let dst_offset = self.get_or_alloc_reg_offset(dst);
+                self.emit(&format!("mov QWORD PTR [rbp-{}], rax", dst_offset));
+            }
+            Inst::TupleStore { tuple_reg, index, value, ty } => {
+                let tuple_offset = self.get_or_alloc_reg_offset(tuple_reg);
+                self.emit(&format!("    mov rcx, QWORD PTR [rbp-{}]", tuple_offset));
+                // Need to improve after implementing type tracking
+                let field_offset = index * 8;
+                self.load_value_to_rax(value, ty);
+                self.emit(&format!("    mov QWORD PTR [rcx+{}], rax", field_offset));
+            }
             Inst::SimPoint { id, metadata } => {
                 self.emit(&format!("    # SimPoint: {}", id));
             }

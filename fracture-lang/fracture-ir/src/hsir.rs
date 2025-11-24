@@ -10,6 +10,7 @@ pub enum Type {
     String,
     Array(Box<Type>, usize),
     Slice(Box<Type>),
+    Tuple(Vec<Type>),
     Ptr(Box<Type>),
     Ref(Box<Type>, bool),
     Struct(String),
@@ -78,8 +79,8 @@ pub enum Inst {
     EndBorrow { reg: Reg },
 
     StructAlloc { dst: Reg, struct_name: String },
-    FieldStore { struct_reg: Reg, field_name: String, value: Value, ty: Type },
     FieldLoad { dst: Reg, struct_reg: Reg, field_name: String, ty: Type },
+    FieldStore { struct_reg: Reg, field_name: String, value: Value, ty: Type },
 
     // Maybe allow any types in array like JS later
     ArrayAlloc { dst: Reg, element_ty: Type, size: Value},
@@ -88,7 +89,11 @@ pub enum Inst {
 
     SliceCreate { dst: Reg, array: Reg, start: Value, end: Value, element_ty: Type },
     SliceLen { dst: Reg, slice: Reg },
-    SliceIndexLoad { dst: Reg, slice: Reg, index: Value, element_ty: Type }
+    SliceIndexLoad { dst: Reg, slice: Reg, index: Value, element_ty: Type },
+
+    TupleAlloc { dst: Reg, element_types: Vec<Type> },
+    TupleLoad { dst: Reg, tuple_reg: Reg, index: usize, ty: Type },
+    TupleStore { tuple_reg: Reg, index: usize, value: Value, ty: Type }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
