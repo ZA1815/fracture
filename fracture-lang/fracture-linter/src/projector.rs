@@ -255,6 +255,12 @@ impl SyntaxProjector {
                     let (expr_insts, result_reg) = self.parse_expression()?;
                     instructions.extend(expr_insts);
 
+                    let var_type = if matches!(var_type, Type::Unknown) {
+                        self.reg_types.get(&result_reg).cloned().unwrap_or(Type::Unknown)
+                    } else {
+                        var_type
+                    };
+
                     let var_reg = self.get_or_create_var(&var_name, &var_type);
                     instructions.push(Inst::Move {
                         dst: var_reg,
@@ -741,11 +747,14 @@ impl SyntaxProjector {
                 }
                 else {
                     if let Some(var_reg) = self.var_regs.get(name) {
+                        let var_type = self.var_types.get(name).cloned().unwrap_or(Type::Unknown);
                         instructions.push(Inst::Move {
                             dst: result_reg.clone(),
                             src: Value::Reg(var_reg.clone()),
-                            ty: self.var_types.get(name).cloned().unwrap_or(Type::Unknown)
+                            ty: var_type.clone()
                         });
+                        // Also register the type for the new register so postfix operations can find it
+                        self.reg_types.insert(result_reg.clone(), var_type);
                     }
                     else {
                         return Err(format!("Unknown variable: {}", name));

@@ -310,11 +310,9 @@ impl X86CodeGen {
             }
             Inst::StructAlloc { dst, struct_name } => {
                 let size = self.get_struct_size(struct_name);
-
                 // Allocate to heap later
                 let struct_offset = self.next_stack_offset;
                 self.next_stack_offset += size as i32;
-
                 self.emit(&format!("    lea rax, [rbp-{}]", struct_offset));
                 let dst_offset = self.get_or_alloc_reg_offset(dst);
                 self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
@@ -466,29 +464,28 @@ impl X86CodeGen {
                 }
             }
             Inst::StringAlloc { dst, data } => {
-                let string_offset = self.next_stack_offset;
-                self.next_stack_offset += 24;
+                let dst_offset = self.get_or_alloc_reg_offset(dst);
+                let string_offset = self.next_stack_offset + 24;
+                self.next_stack_offset = string_offset + 24;
                 let len = data.len();
                 let cap = len.max(16);
-                self.emit(&format!("    mov rax, {}", cap));
-                self.emit("    push rax");
-                self.emit("    mov rax, 12");
                 self.emit("    xor rdi, rdi");
+                self.emit(&format!("    mov rsi, {}", cap));
+                self.emit("    mov rdx, 3");
+                self.emit("    mov r10, 0x22");
+                self.emit("    mov r8, -1");
+                self.emit("    xor r9, r9");
+                self.emit("    mov rax, 9");
                 self.emit("    syscall");
-                self.emit("    mov rcx, rax");
-                self.emit("    pop rdi");
-                self.emit("    add rdi, rcx");
-                self.emit("    mov rax, 12");
-                self.emit("    syscall");
-                self.emit("    mov rdi, rcx");
+                self.emit("    mov rdi, rax");
                 for (i, byte) in data.bytes().enumerate() {
                     self.emit(&format!("    mov BYTE PTR [rdi+{}], {}", i, byte));
                 }
-                self.emit(&format!("    mov QWORD PTR [rbp-{}], rdi", string_offset));
-                self.emit(&format!("    mov QWORD PTR [rbp-{}], {}", string_offset + 8, len));
-                self.emit(&format!("    mov QWORD PTR [rbp-{}], {}", string_offset + 16, cap));
-                self.emit(&format!("    lea rax, [rbp-{}]", string_offset));
-                let dst_offset = self.get_or_alloc_reg_offset(dst);
+                let string_base = string_offset + 16;
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rdi", string_base));
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], {}", string_base - 8, len));
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], {}", string_base - 16, cap));
+                self.emit(&format!("    lea rax, [rbp-{}]", string_base));
                 self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
             }
             Inst::StringLen { dst, string } => {
@@ -529,15 +526,15 @@ impl X86CodeGen {
                 self.emit("    add rdi, r10");
                 self.emit("    mov rcx, r13");
                 self.emit("    rep movsb");
-                let result_offset = self.next_stack_offset;
-                self.next_stack_offset += 24;
+                let dst_offset = self.get_or_alloc_reg_offset(dst);
+                let result_offset = self.next_stack_offset + 24;
+                self.next_stack_offset = result_offset + 24;
                 self.emit(&format!("    mov QWORD PTR [rbp-{}], r15", result_offset));
                 self.emit(&format!("    mov QWORD PTR [rbp-{}], r14", result_offset + 8));
                 self.emit("    mov rax, r14");
                 self.emit("    add rax, 16");
                 self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", result_offset + 16));
                 self.emit(&format!("    lea rax, [rbp-{}]", result_offset));
-                let dst_offset = self.get_or_alloc_reg_offset(dst);
                 self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
             }
             Inst::StringPush { string, value } => {

@@ -282,6 +282,16 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
+        Inst::StringAlloc { dst, data } => {
+            env.insert(dst.clone(), Type::String);
+
+            Ok(())
+        }
+        Inst::StringLen { dst, string } => {
+            env.insert(dst.clone(), Type::I32);
+
+            Ok(())
+        }
         // Implement type checking for other insts later
         _ => Ok(())
     }
