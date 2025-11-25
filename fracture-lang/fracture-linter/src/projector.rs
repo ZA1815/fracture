@@ -445,23 +445,45 @@ impl SyntaxProjector {
 
             let result_reg = self.alloc_reg();
 
-            let inst = match op {
-                Token::Plus => Inst::Add {
-                    dst: result_reg.clone(),
-                    lhs: Value::Reg(left_reg),
-                    rhs: Value::Reg(right_reg),
-                    ty: Type::I32 // Add type inference later
-                },
-                Token::Minus => Inst::Sub {
-                    dst: result_reg.clone(),
-                    lhs: Value::Reg(left_reg),
-                    rhs: Value::Reg(right_reg),
-                    ty: Type::I32 // Add type inference later
-                },
-                _ => unreachable!()
-            };
+            let left_is_string = self.reg_types.get(&left_reg)
+                .map(|ty| matches!(ty, Type::String))
+                .unwrap_or(false);
+            let right_is_string = self.reg_types.get(&right_reg)
+                .map(|ty| matches!(ty, Type::String))
+                .unwrap_or(false);
 
-            instructions.push(inst);
+            if left_is_string || right_is_string {
+                if op != Token::Plus {
+                    return Err("Can only use `Plus Token` operator with strings, not `Minus Token`".to_string());
+                }
+
+                instructions.push(Inst::StringConcat {
+                    dst: result_reg.clone(),
+                    left: left_reg,
+                    right: right_reg
+                });
+
+                self.reg_types.insert(result_reg.clone(), Type::String);
+            }
+            else {
+                let inst = match op {
+                    Token::Plus => Inst::Add {
+                        dst: result_reg.clone(),
+                        lhs: Value::Reg(left_reg),
+                        rhs: Value::Reg(right_reg),
+                        ty: Type::I32 // Add type inference later
+                    },
+                    Token::Minus => Inst::Sub {
+                        dst: result_reg.clone(),
+                        lhs: Value::Reg(left_reg),
+                        rhs: Value::Reg(right_reg),
+                        ty: Type::I32 // Add type inference later
+                    },
+                    _ => unreachable!()
+                };
+
+                instructions.push(inst);
+            }
             left_reg = result_reg
         }
 
@@ -527,17 +549,47 @@ impl SyntaxProjector {
                         let field = field_name.clone();
                         self.advance();
 
-                        let struct_type = self.var_types.values()
+                        if self.current == Token::LeftParentheses {
+                            self.advance();
+
+                            if field == "len" {
+                                self.expect(Token::RightParentheses)?;
+
+                                let is_string = self.reg_types.get(&reg)
+                                    .map(|ty| matches!(ty, Type::String))
+                                    .unwrap_or(false);
+
+                                if is_string {
+                                    instructions.push(Inst::StringLen {
+                                        dst: result_reg.clone(),
+                                        string: reg
+                                    });
+                                }
+                                // Could be slice len or array len
+                                else {
+                                    instructions.push(Inst::SliceLen {
+                                        dst: result_reg.clone(),
+                                        slice: reg
+                                    });
+                                }
+                            }
+                            else {
+                                return Err(format!("Unknown method: {}", field));
+                            }
+                        }
+                        else {
+                            let struct_type = self.var_types.values()
                             .find(|ty| matches!(ty, Type::Struct(_)))
                             .cloned()
                             .unwrap_or(Type::Unknown);
 
-                        instructions.push(Inst::FieldLoad {
-                            dst: result_reg.clone(),
-                            struct_reg: reg,
-                            field_name: field,
-                            ty: struct_type
-                        });
+                            instructions.push(Inst::FieldLoad {
+                                dst: result_reg.clone(),
+                                struct_reg: reg,
+                                field_name: field,
+                                ty: struct_type
+                            });
+                        }
                     }
                     _ => return Err(format!("Expected field name or number after '.', got {:?}", self.current))
                 }
@@ -762,12 +814,13 @@ impl SyntaxProjector {
                 }        
             }
             Token::String(s) => {
-                instructions.push(Inst::Move {
+                instructions.push(Inst::StringAlloc {
                     dst: result_reg.clone(),
-                    src: Value::Const(Const::String(s.clone())),
-                    ty: Type::String
+                    data: s.clone()
                 });
                 self.advance();
+
+                self.reg_types.insert(result_reg.clone(), Type::String);
             }
             Token::LeftBracket => {
                 self.advance();

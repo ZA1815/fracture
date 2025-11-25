@@ -62,6 +62,10 @@ pub enum Inst {
     Store { ptr: Value, src: Value, ty: Type },
     Free { ptr: Value },
 
+    HeapAlloc { dst: Reg, size: Value },
+    HeapRealloc { dst: Reg, ptr: Value, new_size: Value },
+    HeapFree { ptr: Value },
+
     Jump { target: Label },
     JumpIf { cond: Value, target: Label },
     JumpIfFalse { cond: Value, target: Label },
@@ -93,7 +97,13 @@ pub enum Inst {
 
     TupleAlloc { dst: Reg, element_types: Vec<Type> },
     TupleLoad { dst: Reg, tuple_reg: Reg, index: usize, ty: Type },
-    TupleStore { tuple_reg: Reg, index: usize, value: Value, ty: Type }
+    TupleStore { tuple_reg: Reg, index: usize, value: Value, ty: Type },
+
+    StringAlloc { dst: Reg, data: String },
+    StringLen { dst: Reg, string: Reg },
+    StringConcat { dst: Reg, left: Reg, right: Reg },
+    StringPush { string: Reg, value: Value },
+    StringIndex { dst: Reg, string: Reg, index: Value }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
