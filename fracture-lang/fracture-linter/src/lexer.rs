@@ -25,6 +25,7 @@ pub enum Token {
     Slash,
 
     Assignment,
+    ObjectAccess,
     DoubleEquals,
     NotEquals,
     

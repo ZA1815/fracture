@@ -292,6 +292,108 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
+        Inst::VecAlloc { dst, element_ty, initial_cap } => {
+            let cap_ty = infer_value_type(initial_cap, env)?;
+            if !is_numeric(&cap_ty) {
+                return Err(format!("Vec capacity must be numeric, got {:?}", cap_ty));
+            }
+
+            env.insert(dst.clone(), Type::Vec(Box::new(element_ty.clone())));
+
+            Ok(())
+        }
+        Inst::VecPush { vec, value, element_ty } => {
+            let vec_ty = env.get(vec)
+                .ok_or_else(|| format!("Vec register r{} not found", vec.0))?;
+
+            if let Type::Vec(inner_ty) = vec_ty {
+                let val_ty = infer_value_type(value, env)?;
+                if !types_compatible(&inner_ty, &val_ty) {
+                    return Err(format!(
+                        "Type mismatch in vec push: expected {:?}, got {:?}",
+                        inner_ty, vec_ty
+                    ));
+                }
+            }
+            else {
+                return Err(format!("Cannot push to non-Vec type {:?}", vec_ty));
+            }
+
+            Ok(())
+        }
+        Inst::VecPop { dst, vec, element_ty } => {
+            let vec_ty = env.get(vec)
+                .ok_or_else(|| format!("Vec register r{} not found", vec.0))?;
+
+            if let Type::Vec(inner_ty) = vec_ty {
+                env.insert(dst.clone(), (**inner_ty).clone());
+            }
+            else {
+                return Err(format!("Cannot pop from non-Vec type: {:?}", vec_ty));
+            }
+
+            Ok(())
+        }
+        Inst::VecGet { dst, vec, index, element_ty } => {
+            let vec_ty = env.get(vec)
+                .ok_or_else(|| format!("Vec register r{} not found", vec.0))?;
+
+            let idx_ty = infer_value_type(index, env)?;
+            if !is_numeric(&idx_ty) {
+                return Err(format!("Vec index must be numeric, got {:?}", idx_ty));
+            }
+
+            if let Type::Vec(inner_ty) = vec_ty {
+                env.insert(dst.clone(), (**inner_ty).clone());
+            }
+            else {
+                return Err(format!("Cannot index non-Vec type {:?}", vec_ty));
+            }
+
+            Ok(())
+        }
+        Inst::VecSet { vec, index, value, element_ty } => {
+            let vec_ty = env.get(vec)
+                .ok_or_else(|| format!("Vec register r{} not found", vec.0))?;
+
+            let idx_ty = infer_value_type(index, env)?;
+            if !is_numeric(&idx_ty) {
+                return Err(format!("Vec index must be numeric, got {:?}", idx_ty));
+            }
+
+            if let Type::Vec(inner_ty) = vec_ty {
+                let val_ty = infer_value_type(value, env)?;
+                if !types_compatible(inner_ty, &val_ty) {
+                    return Err(format!(
+                        "Type mismatch in Vec set: exepcted {:?}, got {:?}",
+                        inner_ty, val_ty
+                    ));
+                }
+            }
+            else {
+                return Err(format!("Cannot set on non-Vec type {:?}", vec_ty));
+            }
+
+            Ok(())
+        }
+        Inst::VecLen { dst, vec } => {
+            if !env.contains_key(vec) {
+                return Err(format!("Vec register r{} not found", vec.0));
+            }
+
+            env.insert(dst.clone(), Type::I64);
+
+            Ok(())
+        }
+        Inst::VecCap { dst, vec } => {
+            if !env.contains_key(vec) {
+                return Err(format!("Vec register r{} not found", vec.0));
+            }
+
+            env.insert(dst.clone(), Type::I64);
+
+            Ok(())
+        }
         // Implement type checking for other insts later
         _ => Ok(())
     }
@@ -324,6 +426,10 @@ fn types_compatible(t1: &Type, t2: &Type) -> bool {
     }
 
     if matches!(t1, Type::Unknown) || matches!(t2, Type::Unknown) {
+        return true;
+    }
+
+    if is_numeric(t1) && is_numeric(t2) {
         return true;
     }
 

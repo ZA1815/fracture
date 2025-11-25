@@ -16,6 +16,7 @@ pub enum Type {
     Struct(String),
     Function(Vec<Type>, Box<Type>),
     Future(Box<Type>),
+    Vec(Box<Type>),
     Void,
     Unknown
 }
@@ -63,7 +64,7 @@ pub enum Inst {
     Free { ptr: Value },
 
     HeapAlloc { dst: Reg, size: Value },
-    HeapRealloc { dst: Reg, ptr: Value, new_size: Value },
+    HeapRealloc { dst: Reg, ptr: Value, old_size: Value, new_size: Value },
     HeapFree { ptr: Value },
 
     Jump { target: Label },
@@ -103,7 +104,15 @@ pub enum Inst {
     StringLen { dst: Reg, string: Reg },
     StringConcat { dst: Reg, left: Reg, right: Reg },
     StringPush { string: Reg, value: Value },
-    StringIndex { dst: Reg, string: Reg, index: Value }
+    StringIndex { dst: Reg, string: Reg, index: Value },
+
+    VecAlloc { dst: Reg, element_ty: Type, initial_cap: Value },
+    VecPush { vec: Reg, value: Value, element_ty: Type },
+    VecPop { dst: Reg, vec: Reg, element_ty: Type },
+    VecGet { dst: Reg, vec: Reg, index: Value, element_ty: Type },
+    VecSet { vec: Reg, index: Value, value: Value, element_ty: Type },
+    VecLen { dst: Reg, vec: Reg },
+    VecCap { dst: Reg, vec: Reg }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

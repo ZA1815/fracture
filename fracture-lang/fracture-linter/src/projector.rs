@@ -558,29 +558,78 @@ impl SyntaxProjector {
                         if self.current == Token::LeftParentheses {
                             self.advance();
 
-                            if field == "len" {
-                                self.expect(Token::RightParentheses)?;
+                            match field.as_str() {
+                                "len" => {
+                                    self.expect(Token::RightParentheses)?;
 
-                                let is_string = self.reg_types.get(&reg)
-                                    .map(|ty| matches!(ty, Type::String))
-                                    .unwrap_or(false);
+                                    let reg_type = self.reg_types.get(&reg);
+                                    let is_string = reg_type.map(|ty| matches!(ty, Type::String)).unwrap_or(false);
+                                    let is_vec = reg_type.map(|ty| matches!(ty, Type::Vec(_))).unwrap_or(false);
 
-                                if is_string {
-                                    instructions.push(Inst::StringLen {
-                                        dst: result_reg.clone(),
-                                        string: reg
-                                    });
+                                    if is_string {
+                                        instructions.push(Inst::StringLen { dst: result_reg.clone(), string: reg });
+                                    }
+                                    else if is_vec {
+                                        instructions.push(Inst::VecLen { dst: result_reg.clone(), vec: reg });
+                                    }
+                                    else {
+                                        instructions.push(Inst::SliceLen { dst: result_reg.clone(), slice: reg });
+                                    }
+
+                                    self.reg_types.insert(result_reg.clone(), Type::I64);
                                 }
-                                // Could be slice len or array len
-                                else {
-                                    instructions.push(Inst::SliceLen {
-                                        dst: result_reg.clone(),
-                                        slice: reg
+                                "push" => {
+                                    let (val_insts, val_reg) = self.parse_expression()?;
+                                    instructions.extend(val_insts);
+                                    self.expect(Token::RightParentheses)?;
+
+                                    let elem_ty = if let Some(Type::Vec(inner)) = self.reg_types.get(&reg) {
+                                        (**inner).clone()
+                                    }
+                                    // Could give error here
+                                    else {
+                                        Type::I32
+                                    };
+
+                                    instructions.push(Inst::VecPush {
+                                        vec: reg.clone(),
+                                        value: Value::Reg(val_reg),
+                                        element_ty: elem_ty
                                     });
+
+                                    reg = reg.clone();
+
+                                    continue;
                                 }
-                            }
-                            else {
-                                return Err(format!("Unknown method: {}", field));
+                                "pop" => {
+                                    self.expect(Token::RightParentheses)?;
+
+                                    let elem_ty = if let Some(Type::Vec(inner)) = self.reg_types.get(&reg) {
+                                        (**inner).clone()
+                                    }
+                                    // Could give error here
+                                    else {
+                                        Type::I32
+                                    };
+
+                                    instructions.push(Inst::VecPop {
+                                        dst: result_reg.clone(),
+                                        vec: reg,
+                                        element_ty: elem_ty.clone()
+                                    });
+
+                                    self.reg_types.insert(result_reg.clone(), elem_ty);
+                                }
+                                "cap" | "capacity" => {
+                                    self.expect(Token::RightParentheses)?;
+
+                                    instructions.push(Inst::VecCap { dst: result_reg.clone(), vec: reg });
+
+                                    self.reg_types.insert(result_reg.clone(), Type::I64);
+                                }
+                                _ => {
+                                    return Err(format!("Unknown method: {}", field));
+                                }
                             }
                         }
                         else {
@@ -637,8 +686,12 @@ impl SyntaxProjector {
 
                     let result_reg = self.alloc_reg();
 
+                    let reg_type = self.reg_types.get(&reg);
                     let is_slice = self.reg_types.get(&reg)
                         .map(|ty| matches!(ty, Type::Slice(_)))
+                        .unwrap_or(false);
+                    let is_vec = self.reg_types.get(&reg)
+                        .map(|ty| matches!(ty, Type::Vec(_)))
                         .unwrap_or(false);
 
                     if is_slice {
@@ -647,6 +700,22 @@ impl SyntaxProjector {
                             slice: reg,
                             index: Value::Reg(first_reg),
                             element_ty: Type::I32 // Default, change later
+                        });
+                    }
+                    else if is_vec {
+                        let elem_ty = if let Some(Type::Vec(inner)) = reg_type {
+                            (**inner).clone()
+                        }
+                        // Likely return error here later
+                        else {
+                            Type::I32
+                        };
+
+                        instructions.push(Inst::VecGet {
+                            dst: result_reg.clone(),
+                            vec: reg,
+                            index: Value::Reg(first_reg),
+                            element_ty: elem_ty
                         });
                     }
                     else {
@@ -684,10 +753,34 @@ impl SyntaxProjector {
                 self.advance();
             }
             Token::Ident(name) => {
+                let name = name.clone();
                 self.advance();
 
                 if self.current == Token::LeftParentheses {
                     self.advance();
+
+                    if self.current == Token::ObjectAccess {
+                        self.advance();
+                        let method = self.expect_ident()?;
+
+                        if name == "Vec" && method == "new" {
+                            self.expect(Token::LeftParentheses)?;
+                            self.expect(Token::RightParentheses)?;
+
+                            instructions.push(Inst::VecAlloc {
+                                dst: result_reg.clone(),
+                                element_ty: Type::I32, // Default, change later
+                                initial_cap: Value::Const(Const::I64(8))
+                            });
+
+                            self.reg_types.insert(result_reg.clone(), Type::Vec(Box::new(Type::I32)));
+
+                            return Ok((instructions, result_reg));
+                        }
+                        else {
+                            return Err(format!("Unknown static method: {}, {}", name, method));
+                        }
+                    }
 
                     let mut args = Vec::new();
                     while self.current != Token::RightParentheses {
@@ -746,8 +839,8 @@ impl SyntaxProjector {
                     });
                 }
                 else {
-                    if let Some(var_reg) = self.var_regs.get(name) {
-                        let var_type = self.var_types.get(name).cloned().unwrap_or(Type::Unknown);
+                    if let Some(var_reg) = self.var_regs.get(&name) {
+                        let var_type = self.var_types.get(&name).cloned().unwrap_or(Type::Unknown);
                         instructions.push(Inst::Move {
                             dst: result_reg.clone(),
                             src: Value::Reg(var_reg.clone()),
@@ -886,6 +979,17 @@ impl SyntaxProjector {
 
     fn parse_type(&mut self) -> Result<Type, String> {
         let type_name = self.expect_ident()?;
+
+        if type_name == "Vec" {
+            if self.current == Token::Less {
+                self.advance();
+
+                let inner_type = self.parse_type()?;
+                self.expect(Token::Greater)?;
+
+                return Ok(Type::Vec(Box::new(Type::Unknown)));
+            }
+        }
 
         if type_name == self.config.keywords.int_type {
             Ok(Type::I32)

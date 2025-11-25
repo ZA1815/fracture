@@ -7,8 +7,11 @@ pub struct X86CodeGen {
     next_stack_offset: i32,
     current_function_stack_size: i32,
     program: Option<Program>,
-    struct_layouts: HashMap<String, Vec<(String, usize, Type)>>
+    struct_layouts: HashMap<String, Vec<(String, usize, Type)>>,
+    vec_layouts: HashMap<Reg, (i32, i32, i32)>
 }
+
+
 
 impl X86CodeGen {
     pub fn new() -> Self {
@@ -18,7 +21,8 @@ impl X86CodeGen {
             next_stack_offset: 8,
             current_function_stack_size: 0,
             program: None,
-            struct_layouts: HashMap::new()
+            struct_layouts: HashMap::new(),
+            vec_layouts: HashMap::new()
         }
     }
 
@@ -283,11 +287,28 @@ impl X86CodeGen {
                 let offset = self.get_or_alloc_reg_offset(dst);
                 self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", offset));
             }
-            // Very simple impl, have to improve later
-            Inst::HeapRealloc { dst, ptr, new_size } => {
-                let offset = self.get_or_alloc_reg_offset(dst);
+            // Simple impl, have to improve later
+            Inst::HeapRealloc { dst, ptr, old_size, new_size } => {
+                self.load_value_to_rax(old_size, &Type::I64);
+                self.emit("    push rax");
                 self.load_value_to_rax(ptr, &Type::I64);
-                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", offset));
+                self.emit("    push rax");
+                self.emit("    mov rax, 12");
+                self.emit("    xor rdi, rdi");
+                self.emit("    syscall");
+                self.emit("    mov r12, rax");
+                self.load_value_to_rax(new_size, &Type::I64);
+                self.emit("    add rax, r12");
+                self.emit("    mov rdi, rax");
+                self.emit("    mov rax, 12");
+                self.emit("    syscall");
+                self.emit("    pop rsi");
+                self.emit("    pop rcx");
+                self.emit("    mov rdi, r12");
+                self.emit("    rep movsb");
+                self.emit("    mov rax, r12");
+                let dst_offset = self.get_or_alloc_reg_offset(dst);
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
             }
             Inst::HeapFree { ptr } => {
                 // Placeholder
@@ -549,6 +570,166 @@ impl X86CodeGen {
                 self.emit("    movzx rax, BYTE PTR [rcx]");
                 let dst_offset = self.get_or_alloc_reg_offset(dst);
                 self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+            }
+            Inst::VecAlloc { dst, element_ty, initial_cap } => {
+                let element_size = self.type_size(element_ty);
+                let dst_offset = self.get_or_alloc_reg_offset(dst);
+                let vec_meta_offset = self.next_stack_offset + 24;
+                self.next_stack_offset = vec_meta_offset + 8;
+                self.load_value_to_rax(initial_cap, &Type::I64);
+                self.emit("    push rax");
+                self.emit(&format!("    imul rax, {}", element_size));
+                self.emit("    push rax");
+                self.emit("    mov rax, 12");
+                self.emit("    xor rdi, rdi");
+                self.emit("    syscall");
+                self.emit("    mov r12, rax");
+                self.emit("    pop rdi");
+                self.emit("    add rdi, r12");
+                self.emit("    mov rax, 12");
+                self.emit("    syscall");
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], r12", vec_meta_offset));
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], 0", vec_meta_offset - 8));
+                self.emit("    pop rax");
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", vec_meta_offset - 16));
+                self.emit(&format!("    lea rax, [rbp-{}]", vec_meta_offset));
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+                self.vec_layouts.insert(dst.clone(), (vec_meta_offset, vec_meta_offset - 8, vec_meta_offset - 16)); 
+            }
+            Inst::VecPush { vec, value, element_ty } => {
+                let element_size = self.type_size(element_ty);
+                let vec_offset = self.get_or_alloc_reg_offset(vec);
+                self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", vec_offset));
+                self.emit(&format!("    mov r13, QWORD PTR [r12+{}]", 8));
+                self.emit(&format!("    mov r14, QWORD PTR [r12+{}]", 16));
+                self.emit("    cmp r13, r14");
+                let no_grow_label = format!("vec_no_grow_{}", self.next_stack_offset);
+                let after_grow_label = format!("vec_after_grow_{}", self.next_stack_offset);
+                self.emit(&format!("    jl {}", no_grow_label));
+                self.emit("    mov rax, r14");
+                self.emit("    test rax, rax");
+                self.emit("    jnz vec_double_cap");
+                self.emit("    mov rax, 8");
+                self.emit("    jmp vec_do_realloc");
+                self.emit("vec_double_cap:");
+                self.emit("    shl rax, 1");
+                self.emit("    vec_do_realloc:");
+                self.emit("    push rax");
+                self.emit("    mov rdi, r13");
+                self.emit(&format!("    imul rdi, {}", element_size));
+                self.emit("    push rdi");
+                self.emit("    mov rsi, rax");
+                self.emit(&format!("    imul rsi, {}", element_size));
+                self.emit("    push rsi");
+                self.emit(&format!("    mov r15, QWORD PTR [r12]"));
+                self.emit("    mov rax, 12");
+                self.emit("    xor rdi, rdi");
+                self.emit("    syscall");
+                self.emit("    push rax");
+                self.emit("    pop r8");
+                self.emit("    push r8");
+                self.emit("    pop rax");
+                self.emit("    pop rdi");
+                self.emit("    push rax");
+                self.emit("    add rdi, rax");
+                self.emit("    mov rax, 12");
+                self.emit("    syscall");
+                self.emit("    pop rdi");
+                self.emit("    push rdi");
+                self.emit("    mov rsi, r15");
+                self.emit("    pop rcx");
+                self.emit("    pop rcx");
+                self.emit("    push rdi");
+                self.emit("    rep movsb");
+                self.emit("    pop rax");
+                self.emit("    mov QWORD PTR [r12], rax");
+                self.emit("    pop rax");
+                self.emit(&format!("    mov QWORD PTR [r12+{}]", 16));
+                self.emit(&format!("    jmp {}", after_grow_label));
+                self.emit(&format!("{}:", no_grow_label));
+                self.emit(&format!("{}:", after_grow_label));
+                self.emit("    mov r15, QWORD PTR [r12]");
+                self.emit(&format!("    mov r13, QWORD PTR [r12+{}]", 8));
+                self.emit("    mov rax, r13");
+                self.emit(&format!("    imul rax, {}", element_size));
+                self.emit("    add r15, rax");
+                self.load_value_to_rax(value, element_ty);
+                match element_size {
+                    1 => self.emit("    mov BYTE PTR [r15], al"),
+                    2 => self.emit("    mov WORD PTR [r15], ax"),
+                    4 => self.emit("    mov DWORD PTR [r15], eax"),
+                    _ => self.emit("    mov QWORD PTR [r15], rax"),
+                }
+                self.emit(&format!("    mov rax, QWORD PTR [r12+{}]", 8));
+                self.emit("    inc rax");
+                self.emit(&format!("    mov QWORD PTR [r12+{}], rax", 8));
+            }
+            Inst::VecPop { dst, vec, element_ty } => {
+                let element_size = self.type_size(element_ty);
+                let vec_offset = self.get_or_alloc_reg_offset(vec);
+                let dst_offset = self.get_or_alloc_reg_offset(dst);
+                self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", vec_offset));
+                self.emit(&format!("    mov rax, QWORD PTR [r12+{}]", 8));
+                self.emit("    dec rax");
+                self.emit(&format!("    mov QWORD PTR [r12+{}], rax", 8));
+                self.emit("    mov rcx, QWORD PTR [r12]");
+                self.emit(&format!("    imul rax, {}", element_size));
+                self.emit("    add rcx, rax");
+                match element_size {
+                    1 => self.emit("    movzx rax, BYTE PTR [rcx]"),
+                    2 => self.emit("    movzx rax, WORD PTR [rcx]"),
+                    4 => self.emit("    mov eax, DWORD PTR [rcx]"),
+                    _ => self.emit("    mov rax, QWORD PTR [rcx]"),
+                }
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+            }
+            Inst::VecGet { dst, vec, index, element_ty } => {
+                let element_size = self.type_size(element_ty);
+                let vec_offset = self.get_or_alloc_reg_offset(vec);
+                let dst_offset = self.get_or_alloc_reg_offset(dst);
+                self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", vec_offset));
+                self.emit("    mov rcx, QWORD PTR [r12]");
+                self.load_value_to_rax(index, &Type::I64);
+                self.emit(&format!("    imul rax, {}", element_size));
+                self.emit("    add rcx, rax");
+                match element_size {
+                    1 => self.emit("    movzx rax, BYTE PTR [rcx]"),
+                    2 => self.emit("    movzx rax, WORD PTR [rcx]"),
+                    4 => self.emit("    mov eax, DWORD PTR [rcx]"),
+                    _ => self.emit("    mov rax, QWORD PTR [rcx]"),
+                }
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+            }
+            Inst::VecSet { vec, index, value, element_ty } => {
+                let element_size = self.type_size(element_ty);
+                let vec_offset = self.get_or_alloc_reg_offset(vec);
+                self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", vec_offset));
+                self.emit("    mov rcx, QWORD PTR [r12]");
+                self.load_value_to_rax(index, &Type::I64);
+                self.emit(&format!("    imul rax, {}", element_size));
+                self.emit("    add rcx, rax");
+                self.emit("    mov rdx, rcx");
+                self.load_value_to_rax(value, element_ty);
+                match element_size {
+                    1 => self.emit("    mov BYTE PTR [rdx], al"),
+                    2 => self.emit("    mov WORD PTR [rdx], ax"),
+                    4 => self.emit("    mov DWORD PTR [rdx], eax"),
+                    _ => self.emit("    mov QWORD PTR [rdx], rax")
+                }
+            }
+            Inst::VecLen { dst, vec } => {
+                let vec_offset = self.get_or_alloc_reg_offset(vec);
+                let dst_offset = self.get_or_alloc_reg_offset(dst);
+                self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", vec_offset));
+                self.emit(&format!("    mov rax, QWORD PTR [r12+{}]", 8));
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+            }
+            Inst::VecCap { dst, vec } => {
+                let vec_offset = self.get_or_alloc_reg_offset(vec);
+                let dst_offset = self.get_or_alloc_reg_offset(dst);
+                self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", vec_offset));
+                self.emit(&format!("    mov rax, QWORD PTR [r12+{}]", 16));
+                self.emit(&format!("    mov QWORD PTR [rbp-{}]", dst_offset));
             }
             Inst::SimPoint { id, metadata } => {
                 self.emit(&format!("    # SimPoint: {}", id));
