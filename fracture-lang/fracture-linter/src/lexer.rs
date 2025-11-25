@@ -25,7 +25,8 @@ pub enum Token {
     Slash,
 
     Assignment,
-    ObjectAccess,
+    // Have to change later but its complicated
+    DoubleColon,
     DoubleEquals,
     NotEquals,
     
@@ -153,6 +154,8 @@ impl Lexer {
         list.push(("#".to_string(), Token::Hash));
         list.push(("..".to_string(), Token::SliceDot));
         list.push((".".to_string(), Token::Dot));
+        // Have to change later but its complicated
+        list.push(("::".to_string(), Token::DoubleColon));
 
         list.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
         

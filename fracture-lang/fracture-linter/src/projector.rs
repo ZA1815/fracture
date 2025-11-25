@@ -756,31 +756,31 @@ impl SyntaxProjector {
                 let name = name.clone();
                 self.advance();
 
+                if self.current == Token::DoubleColon {
+                    self.advance();
+                    let method = self.expect_ident()?;
+
+                    if name == "Vec" && method == "new" {
+                        self.expect(Token::LeftParentheses)?;
+                        self.expect(Token::RightParentheses)?;
+
+                        instructions.push(Inst::VecAlloc {
+                            dst: result_reg.clone(),
+                            element_ty: Type::I32, // Default, change later
+                            initial_cap: Value::Const(Const::I64(8))
+                        });
+
+                        self.reg_types.insert(result_reg.clone(), Type::Vec(Box::new(Type::I32)));
+
+                        return Ok((instructions, result_reg));
+                    }
+                    else {
+                        return Err(format!("Unknown static method: {}, {}", name, method));
+                    }
+                }
+
                 if self.current == Token::LeftParentheses {
                     self.advance();
-
-                    if self.current == Token::ObjectAccess {
-                        self.advance();
-                        let method = self.expect_ident()?;
-
-                        if name == "Vec" && method == "new" {
-                            self.expect(Token::LeftParentheses)?;
-                            self.expect(Token::RightParentheses)?;
-
-                            instructions.push(Inst::VecAlloc {
-                                dst: result_reg.clone(),
-                                element_ty: Type::I32, // Default, change later
-                                initial_cap: Value::Const(Const::I64(8))
-                            });
-
-                            self.reg_types.insert(result_reg.clone(), Type::Vec(Box::new(Type::I32)));
-
-                            return Ok((instructions, result_reg));
-                        }
-                        else {
-                            return Err(format!("Unknown static method: {}, {}", name, method));
-                        }
-                    }
 
                     let mut args = Vec::new();
                     while self.current != Token::RightParentheses {

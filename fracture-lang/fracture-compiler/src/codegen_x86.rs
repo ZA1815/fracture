@@ -8,10 +8,9 @@ pub struct X86CodeGen {
     current_function_stack_size: i32,
     program: Option<Program>,
     struct_layouts: HashMap<String, Vec<(String, usize, Type)>>,
-    vec_layouts: HashMap<Reg, (i32, i32, i32)>
+    vec_layouts: HashMap<Reg, (i32, i32, i32)>,
+    label_counter: usize
 }
-
-
 
 impl X86CodeGen {
     pub fn new() -> Self {
@@ -22,8 +21,16 @@ impl X86CodeGen {
             current_function_stack_size: 0,
             program: None,
             struct_layouts: HashMap::new(),
-            vec_layouts: HashMap::new()
+            vec_layouts: HashMap::new(),
+            label_counter: 0
         }
+    }
+
+    fn next_label_id(&mut self) -> usize {
+        let id = self.label_counter;
+        self.label_counter += 1;
+
+        id
     }
 
     pub fn compile_program(&mut self, program: &Program) -> String {
@@ -599,52 +606,45 @@ impl X86CodeGen {
             Inst::VecPush { vec, value, element_ty } => {
                 let element_size = self.type_size(element_ty);
                 let vec_offset = self.get_or_alloc_reg_offset(vec);
+                let id = self.next_label_id();
                 self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", vec_offset));
                 self.emit(&format!("    mov r13, QWORD PTR [r12+{}]", 8));
                 self.emit(&format!("    mov r14, QWORD PTR [r12+{}]", 16));
                 self.emit("    cmp r13, r14");
-                let no_grow_label = format!("vec_no_grow_{}", self.next_stack_offset);
-                let after_grow_label = format!("vec_after_grow_{}", self.next_stack_offset);
+                let no_grow_label = format!("vec_no_grow_{}", id);
+                let after_grow_label = format!("vec_after_grow_{}", id);
+                let double_cap_label = format!("vec_double_cap_{}", id);
+                let do_realloc_label = format!("vec_do_realloc_{}", id);
                 self.emit(&format!("    jl {}", no_grow_label));
                 self.emit("    mov rax, r14");
                 self.emit("    test rax, rax");
-                self.emit("    jnz vec_double_cap");
+                self.emit(&format!("    jnz {}", double_cap_label));
                 self.emit("    mov rax, 8");
-                self.emit("    jmp vec_do_realloc");
-                self.emit("vec_double_cap:");
+                self.emit(&format!("    jmp {}", do_realloc_label));
+                self.emit(&format!("{}:", double_cap_label));
                 self.emit("    shl rax, 1");
-                self.emit("    vec_do_realloc:");
+                self.emit(&format!("{}:", do_realloc_label));
                 self.emit("    push rax");
                 self.emit("    mov rdi, r13");
                 self.emit(&format!("    imul rdi, {}", element_size));
-                self.emit("    push rdi");
                 self.emit("    mov rsi, rax");
                 self.emit(&format!("    imul rsi, {}", element_size));
-                self.emit("    push rsi");
-                self.emit(&format!("    mov r15, QWORD PTR [r12]"));
+                self.emit("    push rdi");
                 self.emit("    mov rax, 12");
                 self.emit("    xor rdi, rdi");
                 self.emit("    syscall");
-                self.emit("    push rax");
-                self.emit("    pop r8");
-                self.emit("    push r8");
-                self.emit("    pop rax");
-                self.emit("    pop rdi");
-                self.emit("    push rax");
-                self.emit("    add rdi, rax");
+                self.emit("    mov r15, rax");
+                self.emit("    mov rdi, r15");
+                self.emit("    add rdi, rsi");
                 self.emit("    mov rax, 12");
                 self.emit("    syscall");
-                self.emit("    pop rdi");
-                self.emit("    push rdi");
-                self.emit("    mov rsi, r15");
+                self.emit("    mov rdi, r15");
+                self.emit("    mov rsi, QWORD PTR [r12]");
                 self.emit("    pop rcx");
-                self.emit("    pop rcx");
-                self.emit("    push rdi");
                 self.emit("    rep movsb");
+                self.emit("    mov QWORD PTR [r12], r15");
                 self.emit("    pop rax");
-                self.emit("    mov QWORD PTR [r12], rax");
-                self.emit("    pop rax");
-                self.emit(&format!("    mov QWORD PTR [r12+{}]", 16));
+                self.emit(&format!("    mov QWORD PTR [r12+{}], rax", 16));
                 self.emit(&format!("    jmp {}", after_grow_label));
                 self.emit(&format!("{}:", no_grow_label));
                 self.emit(&format!("{}:", after_grow_label));
@@ -660,9 +660,8 @@ impl X86CodeGen {
                     4 => self.emit("    mov DWORD PTR [r15], eax"),
                     _ => self.emit("    mov QWORD PTR [r15], rax"),
                 }
-                self.emit(&format!("    mov rax, QWORD PTR [r12+{}]", 8));
-                self.emit("    inc rax");
-                self.emit(&format!("    mov QWORD PTR [r12+{}], rax", 8));
+                self.emit("    inc r13");
+                self.emit(&format!("    mov QWORD PTR [r12+{}], r13", 8));
             }
             Inst::VecPop { dst, vec, element_ty } => {
                 let element_size = self.type_size(element_ty);
