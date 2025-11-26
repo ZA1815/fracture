@@ -87,6 +87,15 @@ impl X86CodeGen {
         }
     }
 
+    fn bucket_size(&self, key_ty: &Type, value_ty: &Type) -> usize {
+        let key_size = self.type_size(key_ty);
+        let value_size = self.type_size(value_ty);
+
+        let raw_size = 16 + key_size + value_size;
+
+        (raw_size + 7) & !7
+    }
+
     fn get_struct_size(&self, struct_name: &str) -> usize {
         if let Some(layout) = self.struct_layouts.get(struct_name) {
             layout.iter().map(|(_, _, ty)| self.type_size(ty)).sum()
@@ -729,6 +738,297 @@ impl X86CodeGen {
                 self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", vec_offset));
                 self.emit(&format!("    mov rax, QWORD PTR [r12+{}]", 16));
                 self.emit(&format!("    mov QWORD PTR [rbp-{}]", dst_offset));
+            }
+            Inst::HashMapAlloc { dst, key_ty, value_ty, initial_cap } => {
+                let bucket_size = self.bucket_size(key_ty, value_ty);
+                let dst_offset = self.get_or_alloc_reg_offset(dst);
+                let meta_offset = self.next_stack_offset + 32;
+                self.next_stack_offset = meta_offset + 8;
+                self.load_value_to_rax(initial_cap, &Type::I64);
+                self.emit("    mov r14, rax");
+                self.emit(&format!("    imul rax, {}", bucket_size));
+                self.emit("    mov r13, rax");
+                self.emit("    mov rax, 12");
+                self.emit("    xor rdi, rdi");
+                self.emit("    syscall");
+                self.emit("    mov r12, rax");
+                self.emit("    mov rdi, r12");
+                self.emit("    add rdi, r13");
+                self.emit("    mov rax, 12");
+                self.emit("    syscall");
+                self.emit("    mov rdi, r12");
+                self.emit("    xor rax, rax");
+                self.emit("    mov rcx, r13");
+                self.emit("    rep stosb");
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], r12", meta_offset));
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], 0", meta_offset - 8));
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], r14", meta_offset - 16));
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], 0", meta_offset - 24));
+                self.emit(&format!("    lea rax, [rbp-{}]", meta_offset));
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+            }
+            Inst::HashMapInsert { map, key, value, key_ty, value_ty } => {
+                let bucket_size = self.bucket_size(key_ty, value_ty);
+                let key_size = self.type_size(key_ty);
+                let map_offset = self.get_or_alloc_reg_offset(map);
+                let id = self.next_label_id();
+                self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", map_offset));
+                self.emit("    mov r13, QWORD PTR [r12]");
+                self.emit(&format!("    mov r14, QWORD PTR [r12+{}]", 16));
+                // Add proper hashing using FNV-1a or SipHash
+                self.load_value_to_rax(key, key_ty);
+                self.emit("    mov r15, rax");
+                self.emit("    mov rax, r15");
+                self.emit("    mov rcx, 0x9E3779B97F4A7C15");
+                self.emit("    imul rax, rcx");
+                self.emit("    shr rax, 32");
+                self.emit("    mov r15, rax");
+                self.emit("    xor rdx, rdx");
+                self.emit("    div r14");
+                self.emit("    mov r8, rdx");
+                let probe_loop = format!("hashmap_insert_probe_{}", id);
+                let found_empty = format!("hashmap_insert_empty_{}", id);
+                let found_match = format!("hashmap_insert_match_{}", id);
+                let insert_done = format!("hashmap_insert_done_{}", id);
+                let check_resize = format!("hashmap_insert_check_resize_{}", id);
+                self.emit(&format!("{}:", probe_loop));
+                self.emit("    mov rax, r8");
+                self.emit(&format!("    imul rax, {}", bucket_size));
+                self.emit("    lea rcx, [r13+rax]");
+                self.emit(&format!("    movzx rax, BYTE PTR [rcx+{}]", 8));
+                self.emit(&format!("    cmp rax, {}", 1));
+                self.emit(&format!("    jne {}", found_empty));
+                self.emit(&format!("    mov rax, QWORD PTR [rcx+{}]", 0));
+                self.emit("    cmp rax, r15");
+                self.emit(&format!("    jne {}_next_bucket", probe_loop));
+                self.load_value_to_rax(key, key_ty);
+                self.emit(&format!("    cmp rax, QWORD PTR [rcx+{}]", 16));
+                self.emit(&format!("    je {}", found_match));
+                self.emit(&format!("{}_next_bucket:", probe_loop));
+                self.emit("    inc r8");
+                self.emit("    cmp r8, r14");
+                self.emit(&format!("    jl {}", probe_loop));
+                self.emit("    xor r8, r8");
+                self.emit(&format!("    jmp {}", probe_loop));
+                self.emit(&format!("{}:", found_empty));
+                self.emit(&format!("    movzx rax, BYTE PTR [rcx+{}]", 8));
+                self.emit(&format!("    cmp rax, {}", 2));
+                self.emit(&format!("    jne {}_not_tombstone", found_empty));
+                self.emit(&format!("    dec QWORD PTR [r12+{}]", 24));
+                self.emit(&format!("{}_not_tombstone:", found_empty));
+                self.emit("    mov QWORD PTR [rcx], r15");
+                self.load_value_to_rax(key, key_ty);
+                self.emit(&format!("    mov QWORD PTR [rcx+{}], rax", 16));
+                self.load_value_to_rax(value, value_ty);
+                self.emit(&format!("    mov QWORD PTR [rcx+{}], rax", 16 + key_size as i32));
+                self.emit(&format!("    mov BYTE PTR [rcx+{}], {}", 8, 1));
+                self.emit(&format!("    inc QWORD PTR [r12+{}]", 8));
+                self.emit(&format!("    jmp {}", check_resize));
+                self.emit(&format!("{}:", found_match));
+                self.load_value_to_rax(value, value_ty);
+                self.emit(&format!("    mov QWORD PTR [rcx+{}], rax", 16 + key_size as i32));
+                self.emit(&format!("    jmp {}", insert_done));
+                self.emit(&format!("{}:", check_resize));
+                self.emit(&format!("    mov rax, QWORD PTR [r12+{}]", 8));
+                self.emit(&format!("    add rax, QWORD PTR [r12+{}]", 24));
+                self.emit("    shl rax, 2");
+                self.emit("    mov rcx, r14");
+                self.emit("    imul rcx, 3");
+                self.emit("    cmp rax, rcx");
+                self.emit(&format!("    jle {}", insert_done));
+                // Need to implement resizing
+                self.emit(&format!("{}:", insert_done));
+            }
+            Inst::HashMapGet { dst, found_dst, map, key, key_ty, value_ty } => {
+                let bucket_size = self.bucket_size(key_ty, value_ty);
+                let key_size = self.type_size(key_ty);
+                let map_offset = self.get_or_alloc_reg_offset(map);
+                let dst_offset = self.get_or_alloc_reg_offset(dst);
+                let found_offset = self.get_or_alloc_reg_offset(found_dst);
+                let id = self.next_label_id();
+                self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", map_offset));
+                self.emit(&format!("    mov r13, QWORD PTR [r12]"));
+                self.emit(&format!("    mov r14, QWORD PTR [r12+{}]", 16));
+                self.load_value_to_rax(key, key_ty);
+                self.emit("    mov r15, rax");
+                self.emit("    mov rcx, 0x9E3779B97F4A7C15");
+                self.emit("    imul rax, rcx");
+                self.emit("    shr rax, 32");
+                self.emit("    mov r15, rax");
+                self.emit("    xor rdx, rdx");
+                self.emit("    div r14");
+                self.emit("    mov r8, rdx");
+                self.emit("    mov r9, r14");
+                let probe_loop = format!("hashmap_get_probe_{}", id);
+                let not_found = format!("hashmap_get_not_found_{}", id);
+                let found = format!("hashmap_get_found_{}", id);
+                let done = format!("hashmap_get_done_{}", id);
+                self.emit(&format!("{}:", probe_loop));
+                self.emit("    dec r9");
+                self.emit(&format!("    jl {}", not_found));
+                self.emit("    mov rax, r8");
+                self.emit(&format!("    imul rax, {}", bucket_size));
+                self.emit("    lea rax, [r13+rax]");
+                self.emit(&format!("    movzx rax, BYTE PTR [rcx+{}]", 8));
+                self.emit(&format!("    cmp rax, {}", 0));
+                self.emit(&format!("    je {}", not_found));
+                self.emit(&format!("    cmp rax, {}", 2));
+                self.emit(&format!("    je {}_next", probe_loop));
+                self.emit(&format!("    mov rax, QWORD PTR [rcx]"));
+                self.emit("    cmp rax, r15");
+                self.emit(&format!("    jne {}_next", probe_loop));
+                self.load_value_to_rax(key, key_ty);
+                self.emit(&format!("    cmp rax, QWORD PTR [rcx+{}]", 16));
+                self.emit(&format!("    je {}", found));
+                self.emit(&format!("{}_next:", probe_loop));
+                self.emit("    inc r8");
+                self.emit("    cmp r8, r14");
+                self.emit(&format!("    jl {}", probe_loop));
+                self.emit("    xor r8, r8");
+                self.emit(&format!("    jmp {}", probe_loop));
+                self.emit(&format!("{}:", not_found));
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], 0", found_offset));
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], 0", dst_offset));
+                self.emit(&format!("    jmp {}", done));
+                self.emit(&format!("{}:", found));
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], 1", found_offset));
+                self.emit(&format!("    mov rax, QWORD PTR [rcx+{}]", 16 + key_size as i32));
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+                self.emit(&format!("{}:", done));
+            }
+            Inst::HashMapRemove { success_dst, map, key, key_ty } => {
+                let bucket_size = self.bucket_size(key_ty, &Type::I64);
+                let map_offset = self.get_or_alloc_reg_offset(map);
+                let success_offset = self.get_or_alloc_reg_offset(success_dst);
+                let id = self.next_label_id();
+                self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", map_offset));
+                self.emit("    mov r13, QWORD PTR [r12]");
+                self.emit(&format!("    mov r14, QWORD PTR [r12+{}]", 16));
+                self.load_value_to_rax(key, key_ty);
+                self.emit("    mov r15, rax");
+                self.emit("    mov rcx, 0x9E3779B97F4A7C15");
+                self.emit("    imul rax, rcx");
+                self.emit("    shr rax, 32");
+                self.emit("    mov r15, rax");
+                self.emit("    xor rdx, rdx");
+                self.emit("    div r14");
+                self.emit("    mov r8, rdx");
+                self.emit("    mov r9, r14");
+                let probe_loop = format!("hashmap_remove_probe_{}", id);
+                let not_found = format!("hashmap_remove_not_found_{}", id);
+                let found = format!("hashmap_remove_found_{}", id);
+                let done = format!("hashmap_remove_done_{}", id);
+                self.emit(&format!("{}:", probe_loop));
+                self.emit("    dec r9");
+                self.emit(&format!("    jl {}", not_found));
+                self.emit("    mov rax, r8");
+                self.emit(&format!("    imul rax, {}", bucket_size));
+                self.emit("    lea rcx, [r13+rax]");
+                self.emit(&format!("    movzx rax, BYTE PTR [rcx+{}]", 8));
+                self.emit(&format!("    cmp rax, {}", 0));
+                self.emit(&format!("    je {}", not_found));
+                self.emit(&format!("    cmp rax, {}", 2));
+                self.emit(&format!("    je {}_next", probe_loop));
+                self.emit(&format!("    mov rax, QWORD PTR [rcx]"));
+                self.emit("    cmp rax, r15");
+                self.emit(&format!("    jne {}_next", probe_loop));
+                self.load_value_to_rax(key, key_ty);
+                self.emit(&format!("    cmp rax, QWORD PTR [rcx+{}]", 16));
+                self.emit(&format!("    je {}", found));
+                self.emit(&format!("{}_next:", probe_loop));
+                self.emit("    inc r8");
+                self.emit("    cmp r8, r14");
+                self.emit(&format!("    jl {}", probe_loop));
+                self.emit("    xor r8, r8");
+                self.emit(&format!("    jmp {}", probe_loop));
+                self.emit(&format!("{}:", not_found));
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], 0", success_offset));
+                self.emit(&format!("    jmp {}", done));
+                self.emit(&format!("{}:", found));
+                self.emit(&format!("    mov BYTE PTR [rcx+{}], {}", 8, 2));
+                self.emit(&format!("    dec QWORD PTR [r12+{}]", 8));
+                self.emit(&format!("    inc QWORD PTR [r12+{}]", 24));
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], 1", success_offset));
+                self.emit(&format!("{}:", done));
+            }
+            Inst::HashMapContains { dst, map, key, key_ty } => {
+                let bucket_size = self.bucket_size(key_ty, &Type::I64);
+                let map_offset = self.get_or_alloc_reg_offset(map);
+                let dst_offset = self.get_or_alloc_reg_offset(dst);
+                let id = self.next_label_id();
+                self.emit(&format!("    mov r12, QWORD PTR [rbp+{}]", map_offset));
+                self.emit("    mov r13, QWORD PTR [r12]");
+                self.emit(&format!("    mov r14, QWORD PTR [r12+{}]", 16));
+                self.load_value_to_rax(key, key_ty);
+                self.emit("    mov r15, rax");
+                self.emit("    mov rcx, 0x9E3779B97F4A7C15");
+                self.emit("    imul rax, rcx");
+                self.emit("    shr rax, 32");
+                self.emit("    mov r15, rax");
+                self.emit("    xor rdx, rdx");
+                self.emit("    div r14");
+                self.emit("    mov r8, rdx");
+                self.emit("    mov r9, r14");
+                let probe_loop = format!("hashmap_contains_probe_{}", id);
+                let not_found = format!("hashmap_contains_not_found_{}", id);
+                let found = format!("hashmap_contains_found_{}", id);
+                let done = format!("hashmap_contains_done_{}", id);
+                self.emit(&format!("{}:", probe_loop));
+                self.emit("    dec r9");
+                self.emit(&format!("    jl {}", not_found));
+                self.emit("    mov rax, r8");
+                self.emit(&format!("    imul rax, {}", bucket_size));
+                self.emit("    lea rcx, [r13+rax]");
+                self.emit(&format!("    movzx, BYTE PTR [rcx+{}]", 8));
+                self.emit(&format!("    cmp rax, {}", 0));
+                self.emit(&format!("    je {}", not_found));
+                self.emit(&format!("    cmp rax, {}", 2));
+                self.emit(&format!("    je {}_next", probe_loop));
+                self.emit(&format!("    mov rax, QWORD PTR [rcx]"));
+                self.emit("    cmp rax, r15");
+                self.emit(&format!("    jne {}_next", probe_loop));
+                self.load_value_to_rax(key, key_ty);
+                self.emit(&format!("    cmp rax, QWORD PTR [rcx+{}]", 16));
+                self.emit(&format!("    je {}", found));
+                self.emit(&format!("{}:", probe_loop));
+                self.emit("    inc r8");
+                self.emit("    cmp r8, r14");
+                self.emit(&format!("    jl {}", probe_loop));
+                self.emit("    xor r8, r8");
+                self.emit(&format!("    jmp {}", probe_loop));
+                self.emit(&format!("{}:", not_found));
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], 0", dst_offset));
+                self.emit(&format!("    jmp {}", done));
+                self.emit(&format!("{}:", found));
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], 1", dst_offset));
+                self.emit(&format!("{}:", done));
+            }
+            Inst::HashMapLen { dst, map } => {
+                let map_offset = self.get_or_alloc_reg_offset(map);
+                let dst_offset = self.get_or_alloc_reg_offset(dst);
+                self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", map_offset));
+                self.emit(&format!("    mov rax, QWORD PTR [r12+{}]", 8));
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+            }
+            Inst::HashMapCap { dst, map } => {
+                let map_offset = self.get_or_alloc_reg_offset(map);
+                let dst_offset = self.get_or_alloc_reg_offset(dst);
+                self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", map_offset));
+                self.emit(&format!("    mov rax, QWORD PTR [r12+{}]", 16));
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+            }
+            Inst::HashMapClear { map } => {
+                let map_offset = self.get_or_alloc_reg_offset(map);
+                self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", map_offset));
+                self.emit(&format!("    mov rdi, QWORD PTR [r12]"));
+                self.emit(&format!("    mov rcx, QWORD PTR [r12+{}]", 16));
+                // Have to fix this, very simple implementation, need to track bucket size or recalculate again
+                self.emit("    shl rcx, 5");
+                self.emit("    xor rax, rax");
+                // Could use rep stosq later (research it)
+                self.emit("    rep stosb");
+                self.emit(&format!("    mov QWORD PTR [r12+{}], 0", 8));
+                self.emit(&format!("    mov QWORD PTR [r12+{}], 0", 24));
             }
             Inst::SimPoint { id, metadata } => {
                 self.emit(&format!("    # SimPoint: {}", id));

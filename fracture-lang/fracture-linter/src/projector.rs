@@ -558,19 +558,24 @@ impl SyntaxProjector {
                         if self.current == Token::LeftParentheses {
                             self.advance();
 
+                            let reg_type = self.reg_types.get(&reg).cloned();
+
                             match field.as_str() {
                                 "len" => {
                                     self.expect(Token::RightParentheses)?;
 
-                                    let reg_type = self.reg_types.get(&reg);
-                                    let is_string = reg_type.map(|ty| matches!(ty, Type::String)).unwrap_or(false);
-                                    let is_vec = reg_type.map(|ty| matches!(ty, Type::Vec(_))).unwrap_or(false);
+                                    let is_string = reg_type.as_ref().map(|ty| matches!(ty, Type::String)).unwrap_or(false);
+                                    let is_vec = reg_type.as_ref().map(|ty| matches!(ty, Type::Vec(_))).unwrap_or(false);
+                                    let is_hashmap = reg_type.as_ref().map(|ty| matches!(ty, Type::HashMap(_, _))).unwrap_or(false);
 
                                     if is_string {
                                         instructions.push(Inst::StringLen { dst: result_reg.clone(), string: reg });
                                     }
                                     else if is_vec {
                                         instructions.push(Inst::VecLen { dst: result_reg.clone(), vec: reg });
+                                    }
+                                    else if is_hashmap {
+                                        instructions.push(Inst::HashMapLen { dst: result_reg.clone(), map: reg });
                                     }
                                     else {
                                         instructions.push(Inst::SliceLen { dst: result_reg.clone(), slice: reg });
@@ -623,9 +628,133 @@ impl SyntaxProjector {
                                 "cap" | "capacity" => {
                                     self.expect(Token::RightParentheses)?;
 
-                                    instructions.push(Inst::VecCap { dst: result_reg.clone(), vec: reg });
+                                    let is_hashmap = reg_type.as_ref().map(|ty| matches!(ty, Type::HashMap(_, _))).unwrap_or(false);
+
+                                    if is_hashmap {
+                                        instructions.push(Inst::HashMapCap { dst: result_reg.clone(), map: reg });
+                                    }
+                                    else {
+                                        instructions.push(Inst::VecCap { dst: result_reg.clone(), vec: reg });
+                                    }
 
                                     self.reg_types.insert(result_reg.clone(), Type::I64);
+                                }
+                                "insert" => {
+                                    let (key_insts, key_reg) = self.parse_expression()?;
+                                    instructions.extend(key_insts);
+
+                                    self.expect(Token::Comma)?;
+
+                                    let (val_insts, val_reg) = self.parse_expression()?;
+                                    instructions.extend(val_insts);
+
+                                    self.expect(Token::RightParentheses)?;
+
+                                    let (key_ty, value_ty) = if let Some(Type::HashMap(k, v)) = &reg_type {
+                                        ((**k).clone(), (**v).clone())
+                                    }
+                                    else {
+                                        // Change from defaults later
+                                        (Type::I32, Type::I32)
+                                    };
+
+                                    instructions.push(Inst::HashMapInsert {
+                                        map: reg.clone(),
+                                        key: Value::Reg(key_reg),
+                                        value: Value::Reg(val_reg),
+                                        key_ty,
+                                        value_ty
+                                    });
+
+                                    // Could return something later
+                                    reg = reg.clone();
+
+                                    continue;
+                                }
+                                "get" => {
+                                    // User needs to check found before using value, change later
+                                    let (key_insts, key_reg) = self.parse_expression()?;
+                                    instructions.extend(key_insts);
+
+                                    self.expect(Token::RightParentheses)?;
+
+                                    let (key_ty, value_ty) = if let Some(Type::HashMap(k, v)) = &reg_type {
+                                        ((**k).clone(), (**v).clone())
+                                    }
+                                    else {
+                                        // Change from defaults later
+                                        (Type::I32, Type::I32)
+                                    };
+
+                                    let found_reg = self.alloc_reg();
+
+                                    instructions.push(Inst::HashMapGet {
+                                        dst: result_reg.clone(),
+                                        found_dst: found_reg,
+                                        map: reg,
+                                        key: Value::Reg(key_reg),
+                                        key_ty,
+                                        value_ty: value_ty.clone()
+                                    });
+
+                                    self.reg_types.insert(result_reg.clone(), value_ty);
+                                }
+                                "remove" => {
+                                    let (key_insts, key_reg) = self.parse_expression()?;
+                                    instructions.extend(key_insts);
+
+                                    self.expect(Token::RightParentheses)?;
+
+                                    let key_ty = if let Some(Type::HashMap(k, _)) = &reg_type {
+                                        (**k).clone()
+                                    }
+                                    else {
+                                        // Change from defaults later
+                                        Type::I32
+                                    };
+
+                                    instructions.push(Inst::HashMapRemove {
+                                        success_dst: result_reg.clone(),
+                                        map: reg,
+                                        key: Value::Reg(key_reg),
+                                        key_ty
+                                    });
+
+                                    self.reg_types.insert(result_reg.clone(), Type::Bool);
+                                }
+                                "contains_key" | "contains" => {
+                                    let (key_insts, key_reg) = self.parse_expression()?;
+                                    instructions.extend(key_insts);
+
+                                    self.expect(Token::RightParentheses)?;
+
+                                    let key_ty = if let Some(Type::HashMap(k, _)) = &reg_type {
+                                        (**k).clone()
+                                    }
+                                    else {
+                                        // Change from defaults later
+                                        Type::I32
+                                    };
+
+                                    instructions.push(Inst::HashMapContains {
+                                        dst: result_reg.clone(),
+                                        map: reg,
+                                        key: Value::Reg(key_reg),
+                                        key_ty
+                                    });
+
+                                    self.reg_types.insert(result_reg.clone(), Type::Bool);
+                                }
+                                "clear" => {
+                                    self.expect(Token::RightParentheses)?;
+
+                                    instructions.push(Inst::HashMapClear {
+                                        map: reg.clone()
+                                    });
+
+                                    reg = reg.clone();
+
+                                    continue;
                                 }
                                 _ => {
                                     return Err(format!("Unknown method: {}", field));
@@ -771,6 +900,46 @@ impl SyntaxProjector {
                         });
 
                         self.reg_types.insert(result_reg.clone(), Type::Vec(Box::new(Type::I32)));
+
+                        return Ok((instructions, result_reg));
+                    }
+                    else if name == "HashMap" && method == "new" {
+                        self.expect(Token::LeftParentheses)?;
+                        self.expect(Token::RightParentheses)?;
+
+                        let key_ty = Type::I32;
+                        let value_ty = Type::I32;
+
+                        instructions.push(Inst::HashMapAlloc {
+                            dst: result_reg.clone(),
+                            key_ty: key_ty.clone(),
+                            value_ty: value_ty.clone(),
+                            initial_cap: Value::Const(Const::I64(8))
+                        });
+
+                        self.reg_types.insert(result_reg.clone(), Type::HashMap(Box::new(key_ty), Box::new(value_ty)));
+
+                        return Ok((instructions, result_reg));
+                    }
+                    else if name == "HashMap" && method == "with_capacity" {
+                        self.expect(Token::LeftParentheses)?;
+
+                        let (cap_insts, cap_reg) = self.parse_expression()?;
+                        instructions.extend(cap_insts);
+
+                        self.expect(Token::RightParentheses)?;
+
+                        let key_ty = Type::I32;
+                        let value_ty = Type::I32;
+
+                        instructions.push(Inst::HashMapAlloc {
+                            dst: result_reg.clone(),
+                            key_ty: key_ty.clone(),
+                            value_ty: value_ty.clone(),
+                            initial_cap: Value::Reg(cap_reg)
+                        });
+
+                        self.reg_types.insert(result_reg.clone(), Type::HashMap(Box::new(key_ty), Box::new(value_ty)));
 
                         return Ok((instructions, result_reg));
                     }
@@ -987,8 +1156,25 @@ impl SyntaxProjector {
                 let inner_type = self.parse_type()?;
                 self.expect(Token::Greater)?;
 
-                return Ok(Type::Vec(Box::new(Type::Unknown)));
+                return Ok(Type::Vec(Box::new(inner_type)));
             }
+
+            return Ok(Type::Vec(Box::new(Type::Unknown)));
+        }
+
+        if type_name == "HashMap" {
+            if self.current == Token::Less {
+                self.advance();
+
+                let key_type = self.parse_type()?;
+                self.expect(Token::Comma)?;
+                let value_type = self.parse_type()?;
+                self.expect(Token::Greater)?;
+
+                return Ok(Type::HashMap(Box::new(key_type), Box::new(value_type)));
+            }
+            // Fix with type inference later
+            return Ok(Type::HashMap(Box::new(Type::I32), Box::new(Type::I32)));
         }
 
         if type_name == self.config.keywords.int_type {

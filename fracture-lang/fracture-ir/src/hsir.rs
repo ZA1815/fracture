@@ -17,6 +17,7 @@ pub enum Type {
     Function(Vec<Type>, Box<Type>),
     Future(Box<Type>),
     Vec(Box<Type>),
+    HashMap(Box<Type>, Box<Type>),
     Void,
     Unknown
 }
@@ -112,7 +113,17 @@ pub enum Inst {
     VecGet { dst: Reg, vec: Reg, index: Value, element_ty: Type },
     VecSet { vec: Reg, index: Value, value: Value, element_ty: Type },
     VecLen { dst: Reg, vec: Reg },
-    VecCap { dst: Reg, vec: Reg }
+    VecCap { dst: Reg, vec: Reg },
+
+    // Optimize hashmap later using SwissTable strategy (final touch optimization)
+    HashMapAlloc { dst: Reg, key_ty: Type, value_ty: Type, initial_cap: Value },
+    HashMapInsert { map: Reg, key: Value, value: Value, key_ty: Type, value_ty: Type },
+    HashMapGet { dst: Reg, found_dst: Reg, map: Reg, key: Value, key_ty: Type, value_ty: Type },
+    HashMapRemove { success_dst: Reg, map: Reg, key: Value, key_ty: Type },
+    HashMapContains { dst: Reg, map: Reg, key: Value, key_ty: Type },
+    HashMapLen { dst: Reg, map: Reg },
+    HashMapCap { dst: Reg, map: Reg },
+    HashMapClear { map: Reg } // Optimization: Shrink when overallocated
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

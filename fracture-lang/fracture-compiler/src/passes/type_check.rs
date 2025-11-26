@@ -394,6 +394,140 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
+        Inst::HashMapAlloc { dst, key_ty, value_ty, initial_cap } => {
+            let cap_ty = infer_value_type(initial_cap, env)?;
+            if !is_numeric(&cap_ty) {
+                return Err(format!("Hashmap initial capacity must be numeric, got {:?}", cap_ty));
+            }
+
+            // Add support for anything with the hash trait later
+            if !is_hashable(key_ty) {
+                return Err(format!("HashMap key must be hashable (numeric or string), got {:?}", key_ty));
+            }
+
+            env.insert(dst.clone(), Type::HashMap(Box::new(key_ty.clone()), Box::new(value_ty.clone())));
+
+            Ok(())
+        }
+        Inst::HashMapInsert { map, key, value, key_ty, value_ty } => {
+            let map_ty = env.get(map)
+                .ok_or_else(|| format!("HashMap register r{} not found", map.0))?;
+
+            if let Type::HashMap(expected_key_ty, expected_value_ty) = map_ty {
+                let actual_key_ty = infer_value_type(key, env)?;
+                if !types_compatible(&expected_key_ty, &actual_key_ty) {
+                    return Err(format!("HashMap key type mismatch: expected {:?}, got {:?}", expected_key_ty, actual_key_ty));
+                }
+
+                let actual_value_ty = infer_value_type(value, env)?;
+                if !types_compatible(&expected_value_ty, &actual_value_ty) {
+                    return Err(format!("HashMap value type mismatch: expected {:?}, got {:?}", expected_value_ty, actual_value_ty));
+                }
+            }
+            else {
+                return Err(format!("Cannot insert into non-HashMap type {:?}", map_ty));
+            }
+
+            Ok(())
+        }
+        Inst::HashMapGet { dst, found_dst, map, key, key_ty, value_ty } => {
+            let map_ty = env.get(map)
+                .ok_or_else(|| format!("HashMap register r{} not found", map.0))?;
+
+            if let Type::HashMap(expected_key_ty, expected_value_ty) = map_ty {
+                let actual_key_ty = infer_value_type(key, env)?;
+                if !types_compatible(&expected_key_ty, &actual_key_ty) {
+                    return Err(format!("HashMap key type mismatch: expected {:?}, got {:?}", expected_key_ty, actual_key_ty));
+                }
+
+                let expected_value_ty = expected_value_ty.clone();
+
+                env.insert(found_dst.clone(), Type::Bool);
+
+                env.insert(dst.clone(), (*expected_value_ty).clone());
+            }
+            else {
+                return Err(format!("Cannot get from non-HashMap type {:?}", map_ty));
+            }
+
+            Ok(())
+        }
+        Inst::HashMapRemove { success_dst, map, key, key_ty } => {
+            let map_ty = env.get(map)
+                .ok_or_else(|| format!("HashMap register r{} not found", map.0))?;
+
+            if let Type::HashMap(expected_key_ty, _) = map_ty {
+                let actual_key_ty = infer_value_type(key, env)?;
+                if !types_compatible(&expected_key_ty, &actual_key_ty) {
+                    return Err(format!("HashMap remove key type mismatch: expected {:?}, got {:?}", expected_key_ty, actual_key_ty));
+                }
+
+                env.insert(success_dst.clone(), Type::Bool);
+            }
+            else {
+                return Err(format!("Cannot remove from non-HashMap type {:?}", map_ty));
+            }
+
+            Ok(())
+        }
+        Inst::HashMapContains { dst, map, key, key_ty } => {
+            let map_ty = env.get(map)
+                .ok_or_else(|| format!("HashMap register r{} not found", map.0))?;
+
+            if let Type::HashMap(expected_key_ty, _) = map_ty {
+                let actual_key_ty = infer_value_type(key, env)?;
+                if !types_compatible(expected_key_ty, &actual_key_ty) {
+                    return Err(format!("HashMap contains key type mismatch: expected {:?}, got {:?}", expected_key_ty, actual_key_ty));
+                }
+
+                env.insert(dst.clone(), Type::Bool);
+            }
+            else {
+                return Err(format!("Cannot check contains on non-HashMap type {:?}", map_ty));
+            }
+
+            Ok(())
+        }
+        Inst::HashMapLen { dst, map } => {
+            let map_ty = env.get(map)
+                .ok_or_else(|| format!("HashMap register r{} not found", map.0))?;
+
+            if !matches!(map_ty, Type::HashMap(_, _)) {
+                return Err(format!(
+                    "Cannot get len of non-HashMap type {:?}",
+                    map_ty
+                ));
+            }
+
+            env.insert(dst.clone(), Type::I64);
+
+            Ok(())
+        }
+        Inst::HashMapCap { dst, map } => {
+            let map_ty = env.get(map)
+                .ok_or_else(|| format!("HashMap register r{} not found", map.0))?;
+
+            if !matches!(map_ty, Type::HashMap(_, _)) {
+                return Err(format!("Cannot get capacity of non-HashMap type {:?}", map_ty));
+            }
+
+            env.insert(dst.clone(), Type::I64);
+
+            Ok(())
+        }
+        Inst::HashMapClear { map } => {
+            let map_ty = env.get(map)
+                .ok_or_else(|| format!("HashMap register r{} not found", map.0))?;
+
+            if !matches!(map_ty, Type::HashMap(_, _)) {
+                return Err(format!(
+                    "Cannot clear non-HashMap type {:?}",
+                    map_ty
+                ));
+            }
+
+            Ok(())
+        }
         // Implement type checking for other insts later
         _ => Ok(())
     }
@@ -433,6 +567,10 @@ fn types_compatible(t1: &Type, t2: &Type) -> bool {
         return true;
     }
 
+    if let (Type::HashMap(k1, v1), Type::HashMap(k2, v2)) = (t1, t2) {
+        return types_compatible(&k1, k2) && types_compatible(&v1, v2);
+    }
+
     // Add more compatibility rules later
     false
 }
@@ -441,3 +579,21 @@ fn is_numeric(ty: &Type) -> bool {
     matches!(ty, Type::I32 | Type::I64 | Type::U32 | Type::U64 | Type::F32 | Type::F64)
 }
 
+fn is_hashable(ty: &Type) -> bool {
+    match ty {
+        Type::I32 | Type::I64 | Type::U32 | Type::U64 => true,
+
+        Type::String => true,
+
+        Type::Bool => true,
+
+        Type::F32 | Type::F64 => false,
+
+        // Support this later using recursive hashing
+        Type::Struct(_) | Type::Array(_, _) | Type::Tuple(_) => false,
+
+        Type::Unknown => true,
+
+        _ => false
+    }
+}
