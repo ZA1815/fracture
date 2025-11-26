@@ -119,8 +119,8 @@ pub enum Inst {
     HashMapAlloc { dst: Reg, key_ty: Type, value_ty: Type, initial_cap: Value },
     HashMapInsert { map: Reg, key: Value, value: Value, key_ty: Type, value_ty: Type },
     HashMapGet { dst: Reg, found_dst: Reg, map: Reg, key: Value, key_ty: Type, value_ty: Type },
-    HashMapRemove { success_dst: Reg, map: Reg, key: Value, key_ty: Type },
-    HashMapContains { dst: Reg, map: Reg, key: Value, key_ty: Type },
+    HashMapRemove { success_dst: Reg, map: Reg, key: Value, key_ty: Type, value_ty: Type },
+    HashMapContains { dst: Reg, map: Reg, key: Value, key_ty: Type, value_ty: Type },
     HashMapLen { dst: Reg, map: Reg },
     HashMapCap { dst: Reg, map: Reg },
     HashMapClear { map: Reg } // Optimization: Shrink when overallocated

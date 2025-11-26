@@ -705,19 +705,20 @@ impl SyntaxProjector {
 
                                     self.expect(Token::RightParentheses)?;
 
-                                    let key_ty = if let Some(Type::HashMap(k, _)) = &reg_type {
-                                        (**k).clone()
+                                    let (key_ty, value_ty) = if let Some(Type::HashMap(k, v)) = &reg_type {
+                                        ((**k).clone(), (**v).clone())
                                     }
                                     else {
                                         // Change from defaults later
-                                        Type::I32
+                                        (Type::I32, Type::I32)
                                     };
 
                                     instructions.push(Inst::HashMapRemove {
                                         success_dst: result_reg.clone(),
                                         map: reg,
                                         key: Value::Reg(key_reg),
-                                        key_ty
+                                        key_ty,
+                                        value_ty
                                     });
 
                                     self.reg_types.insert(result_reg.clone(), Type::Bool);
@@ -728,19 +729,20 @@ impl SyntaxProjector {
 
                                     self.expect(Token::RightParentheses)?;
 
-                                    let key_ty = if let Some(Type::HashMap(k, _)) = &reg_type {
-                                        (**k).clone()
+                                    let (key_ty, value_ty) = if let Some(Type::HashMap(k, v)) = &reg_type {
+                                        ((**k).clone(), (**v).clone())
                                     }
                                     else {
                                         // Change from defaults later
-                                        Type::I32
+                                        (Type::I32, Type::I32)
                                     };
 
                                     instructions.push(Inst::HashMapContains {
                                         dst: result_reg.clone(),
                                         map: reg,
                                         key: Value::Reg(key_reg),
-                                        key_ty
+                                        key_ty,
+                                        value_ty
                                     });
 
                                     self.reg_types.insert(result_reg.clone(), Type::Bool);

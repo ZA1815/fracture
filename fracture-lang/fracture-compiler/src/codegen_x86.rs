@@ -770,6 +770,7 @@ impl X86CodeGen {
             Inst::HashMapInsert { map, key, value, key_ty, value_ty } => {
                 let bucket_size = self.bucket_size(key_ty, value_ty);
                 let key_size = self.type_size(key_ty);
+                let value_size = self.type_size(value_ty);
                 let map_offset = self.get_or_alloc_reg_offset(map);
                 let id = self.next_label_id();
                 self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", map_offset));
@@ -798,11 +799,16 @@ impl X86CodeGen {
                 self.emit(&format!("    movzx rax, BYTE PTR [rcx+{}]", 8));
                 self.emit(&format!("    cmp rax, {}", 1));
                 self.emit(&format!("    jne {}", found_empty));
-                self.emit(&format!("    mov rax, QWORD PTR [rcx+{}]", 0));
+                self.emit(&format!("    mov rax, QWORD PTR [rcx]"));
                 self.emit("    cmp rax, r15");
                 self.emit(&format!("    jne {}_next_bucket", probe_loop));
                 self.load_value_to_rax(key, key_ty);
-                self.emit(&format!("    cmp rax, QWORD PTR [rcx+{}]", 16));
+                match key_size {
+                    1 => self.emit(&format!("    cmp al, BYTE PTR [rcx+{}]", 16)),
+                    2 => self.emit(&format!("    cmp ax, WORD PTR [rcx+{}]", 16)),
+                    4 => self.emit(&format!("    cmp eax, DWORD PTR [rcx+{}]", 16)),
+                    _ => self.emit(&format!("    cmp rax, QWORD PTR [rcx+{}]", 16)),
+                }
                 self.emit(&format!("    je {}", found_match));
                 self.emit(&format!("{}_next_bucket:", probe_loop));
                 self.emit("    inc r8");
@@ -818,15 +824,30 @@ impl X86CodeGen {
                 self.emit(&format!("{}_not_tombstone:", found_empty));
                 self.emit("    mov QWORD PTR [rcx], r15");
                 self.load_value_to_rax(key, key_ty);
-                self.emit(&format!("    mov QWORD PTR [rcx+{}], rax", 16));
+                match key_size {
+                    1 => self.emit(&format!("    mov BYTE PTR [rcx+{}], al", 16)),
+                    2 => self.emit(&format!("    mov WORD PTR [rcx+{}], ax", 16)),
+                    4 => self.emit(&format!("    mov DWORD PTR [rcx+{}], eax", 16)),
+                    _ => self.emit(&format!("    mov QWORD PTR [rcx+{}], rax", 16)),
+                }
                 self.load_value_to_rax(value, value_ty);
-                self.emit(&format!("    mov QWORD PTR [rcx+{}], rax", 16 + key_size as i32));
+                match value_size {
+                    1 => self.emit(&format!("    mov BYTE PTR [rcx+{}], al", 16 + key_size)),
+                    2 => self.emit(&format!("    mov WORD PTR [rcx+{}], ax", 16 + key_size)),
+                    4 => self.emit(&format!("    mov DWORD PTR [rcx+{}], eax", 16 + key_size)),
+                    _ => self.emit(&format!("    mov QWORD PTR [rcx+{}], rax", 16 + key_size)),
+                }
                 self.emit(&format!("    mov BYTE PTR [rcx+{}], {}", 8, 1));
                 self.emit(&format!("    inc QWORD PTR [r12+{}]", 8));
                 self.emit(&format!("    jmp {}", check_resize));
                 self.emit(&format!("{}:", found_match));
                 self.load_value_to_rax(value, value_ty);
-                self.emit(&format!("    mov QWORD PTR [rcx+{}], rax", 16 + key_size as i32));
+                match value_size {
+                    1 => self.emit(&format!("    mov BYTE PTR [rcx+{}], al", 16 + key_size)),
+                    2 => self.emit(&format!("    mov WORD PTR [rcx+{}], ax", 16 + key_size)),
+                    4 => self.emit(&format!("    mov DWORD PTR [rcx+{}], eax", 16 + key_size)),
+                    _ => self.emit(&format!("    mov QWORD PTR [rcx+{}], rax", 16 + key_size)),
+                }
                 self.emit(&format!("    jmp {}", insert_done));
                 self.emit(&format!("{}:", check_resize));
                 self.emit(&format!("    mov rax, QWORD PTR [r12+{}]", 8));
@@ -842,6 +863,7 @@ impl X86CodeGen {
             Inst::HashMapGet { dst, found_dst, map, key, key_ty, value_ty } => {
                 let bucket_size = self.bucket_size(key_ty, value_ty);
                 let key_size = self.type_size(key_ty);
+                let value_size = self.type_size(value_ty);
                 let map_offset = self.get_or_alloc_reg_offset(map);
                 let dst_offset = self.get_or_alloc_reg_offset(dst);
                 let found_offset = self.get_or_alloc_reg_offset(found_dst);
@@ -868,7 +890,7 @@ impl X86CodeGen {
                 self.emit(&format!("    jl {}", not_found));
                 self.emit("    mov rax, r8");
                 self.emit(&format!("    imul rax, {}", bucket_size));
-                self.emit("    lea rax, [r13+rax]");
+                self.emit("    lea rcx, [r13+rax]");
                 self.emit(&format!("    movzx rax, BYTE PTR [rcx+{}]", 8));
                 self.emit(&format!("    cmp rax, {}", 0));
                 self.emit(&format!("    je {}", not_found));
@@ -878,7 +900,12 @@ impl X86CodeGen {
                 self.emit("    cmp rax, r15");
                 self.emit(&format!("    jne {}_next", probe_loop));
                 self.load_value_to_rax(key, key_ty);
-                self.emit(&format!("    cmp rax, QWORD PTR [rcx+{}]", 16));
+                match key_size {
+                    1 => self.emit(&format!("    cmp al, BYTE PTR [rcx+{}]", 16)),
+                    2 => self.emit(&format!("    cmp ax, WORD PTR [rcx+{}]", 16)),
+                    4 => self.emit(&format!("    cmp eax, DWORD PTR [rcx+{}]", 16)),
+                    _ => self.emit(&format!("    cmp rax, QWORD PTR [rcx+{}]", 16)),
+                }
                 self.emit(&format!("    je {}", found));
                 self.emit(&format!("{}_next:", probe_loop));
                 self.emit("    inc r8");
@@ -892,12 +919,18 @@ impl X86CodeGen {
                 self.emit(&format!("    jmp {}", done));
                 self.emit(&format!("{}:", found));
                 self.emit(&format!("    mov QWORD PTR [rbp-{}], 1", found_offset));
-                self.emit(&format!("    mov rax, QWORD PTR [rcx+{}]", 16 + key_size as i32));
+                match value_size {
+                    1 => self.emit(&format!("    movzx rax, BYTE PTR [rcx+{}]", 16 + key_size)),
+                    2 => self.emit(&format!("    movzx rax, WORD PTR [rcx+{}]", 16 + key_size)),
+                    4 => self.emit(&format!("    mov eax, DWORD PTR [rcx+{}]", 16 + key_size)),
+                    _ => self.emit(&format!("    mov rax, QWORD PTR [rcx+{}]", 16 + key_size)),
+                }
                 self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
                 self.emit(&format!("{}:", done));
             }
-            Inst::HashMapRemove { success_dst, map, key, key_ty } => {
-                let bucket_size = self.bucket_size(key_ty, &Type::I64);
+            Inst::HashMapRemove { success_dst, map, key, key_ty, value_ty } => {
+                let bucket_size = self.bucket_size(key_ty, value_ty);
+                let key_size = self.type_size(key_ty);
                 let map_offset = self.get_or_alloc_reg_offset(map);
                 let success_offset = self.get_or_alloc_reg_offset(success_dst);
                 let id = self.next_label_id();
@@ -933,7 +966,12 @@ impl X86CodeGen {
                 self.emit("    cmp rax, r15");
                 self.emit(&format!("    jne {}_next", probe_loop));
                 self.load_value_to_rax(key, key_ty);
-                self.emit(&format!("    cmp rax, QWORD PTR [rcx+{}]", 16));
+                match key_size {
+                    1 => self.emit(&format!("    cmp al, BYTE PTR [rcx+{}]", 16)),
+                    2 => self.emit(&format!("    cmp ax, WORD PTR [rcx+{}]", 16)),
+                    4 => self.emit(&format!("    cmp eax, DWORD PTR [rcx+{}]", 16)),
+                    _ => self.emit(&format!("    cmp rax, QWORD PTR [rcx+{}]", 16)),
+                }
                 self.emit(&format!("    je {}", found));
                 self.emit(&format!("{}_next:", probe_loop));
                 self.emit("    inc r8");
@@ -951,12 +989,13 @@ impl X86CodeGen {
                 self.emit(&format!("    mov QWORD PTR [rbp-{}], 1", success_offset));
                 self.emit(&format!("{}:", done));
             }
-            Inst::HashMapContains { dst, map, key, key_ty } => {
-                let bucket_size = self.bucket_size(key_ty, &Type::I64);
+            Inst::HashMapContains { dst, map, key, key_ty, value_ty } => {
+                let bucket_size = self.bucket_size(key_ty, value_ty);
+                let key_size = self.type_size(key_ty);
                 let map_offset = self.get_or_alloc_reg_offset(map);
                 let dst_offset = self.get_or_alloc_reg_offset(dst);
                 let id = self.next_label_id();
-                self.emit(&format!("    mov r12, QWORD PTR [rbp+{}]", map_offset));
+                self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", map_offset));
                 self.emit("    mov r13, QWORD PTR [r12]");
                 self.emit(&format!("    mov r14, QWORD PTR [r12+{}]", 16));
                 self.load_value_to_rax(key, key_ty);
@@ -979,7 +1018,7 @@ impl X86CodeGen {
                 self.emit("    mov rax, r8");
                 self.emit(&format!("    imul rax, {}", bucket_size));
                 self.emit("    lea rcx, [r13+rax]");
-                self.emit(&format!("    movzx, BYTE PTR [rcx+{}]", 8));
+                self.emit(&format!("    movzx rax, BYTE PTR [rcx+{}]", 8));
                 self.emit(&format!("    cmp rax, {}", 0));
                 self.emit(&format!("    je {}", not_found));
                 self.emit(&format!("    cmp rax, {}", 2));
@@ -988,9 +1027,14 @@ impl X86CodeGen {
                 self.emit("    cmp rax, r15");
                 self.emit(&format!("    jne {}_next", probe_loop));
                 self.load_value_to_rax(key, key_ty);
-                self.emit(&format!("    cmp rax, QWORD PTR [rcx+{}]", 16));
+                match key_size {
+                    1 => self.emit(&format!("    cmp al, BYTE PTR [rcx+{}]", 16)),
+                    2 => self.emit(&format!("    cmp ax, WORD PTR [rcx+{}]", 16)),
+                    4 => self.emit(&format!("    cmp eax, DWORD PTR [rcx+{}]", 16)),
+                    _ => self.emit(&format!("    cmp rax, QWORD PTR [rcx+{}]", 16)),
+                }
                 self.emit(&format!("    je {}", found));
-                self.emit(&format!("{}:", probe_loop));
+                self.emit(&format!("{}_next:", probe_loop));
                 self.emit("    inc r8");
                 self.emit("    cmp r8, r14");
                 self.emit(&format!("    jl {}", probe_loop));

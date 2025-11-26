@@ -452,7 +452,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
-        Inst::HashMapRemove { success_dst, map, key, key_ty } => {
+        Inst::HashMapRemove { success_dst, map, key, key_ty, value_ty } => {
             let map_ty = env.get(map)
                 .ok_or_else(|| format!("HashMap register r{} not found", map.0))?;
 
@@ -470,7 +470,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
-        Inst::HashMapContains { dst, map, key, key_ty } => {
+        Inst::HashMapContains { dst, map, key, key_ty, value_ty } => {
             let map_ty = env.get(map)
                 .ok_or_else(|| format!("HashMap register r{} not found", map.0))?;
 
