@@ -9,7 +9,8 @@ pub struct X86CodeGen {
     program: Option<Program>,
     struct_layouts: HashMap<String, Vec<(String, usize, Type)>>,
     vec_layouts: HashMap<Reg, (i32, i32, i32)>,
-    label_counter: usize
+    label_counter: usize,
+    alloc_sizes: HashMap<Reg, i32>
 }
 
 impl X86CodeGen {
@@ -22,7 +23,8 @@ impl X86CodeGen {
             program: None,
             struct_layouts: HashMap::new(),
             vec_layouts: HashMap::new(),
-            label_counter: 0
+            label_counter: 0,
+            alloc_sizes: HashMap::new()
         }
     }
 
@@ -74,7 +76,9 @@ impl X86CodeGen {
             Type::I32 | Type::U32 | Type::F32 => 4,
             Type::I64 | Type::U64 | Type::F64 | Type::Ptr(_) | Type::Ref(_, _) => 8,
             Type::Bool => 1,
-            Type::String => 16,
+            Type::String => 24,
+            Type::Vec(_) => 24,
+            Type::HashMap(_, _) => 32,
             Type::Struct(name) => {
                 if let Some(layout) = self.struct_layouts.get(name) {
                     layout.iter().map(|(_, _, ty)| self.type_size(ty)).sum()
@@ -146,6 +150,84 @@ impl X86CodeGen {
         self.emit("    leave");
         self.emit("    ret");
         self.emit("");
+    }
+
+    fn emit_mmap_alloc(&mut self, dst: &Reg, size_val: &Value) {
+        self.load_value_to_rax(size_val, &Type::I64);
+        self.emit("    mov rsi, rax");
+        self.emit("    xor rdi, rdi");
+        self.emit("    mov rdx, 3");
+        self.emit("    mov r10, 0x22");
+        self.emit("    mov r8, -1");
+        self.emit("    xor r9, r9");
+        self.emit("    mov rax, 9");
+        self.emit("    syscall");
+        let dst_offset = self.get_or_alloc_reg_offset(dst);
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+    }
+
+    fn emit_munmap_free(&mut self, ptr_reg: &Reg, size: usize) {
+        let ptr_offset = self.get_or_alloc_reg_offset(ptr_reg);
+        self.emit(&format!("    mov rdi, QWORD PTR [rbp-{}]", ptr_offset));
+        self.emit(&format!("    mov rsi, {}", size));
+        self.emit("    mov rax, 11");
+        self.emit("    syscall");
+    }
+
+    fn emit_vec_drop(&mut self, reg: &Reg) {
+        let vec_offset = self.get_or_alloc_reg_offset(reg);
+        self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", vec_offset));
+        self.emit("    mov rdi, QWORD PTR [r12]");
+        self.emit("    test rdi, rdi");
+        let skip_label = format!("skip_vec_free_{}", self.next_label_id());
+        self.emit(&format!("    jz {}", skip_label));
+        // Assuming 8 byte elements, adapt later
+        self.emit("    mov rsi, QWORD PTR [r12+16");
+        self.emit("    shl rsi, 3");
+        self.emit("    mov rax, 11");
+        self.emit("    syscall");
+        self.emit("    mov QWORD PTR [r12], 0");
+        self.emit("    mov QWORD PTR [r12+8], 0");
+        self.emit("    mov QWORD PTR [r12+16], 0");
+        self.emit(&format!("{}:", skip_label));
+    }
+
+    fn emit_string_drop(&mut self, reg: &Reg) {
+        let string_offset = self.get_or_alloc_reg_offset(reg);
+        self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", string_offset));
+        self.emit("    mov rdi, QWORD PTR [r12]");
+        self.emit("    test rdi, rdi");
+        let skip_label = format!("skip_str_free_{}", self.next_label_id());
+        self.emit(&format!("    jz {}", skip_label));
+        self.emit("    mov rsi, QWORD PTR [r12+16]");
+        self.emit("    mov rax, 11");
+        self.emit("    syscall");
+        self.emit("    mov QWORD PTR [r12], 0");
+        self.emit("    mov QWORD PTR [r12+8], 0");
+        self.emit("    mov QWORD PTR [r12+16], 0");
+        self.emit(&format!("{}:", skip_label));
+    }
+
+    fn emit_hashmap_drop(&mut self, reg: &Reg) {
+        let map_offset = self.get_or_alloc_reg_offset(reg);
+        self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", map_offset));
+        self.emit("    mov rdi, QWORD PTR [r12]");
+        self.emit("    test rdi, rdi");
+        let skip_label = format!("skip_map_free_{}", self.next_label_id());
+        self.emit(&format!("    jz {}", skip_label));
+        self.emit("    mov rsi, QWORD PTR [r12+16]");
+        self.emit("    shl rsi, 5");
+        self.emit("    mov rax, 11");
+        self.emit("    syscall");
+        self.emit("    mov QWORD PTR [r12], 0");
+        self.emit("    mov QWORD PTR [r12+8], 0");
+        self.emit("    mov QWORD PTR [r12+16], 0");
+        self.emit("    mov QWORD PTR [r12+24], 0");
+        self.emit(&format!("{}:", skip_label));
+    }
+
+    fn emit_struct_drop(&mut self, reg: &Reg, struct_name: &str) {
+        // Placeholder as structs are currently on stack
     }
 
     fn compile_inst(&mut self, inst: &Inst) {

@@ -22,6 +22,30 @@ pub enum Type {
     Unknown
 }
 
+impl Type {
+    pub fn needs_drop(&self) -> bool {
+        match self {
+            Type::I32 | Type::I64 | Type::U32 | Type::U64 => false,
+            Type::F32 | Type::F64 => false,
+            Type::Bool => false,
+            Type::Void => false,
+            Type::String => true,
+            Type::Vec(_) => true,
+            Type::HashMap(_, _) => true,
+            Type::Ptr(_) => false,
+            Type::Ref(_, _) => false,
+            Type::Array(elem_ty, _) => elem_ty.needs_drop(),
+            Type::Slice(_) => false,
+            Type::Tuple(types) => types.iter().any(|ty| ty.needs_drop()),
+            // Conservative: Assuming all structs need drop, change later for optimization
+            Type::Struct(_) => true,
+            Type::Function(_, _) => false,
+            Type::Future(_) => true,
+            Type::Unknown => true
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Reg(pub u32);
 
@@ -123,7 +147,15 @@ pub enum Inst {
     HashMapContains { dst: Reg, map: Reg, key: Value, key_ty: Type, value_ty: Type },
     HashMapLen { dst: Reg, map: Reg },
     HashMapCap { dst: Reg, map: Reg },
-    HashMapClear { map: Reg } // Optimization: Shrink when overallocated
+    HashMapClear { map: Reg }, // Optimization: Shrink when overallocated
+
+    DropScope { id: u32 },
+    DropEndScope { id: u32 },
+    DropRegister { reg: Reg, ty: Type, drop_fn: Option<String>, needs_drop: bool },
+    DropUnregister { reg: Reg },
+    DropCall { reg: Reg, ty: Type },
+    DropFlag { reg: Reg, flag_reg: Reg },
+    DropIfFlag { reg: Reg, flag_reg: Reg, ty: Type }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

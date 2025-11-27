@@ -50,9 +50,11 @@ impl Compiler {
     pub fn compile(&self, program: &Program, output_path: &str) -> Result<(), String> {
         println!("[compiler] Mode: {:?}, Target: {:?}", self.options.mode, self.options.target);
 
+        let mut program = program.clone();
+
         if self.options.mode == CompilerMode::Safe {
             println!("[compiler] Running safety checks...");
-            self.run_safe_passes(program)?;
+            self.run_safe_passes(&mut program)?;
         }
         else {
             println!("[compiler] Skipping safety checks (unsafe mode)");
@@ -60,7 +62,7 @@ impl Compiler {
 
         match self.options.target {
             Target::X86_64Linux | Target::X86_64MacOS | Target::X86_64Windows => {
-                self.compile_x86(program, output_path)
+                self.compile_x86(&mut program, output_path)
             }
         }
     }
