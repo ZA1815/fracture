@@ -1,5 +1,5 @@
 use fracture_ir::{Program, Function, Inst, Value, Type, Reg};
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::format, result};
 
 pub fn check(program: &Program) -> Result<(), String> {
     for (name, func) in &program.functions {
@@ -525,6 +525,107 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
                     map_ty
                 ));
             }
+
+            Ok(())
+        }
+        Inst::SysWrite { fd, buf, len, result_dst } => {
+            let fd_ty = infer_value_type(fd, env)?;
+            if !is_numeric(&fd_ty) {
+                return Err(format!("SysWrite in {}: File descriptor must be numeric. got {:?}", func_name, fd_ty));
+            }
+
+            if !env.contains_key(buf) {
+                return Err(format!("SysWrite in {}: Buffer register r{} not found", func_name, buf.0));
+            }
+
+            // Allowing unknown rn for flexibility but will change later
+            let buf_ty = env.get(buf).cloned().unwrap_or(Type::Unknown);
+            if !matches!(buf_ty, Type::String | Type::Ptr(_) | Type::Unknown | Type::Vec(_)) {
+                return Err(format!("SysWrite in {}: Buffer should be String or pointer type, got {:?}", func_name, buf_ty));
+            }
+
+            let len_ty = infer_value_type(len, env)?;
+            if !is_numeric(&len_ty) {
+                return Err(format!("SysWrite in {}: Length must be numeric, got {:?}", func_name, len_ty));
+            }
+
+            env.insert(result_dst.clone(), Type::I64);
+
+            Ok(())
+        }
+        Inst::SysRead { fd, buf, len, result_dst } => {
+            let fd_ty = infer_value_type(fd, env)?;
+            if !is_numeric(&fd_ty) {
+                return Err(format!("SysRead in {}: File descriptor must be numeric, got {:?}", func_name, fd_ty));
+            }
+
+            if !env.contains_key(buf) {
+                return Err(format!("SysRead in {}: Buffer register r{} not found", func_name, buf.0));
+            }
+
+            let len_ty = infer_value_type(len, env)?;
+            if !is_numeric(&len_ty) {
+                return Err(format!("SysRead in {}: Length must be numeric, got {:?}", func_name, len_ty));
+            }
+
+            env.insert(result_dst.clone(), Type::I64);
+
+            Ok(())
+        }
+        Inst::SysOpen { path, flags, mode, result_dst } => {
+            if !env.contains_key(path) {
+                return Err(format!("SysOpen in {}: Path register r{} not found", func_name, path.0));
+            }
+
+            // Allowing unknown rn for flexibility but will change later
+            let path_ty = env.get(path).cloned().unwrap_or(Type::Unknown);
+            if !matches!(path_ty, Type::String | Type::Ptr(_) | Type::Unknown) {
+                return Err(format!("SysOpen in {}: Path should be String, got {:?}", func_name, path_ty));
+            }
+
+            let flags_ty = infer_value_type(flags, env)?;
+            if !is_numeric(&flags_ty) {
+                return Err(format!("SysOpen in {}: Flags must be numeric, got {:?}", func_name, flags_ty));
+            }
+
+            let mode_ty = infer_value_type(mode, env)?;
+            if !is_numeric(&mode_ty) {
+                return Err(format!("SysOpen in {}: Mode must be numeric, got {:?}", func_name, mode_ty));
+            }
+
+            env.insert(result_dst.clone(), Type::I32);
+
+            Ok(())
+        }
+        Inst::SysClose { fd, result_dst } => {
+            let fd_ty = infer_value_type(fd, env)?;
+            if !is_numeric(&fd_ty) {
+                return Err(format!("SysClose in {}: File descriptor must be numeric, got {:?}", func_name, fd_ty));
+            }
+
+            env.insert(result_dst.clone(), Type::I32);
+
+            Ok(())
+        }
+        Inst::Print { value } | Inst::Println { value } | Inst::Eprint { value } | Inst::Eprintln { value } => {
+            if !env.contains_key(value) {
+                return Err(format!("Print in {}: Value register r{} not found", func_name, value.0));
+            }
+
+            // Allowing unknown rn for flexibility but will change later
+            let val_ty = env.get(value).cloned().unwrap_or(Type::Unknown);
+            if !matches!(val_ty, Type::String | Type::Unknown) {
+                return Err(format!(
+                    "Print in {}: Value should be a String, got {:?}. \
+                    Suggestion: Use a format function to convert other types to String.",
+                    func_name, val_ty
+                ));
+            }
+
+            Ok(())
+        }
+        Inst::ReadLine { dst } => {
+            env.insert(dst.clone(), Type::String);
 
             Ok(())
         }

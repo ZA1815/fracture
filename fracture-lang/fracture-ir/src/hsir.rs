@@ -292,6 +292,23 @@ pub enum Inst {
     HashMapCap { dst: Reg, map: Reg },
     HashMapClear { map: Reg }, // Optimization: Shrink when overallocated
 
+    SysWrite { fd: Value, buf: Reg, len: Value, result_dst: Reg },
+    SysRead { fd: Value, buf: Reg, len: Value, result_dst: Reg },
+    SysOpen { path: Reg, flags: Value, mode: Value, result_dst: Reg },
+    SysClose { fd: Value, result_dst: Reg },
+    Print { value: Reg },
+    Println { value: Reg },
+    Eprint { value: Reg },
+    Eprintln { value: Reg },
+    ReadLine { dst: Reg },
+    // Future IO Instructions
+    // SysSeek { fd, offset, whence, result_dst }
+    // SysStat { path, stat_buf, result_dst }
+    // SysFstat { fd, stat_buf, result_dst }
+    // SysMkdir { path, mode, result_dst }
+    // SysUnlink { path, result_dst }
+    // SysRename { old_path, new_path, result_dst }
+
     DropScope { id: u32 },
     DropEndScope { id: u32 },
     DropRegister { reg: Reg, ty: Type, drop_fn: Option<String>, needs_drop: bool },

@@ -1282,27 +1282,213 @@ impl SyntaxProjector {
                 }
 
                 if self.current == Token::LeftParentheses {
-                    self.advance();
+                    if name == "print" {
+                        self.advance();
 
-                    let mut args = Vec::new();
-                    while self.current != Token::RightParentheses {
                         let (arg_insts, arg_reg) = self.parse_expression()?;
                         instructions.extend(arg_insts);
-                        args.push(Value::Reg(arg_reg));
 
-                        if self.current == Token::Comma {
-                            self.advance();
-                        }
+                        self.expect(Token::RightParentheses)?;
+
+                        instructions.push(Inst::Print { value: arg_reg });
+
+                        instructions.push(Inst::Move {
+                            dst: result_reg.clone(),
+                            src: Value::Const(Const::I32(0)),
+                            ty: Type::Void
+                        });
+
+                        return Ok((instructions, result_reg));
                     }
+                    else if name == "println" {
+                        self.advance();
+                        
+                        let (arg_insts, arg_reg) = self.parse_expression()?;
+                        instructions.extend(arg_insts);
+                        
+                        self.expect(Token::RightParentheses)?;
+                        
+                        instructions.push(Inst::Println { 
+                            value: arg_reg 
+                        });
+                        
+                        instructions.push(Inst::Move {
+                            dst: result_reg.clone(),
+                            src: Value::Const(Const::I32(0)),
+                            ty: Type::Void
+                        });
+                        
+                        return Ok((instructions, result_reg));
+                    }
+                    else if name == "eprint" {
+                        self.advance();
+                        
+                        let (arg_insts, arg_reg) = self.parse_expression()?;
+                        instructions.extend(arg_insts);
+                        
+                        self.expect(Token::RightParentheses)?;
+                        
+                        instructions.push(Inst::Eprint { value: arg_reg });
+                        
+                        instructions.push(Inst::Move {
+                            dst: result_reg.clone(),
+                            src: Value::Const(Const::I32(0)),
+                            ty: Type::Void
+                        });
+                        
+                        return Ok((instructions, result_reg));
+                    }
+                    else if name == "eprintln" {
+                        self.advance();
+                        
+                        let (arg_insts, arg_reg) = self.parse_expression()?;
+                        instructions.extend(arg_insts);
+                        
+                        self.expect(Token::RightParentheses)?;
+                        
+                        instructions.push(Inst::Eprintln { value: arg_reg });
+                        
+                        instructions.push(Inst::Move {
+                            dst: result_reg.clone(),
+                            src: Value::Const(Const::I32(0)),
+                            ty: Type::Void
+                        });
+                        
+                        return Ok((instructions, result_reg));
+                    }
+                    else if name == "read_line" {
+                        self.advance();
+                        self.expect(Token::RightParentheses)?;
+                        
+                        instructions.push(Inst::ReadLine { 
+                            dst: result_reg.clone() 
+                        });
+                        
+                        self.reg_types.insert(result_reg.clone(), Type::String);
+                        
+                        return Ok((instructions, result_reg));
+                    }
+                    else if name == "sys_write" {
+                        self.advance();
 
-                    self.expect(Token::RightParentheses)?;
+                        let (fd_insts, fd_reg) = self.parse_expression()?;
+                        instructions.extend(fd_insts);
+                        self.expect(Token::Comma)?;
 
-                    instructions.push(Inst::Call {
-                        dst: Some(result_reg.clone()),
-                        func: Value::Label(Label(name.to_string())),
-                        args,
-                        ty: Type::Unknown // Need type inference
-                    });
+                        let (buf_insts, buf_reg) = self.parse_expression()?;
+                        instructions.extend(buf_insts);
+                        self.expect(Token::Comma)?;
+
+                        let (len_insts, len_reg) = self.parse_expression()?;
+                        instructions.extend(len_insts);
+                        
+                        self.expect(Token::RightParentheses)?;
+
+                        instructions.push(Inst::SysWrite {
+                            fd: Value::Reg(fd_reg),
+                            buf: buf_reg,
+                            len: Value::Reg(len_reg),
+                            result_dst: result_reg.clone()
+                        });
+
+                        self.reg_types.insert(result_reg.clone(), Type::I64);
+
+                        return Ok((instructions, result_reg));
+                    }
+                    else if name == "sys_read" {
+                        self.advance();
+                        
+                        let (fd_insts, fd_reg) = self.parse_expression()?;
+                        instructions.extend(fd_insts);
+                        self.expect(Token::Comma)?;
+                        
+                        let (buf_insts, buf_reg) = self.parse_expression()?;
+                        instructions.extend(buf_insts);
+                        self.expect(Token::Comma)?;
+                        
+                        let (len_insts, len_reg) = self.parse_expression()?;
+                        instructions.extend(len_insts);
+                        
+                        self.expect(Token::RightParentheses)?;
+                        
+                        instructions.push(Inst::SysRead {
+                            fd: Value::Reg(fd_reg),
+                            buf: buf_reg,
+                            len: Value::Reg(len_reg),
+                            result_dst: result_reg.clone()
+                        });
+                        
+                        self.reg_types.insert(result_reg.clone(), Type::I64);
+                        
+                        return Ok((instructions, result_reg));
+                    }
+                    else if name == "sys_open" {
+                        self.advance();
+
+                        let (path_insts, path_reg) = self.parse_expression()?;
+                        instructions.extend(path_insts);
+                        self.expect(Token::Comma)?;
+
+                        let (flag_insts, flag_reg) = self.parse_expression()?;
+                        instructions.extend(flag_insts);
+                        self.expect(Token::Comma)?;
+
+                        let (mode_insts, mode_reg) = self.parse_expression()?;
+                        instructions.extend(mode_insts);
+                        
+                        self.expect(Token::RightParentheses)?;
+
+                        instructions.push(Inst::SysOpen {
+                            path: path_reg,
+                            flags: Value::Reg(flag_reg),
+                            mode: Value::Reg(mode_reg),
+                            result_dst: result_reg.clone()
+                        });
+
+                        self.reg_types.insert(result_reg.clone(), Type::I32);
+
+                        return Ok((instructions, result_reg));
+                    }
+                    else if name == "sys_close" {
+                        self.advance();
+
+                        let (fd_insts, fd_reg) = self.parse_expression()?;
+                        instructions.extend(fd_insts);
+
+                        self.expect(Token::RightParentheses)?;
+
+                        instructions.push(Inst::SysClose {
+                            fd: Value::Reg(fd_reg),
+                            result_dst: result_reg.clone()
+                        });
+
+                        self.reg_types.insert(result_reg.clone(), Type::I32);
+
+                        return Ok((instructions, result_reg))
+                    }
+                    else {
+                        self.advance();
+
+                        let mut args = Vec::new();
+                        while self.current != Token::RightParentheses {
+                            let (arg_insts, arg_reg) = self.parse_expression()?;
+                            instructions.extend(arg_insts);
+                            args.push(Value::Reg(arg_reg));
+
+                            if self.current == Token::Comma {
+                                self.advance();
+                            }
+                        }
+
+                        self.expect(Token::RightParentheses)?;
+
+                        instructions.push(Inst::Call {
+                            dst: Some(result_reg.clone()),
+                            func: Value::Label(Label(name.to_string())),
+                            args,
+                            ty: Type::Unknown // Need type inference
+                        });
+                    }
                 }
                 else if self.current == Token::LeftBrace {
                     self.advance();

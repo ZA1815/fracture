@@ -10,7 +10,9 @@ pub struct X86CodeGen {
     struct_layouts: HashMap<String, Vec<(String, usize, Type)>>,
     vec_layouts: HashMap<Reg, (i32, i32, i32)>,
     label_counter: usize,
-    alloc_sizes: HashMap<Reg, i32>
+    alloc_sizes: HashMap<Reg, i32>,
+    data_section: Vec<String>,
+    data_label_counter: usize
 }
 
 impl X86CodeGen {
@@ -24,7 +26,9 @@ impl X86CodeGen {
             struct_layouts: HashMap::new(),
             vec_layouts: HashMap::new(),
             label_counter: 0,
-            alloc_sizes: HashMap::new()
+            alloc_sizes: HashMap::new(),
+            data_section: Vec::new(),
+            data_label_counter: 0
         }
     }
 
@@ -33,6 +37,25 @@ impl X86CodeGen {
         self.label_counter += 1;
 
         id
+    }
+
+    fn alloc_data_label(&mut self, content: &str) -> String {
+        let label = format!("_str_data_{}", self.data_label_counter);
+        self.data_label_counter += 1;
+
+        let bytes: Vec<String> = content.bytes().map(|b| b.to_string()).collect();
+
+        self.data_section.push(format!("{}:", label));
+        if bytes.is_empty() {
+            self.data_section.push("    .byte 0".to_string());
+        }
+        else {
+            self.data_section.push(format!("    .byte {}", bytes.join(", ")));
+        }
+
+        self.data_section.push(format!("{}_len = {} - {}", label, content.len(), 0));
+
+        label
     }
 
     pub fn compile_program(&mut self, program: &Program) -> String {
@@ -52,6 +75,25 @@ impl X86CodeGen {
         self.emit("    mov rdi, rax");
         self.emit("    mov rax, 60");
         self.emit("    syscall");
+
+        if !self.data_section.is_empty() {
+            self.emit("");
+            self.emit(".section .data");
+            self.emit("_newline:");
+            self.emit("    .byte 10");
+            self.emit("_newline_len = 1");
+
+            for line in &self.data_section.clone() {
+                self.emit(line);
+            }
+        }
+        else {
+            self.emit("");
+            self.emit(".section .data");
+            self.emit("_newline:");
+            self.emit("    .byte 10");
+            self.emit("_newline_len = 1");
+        }
 
         self.output.join("\n")
     }
@@ -1155,6 +1197,145 @@ impl X86CodeGen {
                 self.emit("    rep stosb");
                 self.emit(&format!("    mov QWORD PTR [r12+{}], 0", 8));
                 self.emit(&format!("    mov QWORD PTR [r12+{}], 0", 24));
+            }
+            Inst::SysWrite { fd, buf, len, result_dst } => {
+                let buf_offset = self.get_or_alloc_reg_offset(buf);
+                self.emit(&format!("    mov rsi, QWORD PTR [rbp-{}]", buf_offset));
+                self.emit("    mov rsi, QWORD PTR [rsi]");
+                self.load_value_to_rax(len, &Type::I64);
+                self.emit("    mov rdx, rax");
+                self.load_value_to_rax(fd, &Type::I32);
+                self.emit("    mov rdi, rax");
+                self.emit("    mov rax, 1");
+                self.emit("    syscall");
+                let result_offset = self.get_or_alloc_reg_offset(result_dst);
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", result_offset));
+            }
+            Inst::SysRead { fd, buf, len, result_dst } => {
+                let buf_offset = self.get_or_alloc_reg_offset(buf);
+                self.emit(&format!("    mov rsi, QWORD PTR [rbp-{}]", buf_offset));
+                self.emit("    mov rsi, QWORD PTR [rsi]");
+                self.load_value_to_rax(len, &Type::I64);
+                self.emit("    mov rdx, rax");
+                self.load_value_to_rax(fd, &Type::I32);
+                self.emit("    mov rdi, rax");
+                self.emit("    mov rax, 0");
+                self.emit("    syscall");
+                let result_offset = self.get_or_alloc_reg_offset(result_dst);
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", result_offset));
+            }
+            Inst::SysOpen { path, flags, mode, result_dst } => {
+                let path_offset = self.get_or_alloc_reg_offset(path);
+                self.emit(&format!("    mov rdi, QWORD PTR [rbp-{}]", path_offset));
+                self.emit("    mov rdi, QWORD PTR [rdi]");
+                self.load_value_to_rax(flags, &Type::I32);
+                self.emit("    mov rsi, rax");
+                self.load_value_to_rax(mode, &Type::I32);
+                self.emit("    mov rdx, rax");
+                self.emit("    mov rax, 2");
+                self.emit("    syscall");
+                let result_offset = self.get_or_alloc_reg_offset(result_dst);
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", result_offset));
+            }
+            Inst::SysClose { fd, result_dst } => {
+                self.load_value_to_rax(fd, &Type::I32);
+                self.emit("    mov rdi, rax");
+                self.emit("    mov rax, 3");
+                self.emit("    syscall");
+                let result_offset = self.get_or_alloc_reg_offset(result_dst);
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", result_offset));
+            }
+            Inst::Print { value } => {
+                let val_offset = self.get_or_alloc_reg_offset(value);
+                self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", val_offset));
+                self.emit("    mov rdi, 1");
+                self.emit("    mov rsi, QWORD PTR [r12]");
+                self.emit("    mov rdx, QWORD PTR [r12+8]");
+                self.emit("    mov rax, 1");
+                self.emit("    syscall");
+                // We ignore errors for now, check later for partial writes and stuff like that
+            }
+            Inst::Println { value } => {
+                let val_offset = self.get_or_alloc_reg_offset(value);
+                self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", val_offset));
+                self.emit("    mov rdi, 1");
+                self.emit("    mov rsi, QWORD PTR [r12]");
+                self.emit("    mov rdx, QWORD PTR [r12+8]");
+                self.emit("    mov rax, 1");
+                self.emit("    syscall");
+                // Currently do two writes for new line, we should append newline to end of buffer later
+                self.emit("    mov rdi, 1");
+                self.emit("    lea rsi, [rip+_newline]");
+                self.emit("    mov rdx, 1");
+                self.emit("    mov rax, 1");
+                self.emit("    syscall");
+            }
+            Inst::Eprint { value } => {
+                let val_offset = self.get_or_alloc_reg_offset(value);
+                self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", val_offset));
+                self.emit("    mov rdi, 2");
+                self.emit("    mov rsi, QWORD PTR [r12]");
+                self.emit("    mov rdx, QWORD PTR [r12+8]");
+                self.emit("    mov rax, 1");
+                self.emit("    syscall");
+            }
+            Inst::Eprintln { value } => {
+                let val_offset = self.get_or_alloc_reg_offset(value);
+                self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", val_offset));
+                self.emit("    mov rdi, 2");
+                self.emit("    mov rsi, QWORD PTR [r12]");
+                self.emit("    mov rdx, QWORD PTR [r12+8]");
+                self.emit("    mov rax, 1");
+                self.emit("    syscall");
+                // Currently do two writes for new line, we should append newline to end of buffer later
+                self.emit("    mov rdi, 2");
+                self.emit("    lea rsi, [rip+_newline]");
+                self.emit("    mov rdx, 1");
+                self.emit("    mov rax, 1");
+                self.emit("    syscall")
+            }
+            // Allocating fixed size rn (4096), but we should buffer and parse lines later
+            Inst::ReadLine { dst } => {
+                let id = self.next_label_id();
+                let loop_label = format!("readline_loop_{}", id);
+                let found_nl_label = format!("readline_found_nl_{}", id);
+                let done_label = format!("readline_done_{}", id);
+                self.emit("    mov rax, 12");
+                self.emit("    xor rdi, rdi");
+                self.emit("    syscall");
+                self.emit("    mov r12, rax");
+                self.emit("    add rax, 4096");
+                self.emit("    mov rdi, rax");
+                self.emit("    mov rax, 12");
+                self.emit("    syscall");
+                self.emit("    mov rdi, 0");
+                self.emit("    mov rsi, r12");
+                self.emit("    mov rdx, 4095");
+                self.emit("    mov rax, 0");
+                self.emit("    syscall");
+                self.emit("    mov r13, rax");
+                self.emit("    test rax, rax");
+                self.emit(&format!("    jle {}", done_label));
+                self.emit("    xor rcx, rcx");
+                self.emit(&format!("{}:", loop_label));
+                self.emit("    cmp rcx, r13");
+                self.emit(&format!("    jge {}", done_label));
+                self.emit("    mov al, BYTE PTR [r12+rcx]");
+                self.emit("    cmp al, 10");
+                self.emit(&format!("    je {}", found_nl_label));
+                self.emit("    inc rcx");
+                self.emit(&format!("    jmp {}", loop_label));
+                self.emit(&format!("{}:", found_nl_label));
+                self.emit("    mov r13, rcx");
+                self.emit(&format!("{}:", done_label));
+                let dst_offset = self.get_or_alloc_reg_offset(dst);
+                let string_struct_offset = self.next_stack_offset + 24;
+                self.next_stack_offset = string_struct_offset + 8;
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], r12", string_struct_offset));
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], r13", string_struct_offset - 8));
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], 4096", string_struct_offset - 16));
+                self.emit(&format!("    lea rax, [rbp-{}]", string_struct_offset));
+                self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
             }
             Inst::SimPoint { id, metadata } => {
                 self.emit(&format!("    # SimPoint: {}", id));
