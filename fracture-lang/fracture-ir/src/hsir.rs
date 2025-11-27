@@ -71,6 +71,149 @@ pub enum Value {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Visibility {
+    Private,
+    Public,
+    Crate
+
+    // Might expand this later with pub(super), pub(in path) etc.
+}
+
+impl Default for Visibility {
+    fn default() -> Self {
+        Visibility::Private
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModulePath {
+    pub segments: Vec<PathSegment>
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum PathSegment {
+    Ident(String),
+    SelfKw,
+    Super,
+    Crate
+}
+
+impl ModulePath {
+    pub fn new(name: &str) -> Self {
+        Self { segments: vec![PathSegment::Ident(name.to_string())] }
+    }
+
+    pub fn from_parts(parts: Vec<&str>) -> Self {
+        Self {
+            segments: parts.into_iter().map(|s| PathSegment::Ident(s.to_string())).collect()
+        }
+    }
+
+    pub fn leaf_name(&self) -> Option<&str> {
+        self.segments.last().and_then(|seg| {
+            match seg {
+                PathSegment::Ident(name) => Some(name.as_str()),
+                _ => None
+            }
+        })
+    }
+
+    // Hardcoded right now, change later to use user's tokens
+    pub fn to_string(&self) -> String {
+        self.segments.iter()
+            .map(|seg| match seg {
+                PathSegment::Ident(name) => name.clone(),
+                PathSegment::SelfKw => "self".to_string(),
+                PathSegment::Super => "super".to_string(),
+                PathSegment::Crate => "crate".to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("::")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum UseTree {
+    Simple {
+        path: ModulePath,
+        alias: Option<String>
+    },
+    Nested {
+        path: ModulePath,
+        items: Vec<UseTree>
+    },
+    Glob {
+        path: ModulePath
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UseStatement {
+    pub tree: UseTree,
+    pub visibility: Visibility
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Module {
+    pub name: String,
+    pub path: ModulePath,
+    pub visibility: Visibility,
+    pub uses: Vec<UseStatement>,
+    pub functions: HashMap<String, Function>,
+    pub structs: HashMap<String, StructDef>,
+    pub children: HashMap<String, Module>,
+    pub external_mods: Vec<String>
+}
+
+impl Module {
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            path: ModulePath::new(name),
+            visibility: Visibility::Private,
+            uses: Vec::new(),
+            functions: HashMap::new(),
+            structs: HashMap::new(),
+            children: HashMap::new(),
+            external_mods: Vec::new(),
+        }
+    }
+
+    pub fn root() -> Self {
+        Self {
+            name: "crate".to_string(),
+            path: ModulePath { segments: vec![PathSegment::Crate] },
+            visibility: Visibility::Public,
+            uses: Vec::new(),
+            functions: HashMap::new(),
+            structs: HashMap::new(),
+            children: HashMap::new(),
+            external_mods: Vec::new()
+        }
+    }
+
+    pub fn add_function(&mut self, func: Function) {
+        self.functions.insert(func.name.clone(), func);
+    }
+
+    pub fn add_struct(&mut self, s: StructDef) {
+        self.structs.insert(s.name.clone(), s);
+    }
+
+    pub fn add_child(&mut self, child: Module) {
+        self.children.insert(child.name.clone(), child);
+    }
+
+    pub fn get_function(&self, name: &str) -> Option<&Function> {
+        self.functions.get(name)
+    }
+
+    pub fn get_child(&self, name: &str) -> Option<&Module> {
+        self.children.get(name)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Inst {
     Move { dst: Reg, src: Value, ty: Type },
 
@@ -161,7 +304,29 @@ pub enum Inst {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StructDef {
     pub name: String,
-    pub fields: Vec<(String, Type)>
+    pub fields: Vec<(String, Type)>,
+    pub visibility: Visibility,
+    pub field_visibility: HashMap<String, Visibility>
+}
+
+impl StructDef {
+    pub fn new(name: &str, fields: Vec<(String, Type)>) -> Self {
+        Self {
+            name: name.to_string(),
+            fields,
+            visibility: Visibility::Private,
+            field_visibility: HashMap::new()
+        }
+    }
+
+    pub fn public(name: &str, fields: Vec<(String, Type)>) -> Self {
+        Self {
+            name: name.to_string(),
+            fields,
+            visibility: Visibility::Public,
+            field_visibility: HashMap::new()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,14 +336,18 @@ pub struct Function {
     pub return_type: Type,
     pub body: Vec<Inst>,
     pub locals: HashMap<Reg, Type>,
-    pub attributes: Vec<String>
+    pub attributes: Vec<String>,
+    pub visibility: Visibility,
+    pub module_path: Option<ModulePath>
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Program {
     pub functions: HashMap<String, Function>,
     pub structs: HashMap<String, StructDef>,
-    pub entry: String
+    pub entry: String,
+    pub root_module: Module,
+    pub uses: Vec<UseStatement>
 }
 
 impl Program {
@@ -251,6 +420,7 @@ impl Program {
         ProgramStats {
             num_functions: self.functions.len(),
             num_structs: self.structs.len(),
+            num_modules: count_modules(&self.root_module),
             total_instructions: total_insts,
             total_registers: total_regs
         }
@@ -271,6 +441,40 @@ impl Program {
 
         None
     }
+
+    pub fn resolve_function(&self, path: &ModulePath) -> Option<&Function> {
+        if let Some(func) = self.functions.get(&path.to_string()) {
+            return Some(func);
+        }
+
+        self.resolve_in_module(&self.root_module, path)
+    }
+
+    pub fn resolve_in_module<'a>(&'a self, module: &'a Module, path: &ModulePath) -> Option<&'a Function> {
+        if path.segments.len() == 1 {
+            if let PathSegment::Ident(name) = &path.segments[0] {
+                return module.functions.get(name);
+            }
+        }
+
+        if let PathSegment::Ident(first) = &path.segments[0] {
+            if let Some(child) = module.children.get(first) {
+                let remaining = ModulePath {
+                    segments: path.segments[1..].to_vec()
+                };
+
+                return self.resolve_in_module(child, &remaining);
+            }
+        }
+
+        None
+    }
+}
+
+fn count_modules(module: &Module) -> usize {
+    1 + module.children.values()
+        .map(|child| count_modules(child))
+        .sum::<usize>()
 }
 
 impl Function {
@@ -281,12 +485,23 @@ impl Function {
     pub fn is_unsafe(&self) -> bool {
         self.has_attribute("unsafe")
     }
+
+    // Hardcoded using ::, change later to account for user token
+    pub fn qualified_name(&self) -> String {
+        if let Some(path) = &self.module_path {
+            format!("{}::{}", path.to_string(), self.name)
+        }
+        else {
+            self.name.clone()
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct ProgramStats {
     pub num_functions: usize,
     pub num_structs: usize,
+    pub num_modules: usize,
     pub total_instructions: usize,
     pub total_registers: usize
 }

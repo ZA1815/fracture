@@ -26,7 +26,14 @@ pub struct Keywords {
     pub let_kw: String,
     pub mut_kw: String,
 
-    pub struct_kw: String
+    pub struct_kw: String,
+
+    pub mod_kw: String,
+    pub use_kw: String,
+    pub pub_kw: String,
+    pub as_kw: String,
+    pub self_kw: String,
+    pub super_kw: String
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,7 +108,13 @@ impl SyntaxConfig {
                 string_type: "str".to_string(),
                 let_kw: "".to_string(),
                 mut_kw: "".to_string(),
-                struct_kw: "class".to_string()
+                struct_kw: "class".to_string(),
+                mod_kw: "".to_string(),
+                use_kw: "import".to_string(),
+                pub_kw: "".to_string(),
+                as_kw: "as".to_string(),
+                self_kw: ".".to_string(),
+                super_kw: "..".to_string()
             },
             tokens: TokenConfig {
                 arrow: "->".to_string(),
@@ -154,7 +167,13 @@ impl SyntaxConfig {
                 string_type: "String".to_string(),
                 let_kw: "let".to_string(),
                 mut_kw: "mut".to_string(),
-                struct_kw: "struct".to_string()
+                struct_kw: "struct".to_string(),
+                mod_kw: "mod".to_string(),
+                use_kw: "use".to_string(),
+                pub_kw: "pub".to_string(),
+                as_kw: "as".to_string(),
+                self_kw: "self".to_string(),
+                super_kw: "super".to_string()
             },
             tokens: TokenConfig {
                 arrow: "->".to_string(),

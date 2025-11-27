@@ -15,7 +15,10 @@ pub struct SyntaxProjector {
     next_label: u32,
 
     struct_defs: HashMap<String, StructDef>,
-    reg_types: HashMap<Reg, Type>
+    reg_types: HashMap<Reg, Type>,
+
+    current_module_path: Vec<String>,
+    pending_uses: Vec<UseStatement>
 }
 
 impl SyntaxProjector {
@@ -33,7 +36,9 @@ impl SyntaxProjector {
             var_regs: HashMap::new(),
             next_label: 0,
             struct_defs: HashMap::new(),
-            reg_types: HashMap::new()
+            reg_types: HashMap::new(),
+            current_module_path: Vec::new(),
+            pending_uses: Vec::new()
         }
     }
 
@@ -49,11 +54,12 @@ impl SyntaxProjector {
     }
 
     pub fn project_to_hsir(&mut self) -> Result<Program, String> {
-        let mut program = Program {
-            functions: HashMap::new(),
-            structs: HashMap::new(),
-            entry: "main".to_string()
-        };
+        let mut root_module = Module::root();
+        
+        // For backwards compat, eventually will migrate completely
+        let mut all_functions: HashMap<String, Function> = HashMap::new();
+        let mut all_structs: HashMap<String, StructDef> = HashMap::new();
+        let mut root_uses: Vec<UseStatement> = Vec::new();
 
         while self.current != Token::Eof {
             if self.current == Token::Newline {
@@ -61,42 +67,311 @@ impl SyntaxProjector {
                 continue;
             }
 
-            if self.current == Token::Struct {
-                let struct_def = self.parse_struct()?;
-                self.struct_defs.insert(struct_def.name.clone(), struct_def.clone());
-                program.structs.insert(struct_def.name.clone(), struct_def);
+            if self.current == Token::Use {
+                let use_statement = self.parse_use_statement(Visibility::Private)?;
+                root_uses.push(use_statement);
                 continue;
+            }
+
+            if self.current == Token::Pub {
+                let peek = self.peek();
+                if peek == Token::Use {
+                    self.advance();
+                    let use_statement = self.parse_use_statement(Visibility::Public)?;
+                    root_uses.push(use_statement);
+                    continue;
+                }
+            }
+
+            if self.current == Token::Mod {
+                let module = self.parse_module_declaration(Visibility::Private)?;
+
+                for (name, func) in &module.functions {
+                    // Fix formatting later to use user token
+                    let qualified = format!("{}::{}", module.name, name);
+                    all_functions.insert(qualified, func.clone());
+                }
+                for (name, s) in &module.structs {
+                    let qualified = format!("{}::{}", module.name, name);
+                    all_structs.insert(qualified, s.clone());
+                }
+
+                root_module.add_child(module);
+                continue;
+            }
+
+            if self.current == Token::Pub {
+                let peek = self.peek();
+                if peek == Token::Mod {
+                    self.advance();
+                    let module = self.parse_module_declaration(Visibility::Public)?;
+                    root_module.add_child(module);
+                    continue;
+                }
+            }
+
+            if self.current == Token::Struct {
+                let struct_def = self.parse_struct(Visibility::Private)?;
+                self.struct_defs.insert(struct_def.name.clone(), struct_def.clone());
+                all_structs.insert(struct_def.name.clone(), struct_def.clone());
+                root_module.add_struct(struct_def);
+                continue;
+            }
+
+            if self.current == Token::Pub {
+                let peek = self.peek();
+                if peek == Token::Struct {
+                    self.advance();
+                    let struct_def = self.parse_struct(Visibility::Public)?;
+                    self.struct_defs.insert(struct_def.name.clone(), struct_def.clone());
+                    all_structs.insert(struct_def.name.clone(), struct_def.clone());
+                    root_module.add_struct(struct_def);
+                    continue;
+                }
             }
 
             if self.current == Token::Hash {
                 let attrs = self.parse_attributes()?;
 
+                let visibility = if self.current == Token::Pub {
+                    self.advance();
+
+                    Visibility::Public
+                }
+                else {
+                    Visibility::Private
+                };
+
                 if self.current != Token::Function {
                     return Err(format!("Attributes can only be applied to functions, found {:?}", self.current));
                 }
 
-                let mut func = self.parse_function()?;
+                let mut func = self.parse_function(visibility)?;
                 func.attributes = attrs;
-                program.functions.insert(func.name.clone(), func);
+                all_functions.insert(func.name.clone(), func.clone());
+                root_module.add_function(func);
+                continue;
+            }
+
+            if self.current == Token::Pub {
+                let peek = self.peek();
+                if peek == Token::Function {
+                    self.advance();
+                    let func = self.parse_function(Visibility::Public)?;
+                    all_functions.insert(func.name.clone(), func.clone());
+                    root_module.add_function(func);
+                    continue;
+                }
             }
 
             if self.current == Token::Function {
-                let func = self.parse_function()?;
-                program.functions.insert(func.name.clone(), func);
+                let func = self.parse_function(Visibility::Private)?;
+                all_functions.insert(func.name.clone(), func.clone());
+                root_module.add_function(func);
+                continue;
             }
-            else {
-                self.advance();
-            }
+
+            // Could throw error instead
+            self.advance();
         }
 
-        if !program.functions.contains_key("main") {
+        if !all_functions.contains_key("main") {
             return Err("Program must have a main function".to_string());
         }
 
-        Ok(program)
+        Ok(Program {
+            functions: all_functions,
+            structs: all_structs,
+            entry: "main".to_string(),
+            root_module,
+            uses: root_uses,
+        })
     }
 
-    fn parse_function(&mut self) -> Result<Function, String> {
+    fn parse_module_declaration(&mut self, visibility: Visibility) -> Result<Module, String> {
+        self.expect(Token::Mod)?;
+
+        let module_name = self.expect_ident()?;
+
+        self.current_module_path.push(module_name.clone());
+
+        let mut module = Module::new(&module_name);
+        module.visibility = visibility;
+        module.path = ModulePath {
+            segments: self.current_module_path.iter()
+                .map(|s| PathSegment::Ident(s.clone()))
+                .collect()
+        };
+
+        if self.current == Token::LeftBrace {
+            self.advance();
+
+            while self.current != Token::RightBrace && self.current != Token::Eof {
+                if self.current == Token::Newline {
+                    self.advance();
+                    continue;
+                }
+
+                if self.current == Token::Use {
+                    let use_statement = self.parse_use_statement(Visibility::Private)?;
+                    module.uses.push(use_statement);
+                    continue;
+                }
+
+                if self.current == Token::Mod {
+                    let nested = self.parse_module_declaration(Visibility::Private)?;
+                    module.add_child(nested);
+                    continue;
+                }
+
+                if self.current == Token::Pub {
+                    let peek = self.peek();
+
+                    match peek {
+                        Token::Use => {
+                            self.advance();
+                            let use_statement = self.parse_use_statement(Visibility::Public)?;
+                            module.uses.push(use_statement);
+                            continue;
+                        }
+                        Token::Mod => {
+                            self.advance();
+                            let nested = self.parse_module_declaration(Visibility::Public)?;
+                            module.add_child(nested);
+                            continue;
+                        }
+                        Token::Function => {
+                            self.advance();
+                            let func = self.parse_function(Visibility::Public)?;
+                            module.add_function(func);
+                            continue;
+                        }
+                        Token::Struct => {
+                            self.advance();
+                            let s = self.parse_struct(Visibility::Public)?;
+                            module.add_struct(s);
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+
+                if self.current == Token::Function {
+                    let func = self.parse_function(Visibility::Private)?;
+                    module.add_function(func);
+                    continue;
+                }
+
+                if self.current == Token::Struct {
+                    let s = self.parse_struct(Visibility::Private)?;
+                    module.add_struct(s);
+                    continue;
+                }
+
+                self.advance();
+            }
+            
+            self.expect(Token::RightBrace)?;
+        }
+        else {
+            module.external_mods.push(module_name.clone());
+
+            if self.config.style.needs_semicolon {
+                self.expect(Token::Semicolon)?;
+            }
+        }
+
+        self.current_module_path.pop();
+
+        Ok(module)
+    }
+
+    fn parse_use_statement(&mut self, visibility: Visibility) -> Result<UseStatement, String> {
+        self.expect(Token::Use)?;
+
+        let tree = self.parse_use_tree()?;
+
+        if self.config.style.needs_semicolon {
+            self.expect(Token::Semicolon)?;
+        }
+
+        Ok(UseStatement { tree, visibility })
+    }
+
+    fn parse_use_tree(&mut self) -> Result<UseTree, String> {
+        let mut path_segments: Vec<PathSegment> = Vec::new();
+
+        loop {
+            let segment = match &self.current {
+                Token::SelfKw => {
+                    self.advance();
+                    PathSegment::SelfKw
+                }
+                Token::Super => {
+                    self.advance();
+                    PathSegment::Super
+                }
+                Token::Ident(name) => {
+                    let name = name.clone();
+                    self.advance();
+                    PathSegment::Ident(name)
+                }
+                _ => break
+            };
+
+            path_segments.push(segment);
+
+            if self.current == Token::DoubleColon {
+                self.advance();
+
+                if self.current == Token::Star {
+                    self.advance();
+                    return Ok(UseTree::Glob { path: ModulePath { segments: path_segments } });
+                }
+
+                if self.current == Token::LeftBrace {
+                    self.advance();
+                    let items = self.parse_use_tree_list()?;
+                    self.expect(Token::RightBrace)?;
+                    return Ok(UseTree::Nested { path: ModulePath { segments: path_segments }, items });
+                }
+            }
+            else {
+                break;
+            }
+        }
+
+        let alias = if self.current == Token::As {
+            self.advance();
+
+            Some(self.expect_ident()?)
+        }
+        else {
+            None
+        };
+
+        Ok(UseTree::Simple { path: ModulePath { segments: path_segments }, alias })
+    }
+
+    fn parse_use_tree_list(&mut self) -> Result<Vec<UseTree>, String> {
+        let mut items = Vec::new();
+
+        while self.current != Token::RightBrace && self.current != Token::Eof {
+            let item = self.parse_use_tree()?;
+            items.push(item);
+
+            if self.current == Token::Comma {
+                self.advance();
+            }
+            else {
+                break;
+            }
+        }
+
+        Ok(items)
+    }
+
+    fn parse_function(&mut self, visibility: Visibility) -> Result<Function, String> {
         self.var_regs.clear();
         self.var_types.clear();
         self.next_reg = 0;
@@ -149,17 +424,28 @@ impl SyntaxProjector {
             }
         }
 
+        let module_path = if self.current_module_path.is_empty() {
+            None
+        }
+        else {
+            Some(ModulePath {
+                segments: self.current_module_path.iter().map(|s| PathSegment::Ident(s.clone())).collect()
+            })
+        };
+
         Ok(Function {
             name,
             params,
             return_type,
             body,
             locals,
-            attributes: Vec::new()
+            attributes: Vec::new(),
+            visibility,
+            module_path
         })
     }
 
-    fn parse_struct(&mut self) -> Result<StructDef, String> {
+    fn parse_struct(&mut self, visibility: Visibility) -> Result<StructDef, String> {
         self.advance();
 
         let struct_name = self.expect_ident()?;
@@ -167,18 +453,30 @@ impl SyntaxProjector {
         self.expect(Token::LeftBrace)?;
 
         let mut fields = Vec::new();
+        let mut field_visibility = HashMap::new();
+
         while self.current != Token::RightBrace && self.current != Token::Eof {
             if self.current == Token::Newline {
                 self.advance();
                 continue;
             }
 
+            let field_vis = if self.current == Token::Pub {
+                self.advance();
+
+                Visibility::Public
+            }
+            else {
+                Visibility::Private
+            };
+
             let field_name = self.expect_ident()?;
             // Maybe customize this later
             self.expect(Token::Colon)?;
             let field_type = self.parse_type()?;
 
-            fields.push((field_name, field_type));
+            fields.push((field_name.clone(), field_type));
+            field_visibility.insert(field_name, field_vis);
 
             if self.current == Token::Comma {
                 self.advance();
@@ -191,7 +489,7 @@ impl SyntaxProjector {
 
         self.advance();
 
-        Ok(StructDef { name: struct_name, fields })
+        Ok(StructDef { name: struct_name, fields, visibility, field_visibility })
     }
 
     fn parse_block(&mut self) -> Result<Vec<Inst>, String> {
@@ -888,10 +1186,18 @@ impl SyntaxProjector {
                 self.advance();
 
                 if self.current == Token::DoubleColon {
-                    self.advance();
-                    let method = self.expect_ident()?;
+                    let mut path_parts = vec![name.clone()];
+                    while self.current == Token::DoubleColon {
+                        self.advance();
+                        let part = self.expect_ident()?;
+                        path_parts.push(part);
+                    }
+                    
+                    let full_path = path_parts.join("::");
+                    let last = path_parts.last().unwrap().as_str();
+                    let prefix = &path_parts[..path_parts.len() - 1].join("::");
 
-                    if name == "Vec" && method == "new" {
+                    if name == "Vec" && last == "new" {
                         self.expect(Token::LeftParentheses)?;
                         self.expect(Token::RightParentheses)?;
 
@@ -905,7 +1211,7 @@ impl SyntaxProjector {
 
                         return Ok((instructions, result_reg));
                     }
-                    else if name == "HashMap" && method == "new" {
+                    else if name == "HashMap" && last == "new" {
                         self.expect(Token::LeftParentheses)?;
                         self.expect(Token::RightParentheses)?;
 
@@ -923,7 +1229,7 @@ impl SyntaxProjector {
 
                         return Ok((instructions, result_reg));
                     }
-                    else if name == "HashMap" && method == "with_capacity" {
+                    else if name == "HashMap" && last == "with_capacity" {
                         self.expect(Token::LeftParentheses)?;
 
                         let (cap_insts, cap_reg) = self.parse_expression()?;
@@ -945,8 +1251,33 @@ impl SyntaxProjector {
 
                         return Ok((instructions, result_reg));
                     }
+                    else if self.current == Token::LeftParentheses {
+                        self.advance();
+
+                        let mut args = Vec::new();
+                        while self.current != Token::RightParentheses {
+                            let (arg_insts, arg_reg) = self.parse_expression()?;
+                            instructions.extend(arg_insts);
+                            args.push(Value::Reg(arg_reg));
+
+                            if self.current == Token::Comma {
+                                self.advance();
+                            }
+                        }
+
+                        self.expect(Token::RightParentheses)?;
+
+                        instructions.push(Inst::Call {
+                            dst: Some(result_reg.clone()),
+                            func: Value::Label(Label(full_path)),
+                            args,
+                            ty: Type::Unknown
+                        });
+
+                        return Ok((instructions, result_reg));
+                    }
                     else {
-                        return Err(format!("Unknown static method: {}, {}", name, method));
+                        return Err(format!("Unknown path expression: {}", full_path));
                     }
                 }
 

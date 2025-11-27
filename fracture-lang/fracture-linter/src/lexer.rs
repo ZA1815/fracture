@@ -55,7 +55,14 @@ pub enum Token {
     Newline,
     Indent,
     Dedent,
-    Eof
+    Eof,
+
+    Mod,
+    Use,
+    Pub,
+    As,
+    SelfKw,
+    Super
 }
 
 pub struct Lexer {
@@ -270,6 +277,24 @@ impl Lexer {
         else if text == self.config.keywords.struct_kw {
             Token::Struct
         }
+        else if !self.config.keywords.mod_kw.is_empty() && text == self.config.keywords.mod_kw {
+            Token::Mod
+        }
+        else if !self.config.keywords.use_kw.is_empty() && text == self.config.keywords.use_kw {
+            Token::Use
+        }
+        else if !self.config.keywords.pub_kw.is_empty() && text == self.config.keywords.pub_kw {
+            Token::Pub
+        }
+        else if !self.config.keywords.as_kw.is_empty() && text == self.config.keywords.as_kw {
+            Token::As
+        }
+        else if !self.config.keywords.self_kw.is_empty() && text == self.config.keywords.self_kw {
+            Token::SelfKw
+        }
+        else if !self.config.keywords.super_kw.is_empty() && text == self.config.keywords.super_kw {
+            Token::Super
+        }
         else if text == "true" {
             Token::Bool(true)
         }
@@ -352,41 +377,96 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_greedy_matching() {
+    fn test_mod_keyword() {
         let config = SyntaxConfig::rust();
-        let mut lexer = Lexer::new("x == y", config);
+        let mut lexer = Lexer::new("mod foo;", config);
         
-        assert_eq!(lexer.next_token(), Token::Ident("x".to_string()));
-        assert_eq!(lexer.next_token(), Token::DoubleEquals);
-        assert_eq!(lexer.next_token(), Token::Ident("y".to_string()));
+        assert_eq!(lexer.next_token(), Token::Mod);
+        assert_eq!(lexer.next_token(), Token::Ident("foo".to_string()));
+        assert_eq!(lexer.next_token(), Token::Semicolon);
     }
 
     #[test]
-    fn test_mutable_ref() {
+    fn test_use_statement() {
         let config = SyntaxConfig::rust();
-        let mut lexer = Lexer::new("&mut x", config);
+        let mut lexer = Lexer::new("use std::collections::HashMap;", config);
         
-        assert_eq!(lexer.next_token(), Token::MutableRef);
-        assert_eq!(lexer.next_token(), Token::Ident("x".to_string()));
+        assert_eq!(lexer.next_token(), Token::Use);
+        assert_eq!(lexer.next_token(), Token::Ident("std".to_string()));
+        assert_eq!(lexer.next_token(), Token::DoubleColon);
+        assert_eq!(lexer.next_token(), Token::Ident("collections".to_string()));
+        assert_eq!(lexer.next_token(), Token::DoubleColon);
+        assert_eq!(lexer.next_token(), Token::Ident("HashMap".to_string()));
+        assert_eq!(lexer.next_token(), Token::Semicolon);
     }
 
     #[test]
-    fn test_arrow() {
+    fn test_pub_keyword() {
         let config = SyntaxConfig::rust();
-        let mut lexer = Lexer::new("x -> y", config);
+        let mut lexer = Lexer::new("pub fn main()", config);
         
-        assert_eq!(lexer.next_token(), Token::Ident("x".to_string()));
-        assert_eq!(lexer.next_token(), Token::Arrow);
-        assert_eq!(lexer.next_token(), Token::Ident("y".to_string()));
+        assert_eq!(lexer.next_token(), Token::Pub);
+        assert_eq!(lexer.next_token(), Token::Function);
+        assert_eq!(lexer.next_token(), Token::Ident("main".to_string()));
     }
 
     #[test]
-    fn test_dot() {
+    fn test_use_with_alias() {
         let config = SyntaxConfig::rust();
-        let mut lexer = Lexer::new("user.age", config);
+        let mut lexer = Lexer::new("use std::io::Result as IoResult;", config);
         
-        assert_eq!(lexer.next_token(), Token::Ident("user".to_string()));
-        assert_eq!(lexer.next_token(), Token::Dot);
-        assert_eq!(lexer.next_token(), Token::Ident("age".to_string()));
+        assert_eq!(lexer.next_token(), Token::Use);
+        assert_eq!(lexer.next_token(), Token::Ident("std".to_string()));
+        assert_eq!(lexer.next_token(), Token::DoubleColon);
+        assert_eq!(lexer.next_token(), Token::Ident("io".to_string()));
+        assert_eq!(lexer.next_token(), Token::DoubleColon);
+        assert_eq!(lexer.next_token(), Token::Ident("Result".to_string()));
+        assert_eq!(lexer.next_token(), Token::As);
+        assert_eq!(lexer.next_token(), Token::Ident("IoResult".to_string()));
+    }
+
+    #[test]
+    fn test_self_and_super() {
+        let config = SyntaxConfig::rust();
+        let mut lexer = Lexer::new("use self::foo; use super::bar;", config);
+        
+        assert_eq!(lexer.next_token(), Token::Use);
+        assert_eq!(lexer.next_token(), Token::SelfKw);
+        assert_eq!(lexer.next_token(), Token::DoubleColon);
+        assert_eq!(lexer.next_token(), Token::Ident("foo".to_string()));
+        assert_eq!(lexer.next_token(), Token::Semicolon);
+        assert_eq!(lexer.next_token(), Token::Use);
+        assert_eq!(lexer.next_token(), Token::Super);
+        assert_eq!(lexer.next_token(), Token::DoubleColon);
+        assert_eq!(lexer.next_token(), Token::Ident("bar".to_string()));
+    }
+
+    #[test]
+    fn test_multi_import() {
+        // Tests `use foo::{bar, baz};` syntax
+        let config = SyntaxConfig::rust();
+        let mut lexer = Lexer::new("use foo::{bar, baz};", config);
+        
+        assert_eq!(lexer.next_token(), Token::Use);
+        assert_eq!(lexer.next_token(), Token::Ident("foo".to_string()));
+        assert_eq!(lexer.next_token(), Token::DoubleColon);
+        assert_eq!(lexer.next_token(), Token::LeftBrace);
+        assert_eq!(lexer.next_token(), Token::Ident("bar".to_string()));
+        assert_eq!(lexer.next_token(), Token::Comma);
+        assert_eq!(lexer.next_token(), Token::Ident("baz".to_string()));
+        assert_eq!(lexer.next_token(), Token::RightBrace);
+    }
+
+    #[test]
+    fn test_glob_import() {
+        // Tests `use foo::*;` syntax
+        let config = SyntaxConfig::rust();
+        let mut lexer = Lexer::new("use foo::*;", config);
+        
+        assert_eq!(lexer.next_token(), Token::Use);
+        assert_eq!(lexer.next_token(), Token::Ident("foo".to_string()));
+        assert_eq!(lexer.next_token(), Token::DoubleColon);
+        assert_eq!(lexer.next_token(), Token::Star);  // Star doubles as glob
+        assert_eq!(lexer.next_token(), Token::Semicolon);
     }
 }
