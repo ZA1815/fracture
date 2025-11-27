@@ -1292,10 +1292,11 @@ impl SyntaxProjector {
 
                         instructions.push(Inst::Print { value: arg_reg });
 
+                        // Change to void later as the backend doesn't suppor it yet
                         instructions.push(Inst::Move {
                             dst: result_reg.clone(),
                             src: Value::Const(Const::I32(0)),
-                            ty: Type::Void
+                            ty: Type::I32
                         });
 
                         return Ok((instructions, result_reg));
@@ -1312,10 +1313,11 @@ impl SyntaxProjector {
                             value: arg_reg 
                         });
                         
+                        // Change to void later as the backend doesn't support it yet
                         instructions.push(Inst::Move {
                             dst: result_reg.clone(),
                             src: Value::Const(Const::I32(0)),
-                            ty: Type::Void
+                            ty: Type::I32
                         });
                         
                         return Ok((instructions, result_reg));
@@ -1330,10 +1332,11 @@ impl SyntaxProjector {
                         
                         instructions.push(Inst::Eprint { value: arg_reg });
                         
+                        // Change to void later as the backend doesn't suppor it yet
                         instructions.push(Inst::Move {
                             dst: result_reg.clone(),
                             src: Value::Const(Const::I32(0)),
-                            ty: Type::Void
+                            ty: Type::I32
                         });
                         
                         return Ok((instructions, result_reg));
@@ -1348,10 +1351,11 @@ impl SyntaxProjector {
                         
                         instructions.push(Inst::Eprintln { value: arg_reg });
                         
+                        // Change to void later as the backend doesn't support it yet
                         instructions.push(Inst::Move {
                             dst: result_reg.clone(),
                             src: Value::Const(Const::I32(0)),
-                            ty: Type::Void
+                            ty: Type::I32
                         });
                         
                         return Ok((instructions, result_reg));
