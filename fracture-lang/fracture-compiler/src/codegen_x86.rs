@@ -911,10 +911,10 @@ impl X86CodeGen {
         let result_offset = self.next_stack_offset + 24;
         self.next_stack_offset = result_offset + 24;
         self.emit(&format!("    mov QWORD PTR [rbp-{}], r15", result_offset));
-        self.emit(&format!("    mov QWORD PTR [rbp-{}], r14", result_offset + 8));
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], r14", result_offset - 8));
         self.emit("    mov rax, r14");
         self.emit("    add rax, 16");
-        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", result_offset + 16));
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", result_offset - 16));
         self.emit(&format!("    lea rax, [rbp-{}]", result_offset));
         self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
     }

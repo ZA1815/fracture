@@ -292,6 +292,20 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
+        Inst::StringConcat { dst, left, right } => {
+            let left_ty = env.get(left)
+                .ok_or_else(|| format!("StringConcat: Left register r{} not found", left.0))?;
+            let right_ty = env.get(right)
+                .ok_or_else(|| format!("StringConcat: Right register r{} not found", right.0))?;
+
+            if !matches!(left_ty, Type::String) || !matches!(right_ty, Type::String) {
+                return Err(format!("StringConcat requires two strings, got {:?} and {:?}", left_ty, right_ty));
+            }
+
+            env.insert(dst.clone(), Type::String);
+
+            Ok(())
+        }
         Inst::VecAlloc { dst, element_ty, initial_cap } => {
             let cap_ty = infer_value_type(initial_cap, env)?;
             if !is_numeric(&cap_ty) {
