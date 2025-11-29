@@ -629,6 +629,16 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
+        Inst::IntToString { dst, value } => {
+            let val_ty = infer_value_type(value, env)?;
+            if !is_numeric(&val_ty) {
+                return Err(format!("IntToString in {}: Value must be numeric, got {:?}", func_name, val_ty));
+            }
+
+            env.insert(dst.clone(), Type::String);
+
+            Ok(())
+        }
         // Implement type checking for other insts later
         _ => Ok(())
     }

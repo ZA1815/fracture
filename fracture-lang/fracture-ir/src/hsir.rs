@@ -301,6 +301,7 @@ pub enum Inst {
     Eprint { value: Reg },
     Eprintln { value: Reg },
     ReadLine { dst: Reg },
+    IntToString { dst: Reg, value: Value },
     // Future IO Instructions
     // SysSeek { fd, offset, whence, result_dst }
     // SysStat { path, stat_buf, result_dst }

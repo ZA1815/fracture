@@ -1372,6 +1372,20 @@ impl SyntaxProjector {
                         
                         return Ok((instructions, result_reg));
                     }
+                    else if name == "itoa" || name == "to_string" {
+                        self.advance();
+
+                        let (val_insts, val_reg) = self.parse_expression()?;
+                        instructions.extend(val_insts);
+
+                        self.expect(Token::RightParentheses)?;
+
+                        instructions.push(Inst::IntToString { dst: result_reg.clone(), value: Value::Reg(val_reg) });
+
+                        self.reg_types.insert(result_reg.clone(), Type::String);
+
+                        return Ok((instructions, result_reg));
+                    }
                     else if name == "sys_write" {
                         self.advance();
 
