@@ -55,6 +55,17 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
+        Inst::Load { dst, ptr, ty } => {
+            let ptr_ty = infer_value_type(ptr, env)?;
+            
+            if !matches!(ptr_ty, Type::Ptr(_)) {
+                return Err(format!("Load requires pointer type, got {:?}", ptr_ty));
+            }
+
+            env.insert(dst.clone(), ty.clone());
+
+            Ok(())
+        }
         // Have to account for string concat later
         Inst::Add { dst, lhs, rhs, ty } |
         Inst::Sub { dst, lhs, rhs, ty } |
@@ -76,7 +87,10 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
         }
         Inst::Eq { dst, lhs, rhs, ty } |
         Inst::Lt { dst, lhs, rhs, ty } |
-        Inst::Gt { dst, lhs, rhs, ty } => {
+        Inst::Gt { dst, lhs, rhs, ty } |
+        Inst::Le { dst, lhs, rhs, ty } |
+        Inst::Ge { dst, lhs, rhs, ty } |
+        Inst::Ne { dst, lhs, rhs, ty } => {
             let lhs_ty = infer_value_type(lhs, env)?;
             let rhs_ty = infer_value_type(rhs, env)?;
 
@@ -967,7 +981,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
                     func_name, content.0
                 ));
             }
-            
+
             let content_ty = env.get(content).cloned().unwrap_or(Type::Unknown);
             if !matches!(content_ty, Type::String | Type::Unknown) {
                 return Err(format!(

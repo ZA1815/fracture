@@ -225,6 +225,9 @@ pub enum Inst {
     Eq { dst: Reg, lhs: Value, rhs: Value, ty: Type },
     Lt { dst: Reg, lhs: Value, rhs: Value, ty: Type },
     Gt { dst: Reg, lhs: Value, rhs: Value, ty: Type },
+    Le { dst: Reg, lhs: Value, rhs: Value, ty: Type },
+    Ge { dst: Reg, lhs: Value, rhs: Value, ty: Type },
+    Ne { dst: Reg, lhs: Value, rhs: Value, ty: Type },
 
     Alloc { dst: Reg, size: Value, ty: Type },
     Load { dst: Reg, ptr: Value, ty: Type },

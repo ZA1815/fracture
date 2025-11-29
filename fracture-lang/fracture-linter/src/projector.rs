@@ -699,7 +699,13 @@ impl SyntaxProjector {
     fn parse_comparison(&mut self) -> Result<(Vec<Inst>, Reg), String> {
         let (mut instructions, mut left_reg) = self.parse_additive()?;
 
-        while self.current == Token::DoubleEquals || self.current == Token::Less || self.current == Token::Greater {
+        while self.current == Token::DoubleEquals
+            || self.current == Token::Less
+            || self.current == Token::Greater
+            || self.current == Token::GreaterEquals
+            || self.current == Token::LessEquals
+            || self.current == Token::NotEquals
+        {
             let op = self.current.clone();
             self.advance();
 
@@ -726,6 +732,24 @@ impl SyntaxProjector {
                     lhs: Value::Reg(left_reg),
                     rhs: Value::Reg(right_reg),
                     ty: Type::I32 // Add type inference later
+                },
+                Token::LessEquals => Inst::Le {
+                    dst: result_reg.clone(),
+                    lhs: Value::Reg(left_reg),
+                    rhs: Value::Reg(right_reg),
+                    ty: Type::I32
+                },
+                Token::GreaterEquals => Inst::Ge {
+                    dst: result_reg.clone(),
+                    lhs: Value::Reg(left_reg),
+                    rhs: Value::Reg(right_reg),
+                    ty: Type::I32
+                },
+                Token::NotEquals => Inst::Ne {
+                    dst: result_reg.clone(),
+                    lhs: Value::Reg(left_reg),
+                    rhs: Value::Reg(right_reg),
+                    ty: Type::I32 
                 },
                 _ => return Err(format!("Comparison operator {:?} not yet implemented", op))
             };
@@ -1178,6 +1202,14 @@ impl SyntaxProjector {
                     dst: result_reg.clone(),
                     src: Value::Const(Const::I32(*n as i32)),
                     ty: Type::I32
+                });
+                self.advance();
+            }
+            Token::Bool(b) => {
+                instructions.push(Inst::Move {
+                    dst: result_reg.clone(),
+                    src: Value::Const(Const::Bool(*b)),
+                    ty: Type::Bool
                 });
                 self.advance();
             }

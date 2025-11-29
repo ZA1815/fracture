@@ -295,6 +295,18 @@ impl X86CodeGen {
             Inst::Lt { dst, lhs, rhs, ty } => {
                 self.compile_lt(dst, lhs, rhs, ty);
             }
+            Inst::Gt { dst, lhs, rhs, ty } => {
+                self.compile_cmp_set(dst, lhs, rhs, ty, "setg");
+            }
+            Inst::Ge { dst, lhs, rhs, ty } => {
+                self.compile_cmp_set(dst, lhs, rhs, ty, "setge");
+            }
+            Inst::Le { dst, lhs, rhs, ty } => {
+                self.compile_cmp_set(dst, lhs, rhs, ty, "setle");
+            }
+            Inst::Ne { dst, lhs, rhs, ty } => {
+                self.compile_cmp_set(dst, lhs, rhs, ty, "setne");
+            }
             Inst::Jump { target } => {
                 self.compile_jump(target);
             }
@@ -2042,6 +2054,17 @@ impl X86CodeGen {
             
             offset
         }
+    }
+
+    fn compile_cmp_set(&mut self, dst: &Reg, lhs: &Value, rhs: &Value, ty: &Type, set_cc: &str) {
+        self.load_value_to_rax(lhs, ty);
+        self.emit("    mov rcx, rax");
+        self.load_value_to_rax(rhs, ty);
+        self.emit("    cmp rcx, rax");
+        self.emit(&format!("    {} al", set_cc));
+        self.emit("    movzx rax, al");
+        let offset = self.get_or_alloc_reg_offset(dst);
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", offset));
     }
 
     fn emit(&mut self, line: &str) {
