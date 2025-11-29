@@ -1,5 +1,5 @@
 use fracture_ir::hsir::*;
-use std::collections::HashMap;
+use std::{collections::HashMap, io::empty};
 
 pub struct X86CodeGen {
     output: Vec<String>,
@@ -459,6 +459,45 @@ impl X86CodeGen {
             }
             Inst::IntToString { dst, value } => {
                 self.compile_int_to_string(dst, value);
+            }
+            Inst::SysSeek { fd, offset, whence, result_dst } => {
+                self.compile_sys_seek(fd, offset, whence, result_dst);
+            }
+            Inst::SysStat { path, stat_buf, result_dst } => {
+                self.compile_sys_stat(path, stat_buf, result_dst);
+            }
+            Inst::SysFstat { fd, stat_buf, result_dst } => {
+                self.compile_sys_fstat(fd, stat_buf, result_dst);
+            }
+            Inst::SysMkdir { path, mode, result_dst } => {
+                self.compile_sys_mkdir(path, mode, result_dst);
+            }
+            Inst::SysRmdir { path, result_dst } => {
+                self.compile_sys_rmdir(path, result_dst);
+            }
+            Inst::SysUnlink { path, result_dst } => {
+                self.compile_sys_unlink(path, result_dst);
+            }
+            Inst::SysRename { old_path, new_path, result_dst } => {
+                self.compile_sys_rename(old_path, new_path, result_dst);
+            }
+            Inst::SysAccess { path, mode, result_dst } => {
+                self.compile_sys_access(path, mode, result_dst);
+            }
+            Inst::SysGetcwd { dst } => {
+                self.compile_sys_getcwd(dst);
+            }
+            Inst::SysChdir { path, result_dst } => {
+                self.compile_sys_chdir(path, result_dst);
+            }
+            Inst::FileReadToString { dst, path, result_dst } => {
+                self.compile_file_read_to_string(dst, path, result_dst);
+            }
+            Inst::FileWriteString { path, content, result_dst } => {
+                self.compile_file_write_string(path, content, result_dst);
+            }
+            Inst::FileAppendString { path, content, result_dst } => {
+                self.compile_file_append_string(path, content, result_dst);
             }
             Inst::SimPoint { id, metadata } => {
                 self.emit(&format!("    # SimPoint: {}", id));
@@ -1636,6 +1675,315 @@ impl X86CodeGen {
         self.emit(&format!("    mov QWORD PTR [rbp-{}], 24", string_struct_offset - 16));
         self.emit(&format!("    lea rax, [rbp-{}]", string_struct_offset));
         self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+    }
+
+    fn compile_sys_seek(&mut self, fd: &Value, offset: &Value, whence: &Value, result_dst: &Reg) {
+        self.load_value_to_rax(fd, &Type::I32);
+        self.emit("    mov rdi, rax");
+        self.load_value_to_rax(offset, &Type::I64);
+        self.emit("    mov rsi, rax");
+        self.load_value_to_rax(whence, &Type::I32);
+        self.emit("    mov rdx, rax");
+        self.emit("    mov rax, 8");
+        self.emit("    syscall");
+        let result_offset = self.get_or_alloc_reg_offset(result_dst);
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", result_offset));
+    }
+
+    fn compile_sys_stat(&mut self, path: &Reg, stat_buf: &Reg, result_dst: &Reg) {
+        let path_offset = self.get_or_alloc_reg_offset(path);
+        self.emit("    sub rsp, 144");
+        self.emit("    mov r12, rsp");
+        self.emit(&format!("    mov rdi, QWORD PTR [rbp-{}]", path_offset));
+        self.emit("    mov rdi, QWORD PTR [rdi]");
+        self.emit("    mov rsi, r12");
+        self.emit("    mov rax, 4");
+        self.emit("    syscall");
+        self.emit("    mov r13, rax");
+        let stat_buf_offset = self.get_or_alloc_reg_offset(stat_buf);
+        let stat_offset = self.next_stack_offset + 24;
+        self.next_stack_offset = stat_offset + 8;
+        self.emit("    mov rax, QWORD PTR [r12+48]");
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", stat_offset));
+        self.emit("    mov eax, DWORD PTR [r12+24]");
+        self.emit(&format!("    mov DWORD PTR [rbp-{}], eax", stat_offset - 8));
+        self.emit("    mov rax, QWORD PTR [r12+88]");
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", stat_offset - 16));
+        self.emit(&format!("    lea rax, [rbp-{}]", stat_offset));
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", stat_buf_offset));
+        self.emit("    add rsp, 144");
+        let result_offset = self.get_or_alloc_reg_offset(result_dst);
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], r13", result_offset));
+    }
+
+    fn compile_sys_fstat(&mut self, fd: &Value, stat_buf: &Reg, result_dst: &Reg) {
+        self.emit("    sub rsp, 144");
+        self.emit("    mov r12, rsp");
+        self.load_value_to_rax(fd, &Type::I32);
+        self.emit("    mov rdi, rax");
+        self.emit("    mov rsi, r12");
+        self.emit("    mov rax, 5");
+        self.emit("    syscall");
+        self.emit("    mov r13, rax");
+        let stat_buf_offset = self.get_or_alloc_reg_offset(stat_buf);
+        let stat_offset = self.next_stack_offset + 24;
+        self.next_stack_offset = stat_offset + 8;
+        self.emit("    mov rax, QWORD PTR [r12+48]");
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", stat_offset));
+        self.emit("    mov eax, DWORD PTR [r12+24]");
+        self.emit(&format!("    mov DWORD PTR [rbp-{}], eax", stat_offset - 8));
+        self.emit("    mov rax, QWORD PTR [r12+88]");
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", stat_offset - 16));
+        self.emit(&format!("    lea rax, [rbp-{}]", stat_offset));
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", stat_buf_offset));
+        self.emit("    add rsp, 144");
+        let result_offset = self.get_or_alloc_reg_offset(result_dst);
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], r13", result_offset));
+    }
+
+    fn compile_sys_mkdir(&mut self, path: &Reg, mode: &Value, result_dst: &Reg) {
+        let path_offset = self.get_or_alloc_reg_offset(path);
+        self.emit(&format!("    mov rdi, QWORD PTR [rbp-{}]", path_offset));
+        self.emit("    mov rdi, QWORD PTR [rdi]");
+        self.load_value_to_rax(mode, &Type::I32);
+        self.emit("    mov rsi, rax");
+        self.emit("    mov rax, 83");
+        self.emit("    syscall");
+        let result_offset = self.get_or_alloc_reg_offset(result_dst);
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", result_offset));
+    }
+
+    fn compile_sys_rmdir(&mut self, path: &Reg, result_dst: &Reg) {
+        let path_offset = self.get_or_alloc_reg_offset(path);
+        self.emit(&format!("    mov rdi, QWORD PTR [rbp-{}]", path_offset));
+        self.emit("    mov rdi, QWORD PTR [rdi]");
+        self.emit("    mov rax, 84");
+        self.emit("    syscall");
+        let result_offset = self.get_or_alloc_reg_offset(result_dst);
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", result_offset));
+    }
+
+    fn compile_sys_unlink(&mut self, path: &Reg, result_dst: &Reg) {
+        let path_offset = self.get_or_alloc_reg_offset(path);
+        self.emit(&format!("    mov rdi, QWORD PTR [rbp-{}]", path_offset));
+        self.emit("    mov rdi, QWORD PTR [rdi]");
+        self.emit("    mov rax, 87");
+        self.emit("    syscall");
+        let result_offset = self.get_or_alloc_reg_offset(result_dst);
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", result_offset));
+    }
+
+    fn compile_sys_rename(&mut self, old_path: &Reg, new_path: &Reg, result_dst: &Reg) {
+        let old_path_offset = self.get_or_alloc_reg_offset(old_path);
+        let new_path_offset = self.get_or_alloc_reg_offset(new_path);
+        self.emit(&format!("    mov rdi, QWORD PTR [rbp-{}]", old_path_offset));
+        self.emit("    mov rdi, QWORD PTR [rdi]");
+        self.emit(&format!("    mov rsi, QWORD PTR [rbp-{}]", new_path_offset));
+        self.emit("    mov rsi, QWORD PTR [rsi]");
+        self.emit("    mov rax, 82");
+        self.emit("    syscall");
+        let result_offset = self.get_or_alloc_reg_offset(result_dst);
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", result_offset));
+    }
+
+    fn compile_sys_access(&mut self, path: &Reg, mode: &Value, result_dst: &Reg) {
+        let path_offset = self.get_or_alloc_reg_offset(path);
+        self.emit(&format!("    mov rdi, QWORD PTR [rbp-{}]", path_offset));
+        self.emit("    mov rdi, QWORD PTR [rdi]");
+        self.load_value_to_rax(mode, &Type::I32);
+        self.emit("    mov rsi, rax");
+        self.emit("    mov rax, 21");
+        self.emit("    syscall");
+        let result_offset = self.get_or_alloc_reg_offset(result_dst);
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", result_offset));
+    }
+
+    fn compile_sys_getcwd(&mut self, dst: &Reg) {
+        let id = self.next_label_id();
+        self.emit("    mov rax, 12");
+        self.emit("    xor rdi, rdi");
+        self.emit("    syscall");
+        self.emit("    mov r12, rax");
+        self.emit("    lea rdi, [rax+4096]");
+        self.emit("    mov rax, 12");
+        self.emit("    syscall");
+        self.emit("    mov rdi, r12");
+        self.emit("    mov rsi, 4096");
+        self.emit("    mov rax, 79");
+        self.emit("    syscall");
+        self.emit("    mov rdi, r12");
+        self.emit("    xor rcx, rcx");
+        let loop_label = format!("getcwd_strlen_{}", id);
+        let done_label = format!("getcwd_done_{}", id);
+        self.emit(&format!("{}:", loop_label));
+        self.emit("    mov al, BYTE PTR [rdi+rcx]");
+        self.emit("    test al, al");
+        self.emit(&format!("    jz {}", done_label));
+        self.emit("    inc rcx");
+        self.emit(&format!("    jmp {}", loop_label));
+        self.emit(&format!("{}:", done_label));
+        self.emit("    mov r13, rcx");
+        let dst_offset = self.get_or_alloc_reg_offset(dst);
+        let string_struct_offset = self.next_stack_offset + 24;
+        self.next_stack_offset = string_struct_offset + 8;
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], r12", string_struct_offset));
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], r13", string_struct_offset - 8));
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], 4096", string_struct_offset - 16));
+        self.emit(&format!("    lea rax, [rbp-{}]", string_struct_offset));
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+    }
+
+    fn compile_sys_chdir(&mut self, path: &Reg, result_dst: &Reg) {
+        let path_offset = self.get_or_alloc_reg_offset(path);
+        self.emit(&format!("    mov rdi, QWORD PTR [rbp-{}]", path_offset));
+        self.emit("    mov rdi, QWORD PTR [rdi]");
+        self.emit("    mov rax, 80");
+        self.emit("    syscall");
+        let result_offset = self.get_or_alloc_reg_offset(result_dst);
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", result_offset));
+    }
+
+    fn compile_file_read_to_string(&mut self, dst: &Reg, path: &Reg, result_dst: &Reg) {
+        let id = self.next_label_id();
+        let path_offset = self.get_or_alloc_reg_offset(path);
+        let error_label = format!("file_read_error_{}", id);
+        let cleanup_label = format!("file_read_cleanup_{}", id);
+        let done_label = format!("file_read_done_{}", id);
+        self.emit(&format!("    mov rdi, QWORD PTR [rbp-{}]", path_offset));
+        self.emit("    mov rdi, QWORD PTR [rdi]");
+        self.emit("    xor rsi, rsi");
+        self.emit("    xor rdx, rdx");
+        self.emit("    mov rax, 2");
+        self.emit("    syscall");
+        self.emit("    test rax, rax");
+        self.emit(&format!("    js {}", error_label));
+        self.emit("    mov r12, rax");
+        self.emit("    sub rsp, 144");
+        self.emit("    mov rdi, r12");
+        self.emit("    mov rsi, rsp");
+        self.emit("    mov rax, 5");
+        self.emit("    syscall");
+        self.emit("    test rax, rax");
+        self.emit(&format!("    js {}", cleanup_label));
+        self.emit("    mov r13, QWORD PTR [rsp+48]");
+        self.emit("    add rsp, 144");
+        self.emit("    mov rax, 12");
+        self.emit("    xor rdi, rdi");
+        self.emit("    syscall");
+        self.emit("    mov r14, rax");
+        self.emit("    mov rdi, r14");
+        self.emit("    add rdi, r13");
+        self.emit("    inc rdi");
+        self.emit("    mov rax, 12");
+        self.emit("    syscall");
+        self.emit("    mov rdi, r12");
+        self.emit("    mov rsi, r14");
+        self.emit("    mov rdx, r13");
+        self.emit("    mov rax, 0");
+        self.emit("    syscall");
+        self.emit("    mov r15, rax");
+        self.emit("    test rax, rax");
+        self.emit(&format!("    js {}", cleanup_label));
+        self.emit("    mov rdi, r12");
+        self.emit("    mov rax, 3");
+        self.emit("    syscall");
+        let dst_offset = self.get_or_alloc_reg_offset(dst);
+        let string_struct_offset = self.next_stack_offset + 24;
+        self.next_stack_offset = string_struct_offset + 8;
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], r14", string_struct_offset));
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], r15", string_struct_offset - 8));
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], r13", string_struct_offset - 16));
+        self.emit(&format!("    lea rax, [rbp-{}]", string_struct_offset));
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+        let result_offset = self.get_or_alloc_reg_offset(result_dst);
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], 0", result_offset));
+        self.emit(&format!("    jmp {}", done_label));
+        self.emit(&format!("{}:", cleanup_label));
+        self.emit("    mov rdi, r12");
+        self.emit("    mov rax, 3");
+        self.emit("    syscall");
+        self.emit(&format!("{}:", error_label));
+        // Preserve real error code later and use it
+        let result_offset = self.get_or_alloc_reg_offset(result_dst);
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], -1", result_offset));
+        // Creating empty string instead of error
+        let dst_offset = self.get_or_alloc_reg_offset(dst);
+        let empty_string_offset = self.next_stack_offset + 24;
+        self.next_stack_offset = empty_string_offset + 8;
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], 0", empty_string_offset));
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], 0", empty_string_offset - 8));
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], 0", empty_string_offset - 16));
+        self.emit(&format!("    lea rax, [rbp-{}]", empty_string_offset));
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+        self.emit(&format!("{}:", done_label));
+    }
+
+    fn compile_file_write_string(&mut self, path: &Reg, content: &Reg, result_dst: &Reg) {
+        let id = self.next_label_id();
+        let path_offset = self.get_or_alloc_reg_offset(path);
+        let content_offset = self.get_or_alloc_reg_offset(content);
+        let error_label = format!("file_write_error_{}", id);
+        let done_label = format!("file_write_done_{}", id);
+        self.emit(&format!("    mov rdi, QWORD PTR [rbp-{}]", path_offset));
+        self.emit("    mov rdi, QWORD PTR [rdi]");
+        self.emit("    mov rsi, 577");
+        self.emit("    mov rdx, 420");
+        self.emit("    mov rax, 2");
+        self.emit("    syscall");
+        self.emit("    test rax, rax");
+        self.emit(&format!("    js {}", error_label));
+        self.emit("    mov r12, rax");
+        self.emit(&format!("    mov r13, QWORD PTR [rbp-{}]", content_offset));
+        self.emit("    mov rsi, QWORD PTR [r13]");
+        self.emit("    mov rdx, QWORD PTR [r13+8]");
+        self.emit("    mov rdi, r12");
+        self.emit("    mov rax, 1");
+        self.emit("    syscall");
+        self.emit("    mov r14, rax");
+        self.emit("    mov rdi, r12");
+        self.emit("    mov rax, 3");
+        self.emit("    syscall");
+        let result_offset = self.get_or_alloc_reg_offset(result_dst);
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], r14", result_offset));
+        self.emit(&format!("    jmp {}", done_label));
+        self.emit(&format!("{}:", error_label));
+        let result_offset = self.get_or_alloc_reg_offset(result_dst);
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", result_offset));
+        self.emit(&format!("{}:", done_label));
+    }
+
+    fn compile_file_append_string(&mut self, path: &Reg, content: &Reg, result_dst: &Reg) {
+        let id = self.next_label_id();
+        let path_offset = self.get_or_alloc_reg_offset(path);
+        let content_offset = self.get_or_alloc_reg_offset(content);
+        let error_label = format!("file_append_error_{}", id);
+        let done_label = format!("file_append_done_{}", id);
+        self.emit(&format!("    mov rdi, QWORD PTR [rbp-{}]", path_offset));
+        self.emit("    mov rdi, QWORD PTR [rdi]");
+        self.emit("    mov rsi, 1089");
+        self.emit("    mov rdx, 420");
+        self.emit("    mov rax, 2");
+        self.emit("    syscall");
+        self.emit("    test rax, rax");
+        self.emit(&format!("    js {}", error_label));
+        self.emit("    mov r12, rax");
+        self.emit(&format!("    mov r13, QWORD PTR [rbp-{}]", content_offset));
+        self.emit("    mov rsi, QWORD PTR [r13]");
+        self.emit("    mov rdx, QWORD PTR [r13+8]");
+        self.emit("    mov rdi, r12");
+        self.emit("    mov rax, 1");
+        self.emit("    syscall");
+        self.emit("    mov r14, rax");
+        self.emit("    mov rdi, r12");
+        self.emit("    mov rax, 3");
+        self.emit("    syscall");
+        let result_offset = self.get_or_alloc_reg_offset(result_dst);
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], r14", result_offset));
+        self.emit(&format!("    jmp {}", done_label));
+        self.emit(&format!("{}:", error_label));
+        let result_offset = self.get_or_alloc_reg_offset(result_dst);
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", result_offset));
+        self.emit(&format!("{}:", done_label));
     }
 
     fn get_field_offset_without_struct(&self, field_name: &str) -> Option<usize> {

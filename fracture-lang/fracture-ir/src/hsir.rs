@@ -302,13 +302,19 @@ pub enum Inst {
     Eprintln { value: Reg },
     ReadLine { dst: Reg },
     IntToString { dst: Reg, value: Value },
-    // Future IO Instructions
-    // SysSeek { fd, offset, whence, result_dst }
-    // SysStat { path, stat_buf, result_dst }
-    // SysFstat { fd, stat_buf, result_dst }
-    // SysMkdir { path, mode, result_dst }
-    // SysUnlink { path, result_dst }
-    // SysRename { old_path, new_path, result_dst }
+    SysSeek { fd: Value, offset: Value, whence: Value, result_dst: Reg },
+    SysStat { path: Reg, stat_buf: Reg, result_dst: Reg },
+    SysFstat { fd: Value, stat_buf: Reg, result_dst: Reg },
+    SysMkdir { path: Reg, mode: Value, result_dst: Reg },
+    SysRmdir { path: Reg, result_dst: Reg },
+    SysUnlink { path: Reg, result_dst: Reg },
+    SysRename { old_path: Reg, new_path: Reg, result_dst: Reg },
+    SysAccess { path: Reg, mode: Value, result_dst: Reg },
+    SysGetcwd { dst: Reg },
+    SysChdir { path: Reg, result_dst: Reg },
+    FileReadToString { dst: Reg, path: Reg, result_dst: Reg },
+    FileWriteString { path: Reg, content: Reg, result_dst: Reg },
+    FileAppendString { path: Reg, content: Reg, result_dst: Reg },
 
     DropScope { id: u32 },
     DropEndScope { id: u32 },

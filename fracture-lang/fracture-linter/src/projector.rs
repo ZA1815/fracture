@@ -1484,6 +1484,349 @@ impl SyntaxProjector {
 
                         return Ok((instructions, result_reg))
                     }
+                    else if name == "file_exists" || name == "path_exists" {
+                        self.advance();
+
+                        let (path_insts, path_reg) = self.parse_expression()?;
+                        instructions.extend(path_insts);
+
+                        self.expect(Token::RightParentheses)?;
+
+                        let access_result = self.alloc_reg();
+
+                        instructions.push(Inst::SysAccess {
+                            path: path_reg,
+                            mode: Value::Const(Const::I32(0)),
+                            result_dst: access_result.clone()
+                        });
+
+                        instructions.push(Inst::Eq {
+                            dst: result_reg.clone(),
+                            lhs: Value::Reg(access_result),
+                            rhs: Value::Const(Const::I64(0)),
+                            ty: Type::I64
+                        });
+
+                        self.reg_types.insert(result_reg.clone(), Type::Bool);
+
+                        return Ok((instructions, result_reg));
+                    }
+                    else if name == "is_readable" {
+                        self.advance();
+
+                        let (path_insts, path_reg) = self.parse_expression()?;
+                        instructions.extend(path_insts);
+
+                        self.expect(Token::RightParentheses)?;
+
+                        let access_result = self.alloc_reg();
+
+                        instructions.push(Inst::SysAccess {
+                            path: path_reg,
+                            mode: Value::Const(Const::I32(4)),
+                            result_dst: access_result.clone()
+                        });
+
+                        instructions.push(Inst::Eq {
+                            dst: result_reg.clone(),
+                            lhs: Value::Reg(access_result),
+                            rhs: Value::Const(Const::I64(0)),
+                            ty: Type::I64
+                        });
+
+                        self.reg_types.insert(result_reg.clone(), Type::Bool);
+
+                        return Ok((instructions, result_reg));
+                    }
+                    else if name == "is_writable" {
+                        self.advance();
+
+                        let (path_insts, path_reg) = self.parse_expression()?;
+                        instructions.extend(path_insts);
+
+                        self.expect(Token::RightParentheses)?;
+
+                        let access_result = self.alloc_reg();
+
+                        instructions.push(Inst::SysAccess {
+                            path: path_reg,
+                            mode: Value::Const(Const::I32(2)),
+                            result_dst: access_result.clone()
+                        });
+
+                        instructions.push(Inst::Eq {
+                            dst: result_reg.clone(),
+                            lhs: Value::Reg(access_result),
+                            rhs: Value::Const(Const::I64(0)),
+                            ty: Type::I64
+                        });
+
+                        self.reg_types.insert(result_reg.clone(), Type::Bool);
+
+                        return Ok((instructions, result_reg));
+                    }
+                    else if name == "read_file" || name == "fs_read" {
+                        self.advance();
+
+                        let (path_insts, path_reg) = self.parse_expression()?;
+                        instructions.extend(path_insts);
+
+                        self.expect(Token::RightParentheses)?;
+
+                        let error_reg = self.alloc_reg();
+
+                        instructions.push(Inst::FileReadToString {
+                            dst: result_reg.clone(),
+                            path: path_reg,
+                            result_dst: error_reg
+                        });
+
+                        self.reg_types.insert(result_reg.clone(), Type::String);
+
+                        return Ok((instructions, result_reg));
+                    }
+                    else if name == "write_file" || name == "fs_write" {
+                        self.advance();
+
+                        let (path_insts, path_reg) = self.parse_expression()?;
+                        instructions.extend(path_insts);
+
+                        self.expect(Token::Comma)?;
+
+                        let (content_insts, content_reg) = self.parse_expression()?;
+                        instructions.extend(content_insts);
+
+                        self.expect(Token::RightParentheses)?;
+
+                        instructions.push(Inst::FileWriteString {
+                            path: path_reg,
+                            content: content_reg,
+                            result_dst: result_reg.clone()
+                        });
+
+                        self.reg_types.insert(result_reg.clone(), Type::I64);
+
+                        return Ok((instructions, result_reg));
+                    }
+                    else if name == "append_file" || name == "fs_append" {
+                        self.advance();
+
+                        let (path_insts, path_reg) = self.parse_expression()?;
+                        instructions.extend(path_insts);
+
+                        self.expect(Token::Comma)?;
+
+                        let (content_insts, content_reg) = self.parse_expression()?;
+                        instructions.extend(content_insts);
+
+                        self.expect(Token::RightParentheses)?;
+
+                        instructions.push(Inst::FileAppendString {
+                            path: path_reg,
+                            content: content_reg,
+                            result_dst: result_reg.clone()
+                        });
+
+                        self.reg_types.insert(result_reg.clone(), Type::I64);
+
+                        return Ok((instructions, result_reg));
+                    }
+                    else if name == "mkdir" || name == "create_dir" {
+                        self.advance();
+
+                        let (path_insts, path_reg) = self.parse_expression()?;
+                        instructions.extend(path_insts);
+
+                        let mode = if self.current == Token::Comma {
+                            self.advance();
+                            
+                            let (mode_insts, mode_reg) = self.parse_expression()?;
+                            instructions.extend(mode_insts);
+
+                            Value::Reg(mode_reg)
+                        }
+                        else {
+                            Value::Const(Const::I32(493))
+                        };
+
+                        self.expect(Token::RightParentheses)?;
+
+                        instructions.push(Inst::SysMkdir {
+                            path: path_reg,
+                            mode,
+                            result_dst: result_reg.clone()
+                        });
+
+                        self.reg_types.insert(result_reg.clone(), Type::I64);
+
+                        return Ok((instructions, result_reg));
+                    }
+                    else if name == "rmdir" || name == "remove_dir" {
+                        self.advance();
+
+                        let (path_insts, path_reg) = self.parse_expression()?;
+                        instructions.extend(path_insts);
+
+                        self.expect(Token::RightParentheses)?;
+
+                        instructions.push(Inst::SysRmdir {
+                            path: path_reg,
+                            result_dst: result_reg.clone()
+                        });
+
+                        self.reg_types.insert(result_reg.clone(), Type::I64);
+
+                        return Ok((instructions, result_reg));
+                    }
+                    else if name == "unlink" || name == "remove_file" || name == "delete_file" {
+                        self.advance();
+
+                        let (path_insts, path_reg) = self.parse_expression()?;
+                        instructions.extend(path_insts);
+
+                        self.expect(Token::RightParentheses)?;
+
+                        instructions.push(Inst::SysUnlink {
+                            path: path_reg,
+                            result_dst: result_reg.clone()
+                        });
+
+                        self.reg_types.insert(result_reg.clone(), Type::I64);
+
+                        return Ok((instructions, result_reg));
+                    }
+                    else if name == "rename" || name == "mv" {
+                        self.advance();
+
+                        let (old_path_insts, old_path_reg) = self.parse_expression()?;
+                        instructions.extend(old_path_insts);
+
+                        self.expect(Token::Comma)?;
+
+                        let (new_path_insts, new_path_reg) = self.parse_expression()?;
+                        instructions.extend(new_path_insts);
+
+                        self.expect(Token::RightParentheses)?;
+
+                        instructions.push(Inst::SysRename {
+                            old_path: old_path_reg,
+                            new_path: new_path_reg,
+                            result_dst: result_reg.clone()
+                        });
+
+                        self.reg_types.insert(result_reg.clone(), Type::I64);
+
+                        return Ok((instructions, result_reg));
+                    }
+                    else if name == "getcwd" || name == "current_dir" || name == "pwd" {
+                        self.advance();
+
+                        self.expect(Token::RightParentheses)?;
+
+                        instructions.push(Inst::SysGetcwd {
+                            dst: result_reg.clone()
+                        });
+
+                        self.reg_types.insert(result_reg.clone(), Type::String);
+
+                        return Ok((instructions, result_reg));
+                    }
+                    else if name == "chdir" || name == "cd" || name == "set_current_dir" {
+                        self.advance();
+
+                        let (path_insts, path_reg) = self.parse_expression()?;
+                        instructions.extend(path_insts);
+
+                        self.expect(Token::RightParentheses)?;
+
+                        instructions.push(Inst::SysChdir {
+                            path: path_reg,
+                            result_dst: result_reg.clone()
+                        });
+
+                        self.reg_types.insert(result_reg.clone(), Type::I64);
+
+                        return Ok((instructions, result_reg));
+                    }
+                    else if name == "file_size" {
+                        self.advance();
+
+                        let (path_insts, path_reg) = self.parse_expression()?;
+                        instructions.extend(path_insts);
+
+                        self.expect(Token::RightParentheses)?;
+
+                        let stat_buf = self.alloc_reg();
+                        let stat_result = self.alloc_reg();
+
+                        instructions.push(Inst::SysStat {
+                            path: path_reg,
+                            stat_buf: stat_buf.clone(),
+                            result_dst: stat_result.clone()
+                        });
+
+                        instructions.push(Inst::Load {
+                            dst: result_reg.clone(),
+                            ptr: Value::Reg(stat_buf),
+                            ty: Type::I64
+                        });
+
+                        self.reg_types.insert(result_reg.clone(), Type::I64);
+
+                        return Ok((instructions, result_reg));
+                    }
+                    else if name == "sys_seek" || name == "lseek" {
+                        self.advance();
+
+                        let (fd_insts, fd_reg) = self.parse_expression()?;
+                        instructions.extend(fd_insts);
+
+                        self.expect(Token::Comma)?;
+
+                        let (offset_insts, offset_reg) = self.parse_expression()?;
+                        instructions.extend(offset_insts);
+
+                        self.expect(Token::Comma)?;
+
+                        let (whence_insts, whence_reg) = self.parse_expression()?;
+                        instructions.extend(whence_insts);
+
+                        self.expect(Token::RightParentheses)?;
+
+                        instructions.push(Inst::SysSeek {
+                            fd: Value::Reg(fd_reg),
+                            offset: Value::Reg(offset_reg),
+                            whence: Value::Reg(whence_reg),
+                            result_dst: result_reg.clone()
+                        });
+
+                        self.reg_types.insert(result_reg.clone(), Type::I64);
+
+                        return Ok((instructions, result_reg));
+                    }
+                    else if name == "sys_access" || name == "access" {
+                        self.advance();
+
+                        let (path_insts, path_reg) = self.parse_expression()?;
+                        instructions.extend(path_insts);
+
+                        self.expect(Token::Comma)?;
+
+                        let (mode_insts, mode_reg) = self.parse_expression()?;
+                        instructions.extend(mode_insts);
+
+                        self.expect(Token::RightParentheses)?;
+
+                        instructions.push(Inst::SysAccess {
+                            path: path_reg,
+                            mode: Value::Reg(mode_reg),
+                            result_dst: result_reg.clone()
+                        });
+
+                        self.reg_types.insert(result_reg.clone(), Type::I64);
+
+                        return Ok((instructions, result_reg));
+                    }                    
                     else {
                         self.advance();
 

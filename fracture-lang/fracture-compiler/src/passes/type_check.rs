@@ -653,6 +653,333 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
+        Inst::SysSeek { fd, offset, whence, result_dst } => {
+            let fd_ty = infer_value_type(fd, env)?;
+            if !is_numeric(&fd_ty) {
+                return Err(format!(
+                    "SysSeek in {}: fd must be numeric, got {:?}",
+                    func_name, fd_ty
+                ));
+            }
+            
+            let offset_ty = infer_value_type(offset, env)?;
+            if !is_numeric(&offset_ty) {
+                return Err(format!(
+                    "SysSeek in {}: offset must be numeric, got {:?}",
+                    func_name, offset_ty
+                ));
+            }
+            
+            let whence_ty = infer_value_type(whence, env)?;
+            if !is_numeric(&whence_ty) {
+                return Err(format!(
+                    "SysSeek in {}: whence must be numeric, got {:?}",
+                    func_name, whence_ty
+                ));
+            }
+            
+            env.insert(result_dst.clone(), Type::I64);
+            
+            Ok(())
+        }
+        
+        Inst::SysStat { path, stat_buf, result_dst } => {
+            if !env.contains_key(path) {
+                return Err(format!(
+                    "SysStat in {}: path register r{} not found",
+                    func_name, path.0
+                ));
+            }
+            
+            let path_ty = env.get(path).cloned().unwrap_or(Type::Unknown);
+            if !matches!(path_ty, Type::String | Type::Unknown) {
+                return Err(format!(
+                    "SysStat in {}: path should be String, got {:?}",
+                    func_name, path_ty
+                ));
+            }
+            
+            // Could define statbuf struct later
+            env.insert(stat_buf.clone(), Type::Ptr(Box::new(Type::Unknown)));
+            
+            env.insert(result_dst.clone(), Type::I64);
+            
+            Ok(())
+        }
+        
+        Inst::SysFstat { fd, stat_buf, result_dst } => {
+            let fd_ty = infer_value_type(fd, env)?;
+            if !is_numeric(&fd_ty) {
+                return Err(format!(
+                    "SysFstat in {}: fd must be numeric, got {:?}",
+                    func_name, fd_ty
+                ));
+            }
+            
+            env.insert(stat_buf.clone(), Type::Ptr(Box::new(Type::Unknown)));
+
+            env.insert(result_dst.clone(), Type::I64);
+            
+            Ok(())
+        }
+        
+        Inst::SysMkdir { path, mode, result_dst } => {
+            if !env.contains_key(path) {
+                return Err(format!(
+                    "SysMkdir in {}: path register r{} not found",
+                    func_name, path.0
+                ));
+            }
+            
+            let path_ty = env.get(path).cloned().unwrap_or(Type::Unknown);
+            if !matches!(path_ty, Type::String | Type::Unknown) {
+                return Err(format!(
+                    "SysMkdir in {}: path should be String, got {:?}",
+                    func_name, path_ty
+                ));
+            }
+            
+            let mode_ty = infer_value_type(mode, env)?;
+            if !is_numeric(&mode_ty) {
+                return Err(format!(
+                    "SysMkdir in {}: mode must be numeric, got {:?}",
+                    func_name, mode_ty
+                ));
+            }
+            
+            env.insert(result_dst.clone(), Type::I64);
+            
+            Ok(())
+        }
+        
+        Inst::SysRmdir { path, result_dst } => {
+            if !env.contains_key(path) {
+                return Err(format!(
+                    "SysRmdir in {}: path register r{} not found",
+                    func_name, path.0
+                ));
+            }
+            
+            let path_ty = env.get(path).cloned().unwrap_or(Type::Unknown);
+            if !matches!(path_ty, Type::String | Type::Unknown) {
+                return Err(format!(
+                    "SysRmdir in {}: path should be String, got {:?}",
+                    func_name, path_ty
+                ));
+            }
+            
+            env.insert(result_dst.clone(), Type::I64);
+            
+            Ok(())
+        }
+        
+        Inst::SysUnlink { path, result_dst } => {
+            if !env.contains_key(path) {
+                return Err(format!(
+                    "SysUnlink in {}: path register r{} not found",
+                    func_name, path.0
+                ));
+            }
+            
+            let path_ty = env.get(path).cloned().unwrap_or(Type::Unknown);
+            if !matches!(path_ty, Type::String | Type::Unknown) {
+                return Err(format!(
+                    "SysUnlink in {}: path should be String, got {:?}",
+                    func_name, path_ty
+                ));
+            }
+            
+            env.insert(result_dst.clone(), Type::I64);
+            
+            Ok(())
+        }
+        
+        Inst::SysRename { old_path, new_path, result_dst } => {
+            if !env.contains_key(old_path) {
+                return Err(format!(
+                    "SysRename in {}: old_path register r{} not found",
+                    func_name, old_path.0
+                ));
+            }
+
+            let old_path_ty = env.get(old_path).cloned().unwrap_or(Type::Unknown);
+            if !matches!(old_path_ty, Type::String | Type::Unknown) {
+                return Err(format!(
+                    "SysRename in {}: old_path should be String, got {:?}",
+                    func_name, old_path_ty
+                ));
+            }
+            
+            if !env.contains_key(new_path) {
+                return Err(format!(
+                    "SysRename in {}: new_path register r{} not found",
+                    func_name, new_path.0
+                ));
+            }
+
+            let new_path_ty = env.get(new_path).cloned().unwrap_or(Type::Unknown);
+            if !matches!(new_path_ty, Type::String | Type::Unknown) {
+                return Err(format!(
+                    "SysRename in {}: new_path should be String, got {:?}",
+                    func_name, new_path_ty
+                ));
+            }
+            
+            env.insert(result_dst.clone(), Type::I64);
+            
+            Ok(())
+        }
+        
+        Inst::SysAccess { path, mode, result_dst } => {
+            if !env.contains_key(path) {
+                return Err(format!(
+                    "SysAccess in {}: path register r{} not found",
+                    func_name, path.0
+                ));
+            }
+            
+            let path_ty = env.get(path).cloned().unwrap_or(Type::Unknown);
+            if !matches!(path_ty, Type::String | Type::Unknown) {
+                return Err(format!(
+                    "SysAccess in {}: path should be String, got {:?}",
+                    func_name, path_ty
+                ));
+            }
+            
+            let mode_ty = infer_value_type(mode, env)?;
+            if !is_numeric(&mode_ty) {
+                return Err(format!(
+                    "SysAccess in {}: mode must be numeric, got {:?}",
+                    func_name, mode_ty
+                ));
+            }
+            
+            env.insert(result_dst.clone(), Type::I64);
+            
+            Ok(())
+        }
+        
+        Inst::SysGetcwd { dst } => {
+            env.insert(dst.clone(), Type::String);
+            
+            Ok(())
+        }
+        
+        Inst::SysChdir { path, result_dst } => {
+            if !env.contains_key(path) {
+                return Err(format!(
+                    "SysChdir in {}: path register r{} not found",
+                    func_name, path.0
+                ));
+            }
+            
+            let path_ty = env.get(path).cloned().unwrap_or(Type::Unknown);
+            if !matches!(path_ty, Type::String | Type::Unknown) {
+                return Err(format!(
+                    "SysChdir in {}: path should be String, got {:?}",
+                    func_name, path_ty
+                ));
+            }
+            
+            env.insert(result_dst.clone(), Type::I64);
+            
+            Ok(())
+        }
+        
+        Inst::FileReadToString { dst, path, result_dst } => {
+            if !env.contains_key(path) {
+                return Err(format!(
+                    "FileReadToString in {}: path register r{} not found",
+                    func_name, path.0
+                ));
+            }
+            
+            let path_ty = env.get(path).cloned().unwrap_or(Type::Unknown);
+            if !matches!(path_ty, Type::String | Type::Unknown) {
+                return Err(format!(
+                    "FileReadToString in {}: path should be String, got {:?}",
+                    func_name, path_ty
+                ));
+            }
+            
+            env.insert(dst.clone(), Type::String);
+            
+            env.insert(result_dst.clone(), Type::I64);
+            
+            Ok(())
+        }
+        
+        Inst::FileWriteString { path, content, result_dst } => {
+            if !env.contains_key(path) {
+                return Err(format!(
+                    "FileWriteString in {}: path register r{} not found",
+                    func_name, path.0
+                ));
+            }
+
+            let path_ty = env.get(path).cloned().unwrap_or(Type::Unknown);
+            if !matches!(path_ty, Type::String | Type::Unknown) {
+                return Err(format!(
+                    "FileWriteString in {}: path should be String, got {:?}",
+                    func_name, path_ty
+                ));
+            }
+            
+            if !env.contains_key(content) {
+                return Err(format!(
+                    "FileWriteString in {}: content register r{} not found",
+                    func_name, content.0
+                ));
+            }
+
+            let content_ty = env.get(content).cloned().unwrap_or(Type::Unknown);
+            if !matches!(content_ty, Type::String | Type::Unknown) {
+                return Err(format!(
+                    "FileWriteString in {}: content should be String, got {:?}",
+                    func_name, content_ty
+                ));
+            }
+            
+            env.insert(result_dst.clone(), Type::I64);
+            
+            Ok(())
+        }
+        
+        Inst::FileAppendString { path, content, result_dst } => {
+            if !env.contains_key(path) {
+                return Err(format!(
+                    "FileAppendString in {}: path register r{} not found",
+                    func_name, path.0
+                ));
+            }
+
+            let path_ty = env.get(path).cloned().unwrap_or(Type::Unknown);
+            if !matches!(path_ty, Type::String | Type::Unknown) {
+                return Err(format!(
+                    "FileAppendString in {}: path should be String, got {:?}",
+                    func_name, path_ty
+                ));
+            }
+            
+            if !env.contains_key(content) {
+                return Err(format!(
+                    "FileAppendString in {}: content register r{} not found",
+                    func_name, content.0
+                ));
+            }
+            
+            let content_ty = env.get(content).cloned().unwrap_or(Type::Unknown);
+            if !matches!(content_ty, Type::String | Type::Unknown) {
+                return Err(format!(
+                    "FileAppendString in {}: content should be String, got {:?}",
+                    func_name, content_ty
+                ));
+            }
+            
+            env.insert(result_dst.clone(), Type::I64);
+            
+            Ok(())
+        }
         // Implement type checking for other insts later
         _ => Ok(())
     }
