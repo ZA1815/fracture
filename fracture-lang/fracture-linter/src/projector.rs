@@ -1,13 +1,17 @@
 use fracture_ir::hsir::*;
 use fracture_ir::{SyntaxConfig, syntax_config::BlockStyle};
 use crate::lexer::*;
+use crate::errors::{Span, Position, Diagnostic, DiagnosticCollector, find_similar};
 use std::collections::HashMap;
 
 pub struct SyntaxProjector {
     config: SyntaxConfig,
     lexer: Lexer,
-    current: Token,
-    peek_buffer: Option<Token>,
+    current: SpannedToken,
+    peek_buffer: Option<SpannedToken>,
+
+    source: String,
+    filename: String,
 
     var_types: HashMap<String, Type>,
     next_reg: u32,
@@ -18,7 +22,12 @@ pub struct SyntaxProjector {
     reg_types: HashMap<Reg, Type>,
 
     current_module_path: Vec<String>,
-    pending_uses: Vec<UseStatement>
+    pending_uses: Vec<UseStatement>,
+
+    diagnostics: DiagnosticCollector,
+
+    known_funcs: Vec<String>,
+    known_vars: Vec<String>
 }
 
 impl SyntaxProjector {
@@ -31,6 +40,8 @@ impl SyntaxProjector {
             lexer,
             current,
             peek_buffer: None,
+            source: input.to_string(),
+            filename: "<input>".to_string(),
             var_types: HashMap::new(),
             next_reg: 0,
             var_regs: HashMap::new(),
@@ -38,11 +49,27 @@ impl SyntaxProjector {
             struct_defs: HashMap::new(),
             reg_types: HashMap::new(),
             current_module_path: Vec::new(),
-            pending_uses: Vec::new()
+            pending_uses: Vec::new(),
+            diagnostics: DiagnosticCollector::new(input.to_string(), "<input>".to_string()),
+            // Will likely change this to include user made functions
+            known_funcs: vec![
+                "print".to_string(), "println".to_string(),
+                "read_line".to_string(), "itoa".to_string(), "to_string".to_string(),
+                "read_file".to_string(), "write_file".to_string(),
+                "mkdir".to_string(), "rmdir".to_string(), "getcwd".to_string(),
+            ],
+            known_vars: Vec::new(),
         }
     }
 
-    pub fn peek(&mut self) -> Token {
+    pub fn with_filename(mut self, filename: &str) -> Self {
+        self.filename = filename.to_string();
+        self.diagnostics = DiagnosticCollector::new(self.source.clone(), filename.to_string());
+
+        self
+    }
+
+    pub fn peek(&mut self) -> SpannedToken {
         if let Some(token) = &self.peek_buffer {
             return token.clone();
         }
@@ -61,122 +88,153 @@ impl SyntaxProjector {
         let mut all_structs: HashMap<String, StructDef> = HashMap::new();
         let mut root_uses: Vec<UseStatement> = Vec::new();
 
-        while self.current != Token::Eof {
-            if self.current == Token::Newline {
+        while self.current.token != Token::Eof {
+            if self.current.token == Token::Newline {
                 self.advance();
                 continue;
             }
 
-            if self.current == Token::Use {
-                let use_statement = self.parse_use_statement(Visibility::Private)?;
-                root_uses.push(use_statement);
+            if self.current.token == Token::Use {
+                if let Ok(use_statement) = self.parse_use_statement(Visibility::Private) {
+                    root_uses.push(use_statement);
+                }
                 continue;
             }
 
-            if self.current == Token::Pub {
-                let peek = self.peek();
+            if self.current.token == Token::Pub {
+                let peek = self.peek().token;
                 if peek == Token::Use {
                     self.advance();
-                    let use_statement = self.parse_use_statement(Visibility::Public)?;
-                    root_uses.push(use_statement);
+                    if let Ok(use_statement) = self.parse_use_statement(Visibility::Public) {
+                        root_uses.push(use_statement);
+                    }
                     continue;
                 }
             }
 
-            if self.current == Token::Mod {
-                let module = self.parse_module_declaration(Visibility::Private)?;
-
-                for (name, func) in &module.functions {
-                    // Fix formatting later to use user token
-                    let qualified = format!("{}::{}", module.name, name);
-                    all_functions.insert(qualified, func.clone());
+            if self.current.token == Token::Mod {
+                if let Ok(module) = self.parse_module_declaration(Visibility::Private) {
+                    for (name, func) in &module.functions {
+                        let qualified = format!("{}::{}", module.name, name);
+                        all_functions.insert(qualified, func.clone());
+                    }
+                    for (name, s) in &module.structs {
+                        let qualified = format!("{}::{}", module.name, name);
+                        all_structs.insert(qualified, s.clone());
+                    }
+                    root_module.add_child(module);
                 }
-                for (name, s) in &module.structs {
-                    let qualified = format!("{}::{}", module.name, name);
-                    all_structs.insert(qualified, s.clone());
-                }
-
-                root_module.add_child(module);
                 continue;
             }
 
-            if self.current == Token::Pub {
-                let peek = self.peek();
+            if self.current.token == Token::Pub {
+                let peek = self.peek().token;
                 if peek == Token::Mod {
                     self.advance();
-                    let module = self.parse_module_declaration(Visibility::Public)?;
-                    root_module.add_child(module);
+                    if let Ok(module) = self.parse_module_declaration(Visibility::Public) {
+                        root_module.add_child(module);
+                    }
                     continue;
                 }
             }
 
-            if self.current == Token::Struct {
-                let struct_def = self.parse_struct(Visibility::Private)?;
-                self.struct_defs.insert(struct_def.name.clone(), struct_def.clone());
-                all_structs.insert(struct_def.name.clone(), struct_def.clone());
-                root_module.add_struct(struct_def);
-                continue;
-            }
-
-            if self.current == Token::Pub {
-                let peek = self.peek();
-                if peek == Token::Struct {
-                    self.advance();
-                    let struct_def = self.parse_struct(Visibility::Public)?;
+            if self.current.token == Token::Struct {
+                if let Ok(struct_def) = self.parse_struct(Visibility::Private) {
                     self.struct_defs.insert(struct_def.name.clone(), struct_def.clone());
                     all_structs.insert(struct_def.name.clone(), struct_def.clone());
                     root_module.add_struct(struct_def);
+                }
+                continue;
+            }
+
+            if self.current.token == Token::Pub {
+                let peek = self.peek().token;
+                if peek == Token::Struct {
+                    self.advance();
+                    if let Ok(struct_def) = self.parse_struct(Visibility::Public) {
+                        self.struct_defs.insert(struct_def.name.clone(), struct_def.clone());
+                        all_structs.insert(struct_def.name.clone(), struct_def.clone());
+                        root_module.add_struct(struct_def);
+                    }
                     continue;
                 }
             }
 
-            if self.current == Token::Hash {
-                let attrs = self.parse_attributes()?;
+            if self.current.token == Token::Hash {
+                if let Ok(attrs) = self.parse_attributes() {
+                    let visibility = if self.current.token == Token::Pub {
+                        self.advance();
+                        Visibility::Public
+                    } else {
+                        Visibility::Private
+                    };
 
-                let visibility = if self.current == Token::Pub {
-                    self.advance();
+                    if self.current.token != Token::Function {
+                        let diag = Diagnostic::error(
+                            format!("attributes can only be applied to functions, found `{}`", 
+                                self.token_to_string(&self.current.token)),
+                            self.current.span
+                        );
+                        self.diagnostics.emit(diag);
+                        self.advance();
+                        continue;
+                    }
 
-                    Visibility::Public
+                    if let Ok(mut func) = self.parse_function(visibility) {
+                        func.attributes = attrs;
+                        self.known_funcs.push(func.name.clone());
+                        all_functions.insert(func.name.clone(), func.clone());
+                        root_module.add_function(func);
+                    }
                 }
-                else {
-                    Visibility::Private
-                };
-
-                if self.current != Token::Function {
-                    return Err(format!("Attributes can only be applied to functions, found {:?}", self.current));
-                }
-
-                let mut func = self.parse_function(visibility)?;
-                func.attributes = attrs;
-                all_functions.insert(func.name.clone(), func.clone());
-                root_module.add_function(func);
                 continue;
             }
 
-            if self.current == Token::Pub {
-                let peek = self.peek();
+            if self.current.token == Token::Pub {
+                let peek = self.peek().token;
                 if peek == Token::Function {
                     self.advance();
-                    let func = self.parse_function(Visibility::Public)?;
-                    all_functions.insert(func.name.clone(), func.clone());
-                    root_module.add_function(func);
+                    if let Ok(func) = self.parse_function(Visibility::Public) {
+                        self.known_funcs.push(func.name.clone());
+                        all_functions.insert(func.name.clone(), func.clone());
+                        root_module.add_function(func);
+                    }
                     continue;
                 }
             }
 
-            if self.current == Token::Function {
-                let func = self.parse_function(Visibility::Private)?;
-                all_functions.insert(func.name.clone(), func.clone());
-                root_module.add_function(func);
+            if self.current.token == Token::Function {
+                if let Ok(func) = self.parse_function(Visibility::Private) {
+                    self.known_funcs.push(func.name.clone());
+                    all_functions.insert(func.name.clone(), func.clone());
+                    root_module.add_function(func);
+                }
                 continue;
             }
 
-            // Could throw error instead
+            let diag = Diagnostic::error(
+                format!("Unexpected token `{}` at module level", self.token_to_string(&self.current.token)),
+                self.current.span
+            ).with_help("expected `fn`, `struct`, `mod`, or `use`");
+
+            self.diagnostics.emit(diag);
             self.advance();
         }
 
+        // Make this use the users syntax mapping instead of hardcoding
         if !all_functions.contains_key("main") {
-            return Err("Program must have a main function".to_string());
+            let diag = Diagnostic::error(
+                "Program must have a `main` function",
+                self.current.span
+            ).with_help("Add a main function: `fn main() { ... }");
+
+            self.diagnostics.emit(diag);
+        }
+
+        if self.diagnostics.has_errors() {
+            self.diagnostics.emit_all();
+
+            return Err(format!("{} error(s) found", self.diagnostics.error_count()));
         }
 
         Ok(Program {
@@ -188,8 +246,8 @@ impl SyntaxProjector {
         })
     }
 
-    fn parse_module_declaration(&mut self, visibility: Visibility) -> Result<Module, String> {
-        self.expect(Token::Mod)?;
+    fn parse_module_declaration(&mut self, visibility: Visibility) -> Result<Module, ()> {
+        self.expect(Token::Mod);
 
         let module_name = self.expect_ident()?;
 
@@ -203,31 +261,31 @@ impl SyntaxProjector {
                 .collect()
         };
 
-        if self.current == Token::LeftBrace {
+        if self.current.token == Token::LeftBrace {
             self.advance();
 
-            while self.current != Token::RightBrace && self.current != Token::Eof {
-                if self.current == Token::Newline {
+            while self.current.token != Token::RightBrace && self.current.token != Token::Eof {
+                if self.current.token == Token::Newline {
                     self.advance();
                     continue;
                 }
 
-                if self.current == Token::Use {
+                if self.current.token == Token::Use {
                     let use_statement = self.parse_use_statement(Visibility::Private)?;
                     module.uses.push(use_statement);
                     continue;
                 }
 
-                if self.current == Token::Mod {
+                if self.current.token == Token::Mod {
                     let nested = self.parse_module_declaration(Visibility::Private)?;
                     module.add_child(nested);
                     continue;
                 }
 
-                if self.current == Token::Pub {
+                if self.current.token == Token::Pub {
                     let peek = self.peek();
 
-                    match peek {
+                    match peek.token {
                         Token::Use => {
                             self.advance();
                             let use_statement = self.parse_use_statement(Visibility::Public)?;
@@ -256,13 +314,13 @@ impl SyntaxProjector {
                     }
                 }
 
-                if self.current == Token::Function {
+                if self.current.token == Token::Function {
                     let func = self.parse_function(Visibility::Private)?;
                     module.add_function(func);
                     continue;
                 }
 
-                if self.current == Token::Struct {
+                if self.current.token == Token::Struct {
                     let s = self.parse_struct(Visibility::Private)?;
                     module.add_struct(s);
                     continue;
@@ -271,13 +329,13 @@ impl SyntaxProjector {
                 self.advance();
             }
             
-            self.expect(Token::RightBrace)?;
+            self.expect(Token::RightBrace);
         }
         else {
             module.external_mods.push(module_name.clone());
 
             if self.config.style.needs_semicolon {
-                self.expect(Token::Semicolon)?;
+                self.expect(Token::Semicolon);
             }
         }
 
@@ -286,23 +344,23 @@ impl SyntaxProjector {
         Ok(module)
     }
 
-    fn parse_use_statement(&mut self, visibility: Visibility) -> Result<UseStatement, String> {
-        self.expect(Token::Use)?;
+    fn parse_use_statement(&mut self, visibility: Visibility) -> Result<UseStatement, ()> {
+        self.expect(Token::Use);
 
         let tree = self.parse_use_tree()?;
 
         if self.config.style.needs_semicolon {
-            self.expect(Token::Semicolon)?;
+            self.expect(Token::Semicolon);
         }
 
         Ok(UseStatement { tree, visibility })
     }
 
-    fn parse_use_tree(&mut self) -> Result<UseTree, String> {
+    fn parse_use_tree(&mut self) -> Result<UseTree, ()> {
         let mut path_segments: Vec<PathSegment> = Vec::new();
 
         loop {
-            let segment = match &self.current {
+            let segment = match &self.current.token {
                 Token::SelfKw => {
                     self.advance();
                     PathSegment::SelfKw
@@ -321,18 +379,18 @@ impl SyntaxProjector {
 
             path_segments.push(segment);
 
-            if self.current == Token::DoubleColon {
+            if self.current.token == Token::DoubleColon {
                 self.advance();
 
-                if self.current == Token::Star {
+                if self.current.token == Token::Star {
                     self.advance();
                     return Ok(UseTree::Glob { path: ModulePath { segments: path_segments } });
                 }
 
-                if self.current == Token::LeftBrace {
+                if self.current.token == Token::LeftBrace {
                     self.advance();
                     let items = self.parse_use_tree_list()?;
-                    self.expect(Token::RightBrace)?;
+                    self.expect(Token::RightBrace);
                     return Ok(UseTree::Nested { path: ModulePath { segments: path_segments }, items });
                 }
             }
@@ -341,7 +399,7 @@ impl SyntaxProjector {
             }
         }
 
-        let alias = if self.current == Token::As {
+        let alias = if self.current.token == Token::As {
             self.advance();
 
             Some(self.expect_ident()?)
@@ -353,14 +411,14 @@ impl SyntaxProjector {
         Ok(UseTree::Simple { path: ModulePath { segments: path_segments }, alias })
     }
 
-    fn parse_use_tree_list(&mut self) -> Result<Vec<UseTree>, String> {
+    fn parse_use_tree_list(&mut self) -> Result<Vec<UseTree>, ()> {
         let mut items = Vec::new();
 
-        while self.current != Token::RightBrace && self.current != Token::Eof {
+        while self.current.token != Token::RightBrace && self.current.token != Token::Eof {
             let item = self.parse_use_tree()?;
             items.push(item);
 
-            if self.current == Token::Comma {
+            if self.current.token == Token::Comma {
                 self.advance();
             }
             else {
@@ -371,22 +429,23 @@ impl SyntaxProjector {
         Ok(items)
     }
 
-    fn parse_function(&mut self, visibility: Visibility) -> Result<Function, String> {
+    fn parse_function(&mut self, visibility: Visibility) -> Result<Function, ()> {
         self.var_regs.clear();
         self.var_types.clear();
+        self.known_vars.clear();
         self.next_reg = 0;
 
-        self.expect(Token::Function)?;
+        self.expect(Token::Function);
 
         let name = self.expect_ident()?;
 
-        self.expect(Token::LeftParentheses)?;
+        self.expect(Token::LeftParentheses);
 
         let mut params = Vec::new();
-        while self.current != Token::RightParentheses {
+        while self.current.token != Token::RightParentheses {
             let param_name = self.expect_ident()?;
 
-            let param_type = if self.current == Token::Colon {
+            let param_type = if self.current.token == Token::Colon {
                 self.advance();
                 self.parse_type()?
             }
@@ -399,14 +458,14 @@ impl SyntaxProjector {
             self.var_types.insert(param_name, param_type.clone());
             params.push((param_reg, param_type));
 
-            if self.current == Token::Comma {
+            if self.current.token == Token::Comma {
                 self.advance();
             }
         }
 
-        self.expect(Token::RightParentheses)?;
+        self.expect(Token::RightParentheses);
 
-        let return_type = if self.current == Token::Arrow {
+        let return_type = if self.current.token == Token::Arrow {
             self.advance();
             self.parse_type()?
         }
@@ -445,23 +504,23 @@ impl SyntaxProjector {
         })
     }
 
-    fn parse_struct(&mut self, visibility: Visibility) -> Result<StructDef, String> {
+    fn parse_struct(&mut self, visibility: Visibility) -> Result<StructDef, ()> {
         self.advance();
 
         let struct_name = self.expect_ident()?;
 
-        self.expect(Token::LeftBrace)?;
+        self.expect(Token::LeftBrace);
 
         let mut fields = Vec::new();
         let mut field_visibility = HashMap::new();
 
-        while self.current != Token::RightBrace && self.current != Token::Eof {
-            if self.current == Token::Newline {
+        while self.current.token != Token::RightBrace && self.current.token != Token::Eof {
+            if self.current.token == Token::Newline {
                 self.advance();
                 continue;
             }
 
-            let field_vis = if self.current == Token::Pub {
+            let field_vis = if self.current.token == Token::Pub {
                 self.advance();
 
                 Visibility::Public
@@ -472,17 +531,17 @@ impl SyntaxProjector {
 
             let field_name = self.expect_ident()?;
             // Maybe customize this later
-            self.expect(Token::Colon)?;
-            let field_type = self.parse_type()?;
+            self.expect(Token::Colon);
+            let field_type = self.parse_type();
 
-            fields.push((field_name.clone(), field_type));
+            fields.push((field_name.clone(), field_type.unwrap()));
             field_visibility.insert(field_name, field_vis);
 
-            if self.current == Token::Comma {
+            if self.current.token == Token::Comma {
                 self.advance();
             }
 
-            while self.current == Token::Newline {
+            while self.current.token == Token::Newline {
                 self.advance();
             }
         }
@@ -492,54 +551,58 @@ impl SyntaxProjector {
         Ok(StructDef { name: struct_name, fields, visibility, field_visibility })
     }
 
-    fn parse_block(&mut self) -> Result<Vec<Inst>, String> {
+    fn parse_block(&mut self) -> Result<Vec<Inst>, ()> {
         let mut instructions = Vec::new();
 
         match self.config.style.block_style {
             BlockStyle::Braces => {
-                self.expect(Token::LeftBrace)?;
+                self.expect(Token::LeftBrace);
 
-                while self.current != Token::RightBrace && self.current != Token::Eof {
+                while self.current.token != Token::RightBrace && self.current.token != Token::Eof {
                     instructions.extend(self.parse_statement()?);
                 }
 
-                self.expect(Token::RightBrace)?;
+                self.expect(Token::RightBrace);
             }
             BlockStyle::Indentation => {
-                self.expect(Token::Colon)?;
+                self.expect(Token::Colon);
                 self.skip_newlines();
-                self.expect(Token::Indent)?;
+                self.expect(Token::Indent);
 
-                while self.current != Token::Dedent && self.current != Token::Eof {
+                while self.current.token != Token::Dedent && self.current.token != Token::Eof {
                     instructions.extend(self.parse_statement()?);
                     self.skip_newlines();
                 }
 
-                if self.current == Token::Dedent {
+                if self.current.token == Token::Dedent {
                     self.advance();
                 }
             }
-            _ => return Err("Block style not implemented yet".to_string())
+            _ => {
+                let diag = Diagnostic::error("Block style not implemented yet", self.current.span);
+                self.diagnostics.emit(diag);
+                return Err(());
+            }
         }
 
         Ok(instructions)
     }
 
-    fn parse_statement(&mut self) -> Result<Vec<Inst>, String> {
+    fn parse_statement(&mut self) -> Result<Vec<Inst>, ()> {
         let mut instructions = Vec::new();
 
         let token = self.current.clone();
         let mut requires_semicolon = true;
 
-        match token {
+        match token.token {
             Token::Let => {
                 self.advance();
-                if self.current == Token::Mut {
+                if self.current.token == Token::Mut {
                     self.advance();
                 }
 
                 let var_name = self.expect_ident()?;
-                let var_type = if self.current == Token::Colon {
+                let var_type = if self.current.token == Token::Colon {
                     self.advance();
                     self.parse_type()?
                 }
@@ -547,7 +610,7 @@ impl SyntaxProjector {
                     Type::Unknown
                 };
 
-                if self.current == Token::Assignment {
+                if self.current.token == Token::Assignment {
                     self.advance();
 
                     let (expr_insts, result_reg) = self.parse_expression()?;
@@ -572,7 +635,7 @@ impl SyntaxProjector {
             }
             Token::Return => {
                 self.advance();
-                if self.current != Token::Semicolon && self.current != Token::Newline {
+                if self.current.token != Token::Semicolon && self.current.token != Token::Newline {
                     let (expr_insts, result_reg) = self.parse_expression()?;
                     instructions.extend(expr_insts);
                     instructions.push(Inst::Return { val: Some(Value::Reg(result_reg)) });
@@ -592,7 +655,7 @@ impl SyntaxProjector {
                 requires_semicolon = false;
             }
             Token::Ident(name) => {
-                let peek_token = self.peek();
+                let peek_token = self.peek().token;
                 if peek_token == Token::Assignment || peek_token == Token::Colon {
                     let var_name = name.clone();
                     self.advance();
@@ -602,7 +665,7 @@ impl SyntaxProjector {
                         var_type = self.parse_type()?;
                     }
                     
-                    self.expect(Token::Assignment)?;
+                    self.expect(Token::Assignment);
 
                     let (expr_insts, result_reg) = self.parse_expression()?;
                     instructions.extend(expr_insts);
@@ -627,13 +690,13 @@ impl SyntaxProjector {
         }
 
         if self.config.style.needs_semicolon && requires_semicolon {
-            self.expect(Token::Semicolon)?;
+            self.expect(Token::Semicolon);
         }
 
         Ok(instructions)
     }
 
-    fn parse_if_statement(&mut self) -> Result<Vec<Inst>, String> {
+    fn parse_if_statement(&mut self) -> Result<Vec<Inst>, ()> {
         let mut instructions = Vec::new();
 
         let (cond_insts, cond_reg) = self.parse_expression()?;
@@ -652,12 +715,12 @@ impl SyntaxProjector {
 
         instructions.push(Inst::Label { target: else_label });
 
-        if self.current == Token::ElseIf {
+        if self.current.token == Token::ElseIf {
             self.advance();
             instructions.extend(self.parse_if_statement()?);
         }
 
-        if self.current == Token::Else {
+        if self.current.token == Token::Else {
             self.advance();
             let else_body = self.parse_block()?;
             instructions.extend(else_body);
@@ -669,7 +732,7 @@ impl SyntaxProjector {
     }
 
     // This is missing critical logic to actually exit the loop (break and continue)
-    fn parse_while_statement(&mut self) -> Result<Vec<Inst>, String> {
+    fn parse_while_statement(&mut self) -> Result<Vec<Inst>, ()> {
         let mut instructions = Vec::new();
 
         let loop_start = self.alloc_label();
@@ -692,19 +755,19 @@ impl SyntaxProjector {
         Ok(instructions)
     }
 
-    fn parse_expression(&mut self) -> Result<(Vec<Inst>, Reg), String> {
+    fn parse_expression(&mut self) -> Result<(Vec<Inst>, Reg), ()> {
         self.parse_comparison()
     }
 
-    fn parse_comparison(&mut self) -> Result<(Vec<Inst>, Reg), String> {
+    fn parse_comparison(&mut self) -> Result<(Vec<Inst>, Reg), ()> {
         let (mut instructions, mut left_reg) = self.parse_additive()?;
 
-        while self.current == Token::DoubleEquals
-            || self.current == Token::Less
-            || self.current == Token::Greater
-            || self.current == Token::GreaterEquals
-            || self.current == Token::LessEquals
-            || self.current == Token::NotEquals
+        while self.current.token == Token::DoubleEquals
+            || self.current.token == Token::Less
+            || self.current.token == Token::Greater
+            || self.current.token == Token::GreaterEquals
+            || self.current.token == Token::LessEquals
+            || self.current.token == Token::NotEquals
         {
             let op = self.current.clone();
             self.advance();
@@ -714,7 +777,7 @@ impl SyntaxProjector {
 
             let result_reg = self.alloc_reg();
 
-            let inst = match op {
+            let inst = match op.token {
                 Token::DoubleEquals => Inst::Eq {
                     dst: result_reg.clone(),
                     lhs: Value::Reg(left_reg),
@@ -751,7 +814,7 @@ impl SyntaxProjector {
                     rhs: Value::Reg(right_reg),
                     ty: Type::I32 
                 },
-                _ => return Err(format!("Comparison operator {:?} not yet implemented", op))
+                _ => unreachable!()
             };
 
             instructions.push(inst);
@@ -761,10 +824,10 @@ impl SyntaxProjector {
         Ok((instructions, left_reg))
     }
 
-    fn parse_additive(&mut self) -> Result<(Vec<Inst>, Reg), String> {
+    fn parse_additive(&mut self) -> Result<(Vec<Inst>, Reg), ()> {
         let (mut instructions, mut left_reg) = self.parse_multiplicative()?;
 
-        while self.current == Token::Plus || self.current == Token::Minus {
+        while self.current.token == Token::Plus || self.current.token == Token::Minus {
             let op = self.current.clone();
             self.advance();
 
@@ -781,8 +844,13 @@ impl SyntaxProjector {
                 .unwrap_or(false);
 
             if left_is_string || right_is_string {
-                if op != Token::Plus {
-                    return Err("Can only use `Plus Token` operator with strings, not `Minus Token`".to_string());
+                if op.token != Token::Plus {
+                    let diag = Diagnostic::error(
+                        "Cannot use `-` operator with strings",
+                        self.current.span
+                    ).with_help("Use `+` to concatenate strings");
+                    self.diagnostics.emit(diag);
+                    return Err(());
                 }
 
                 instructions.push(Inst::StringConcat {
@@ -794,7 +862,7 @@ impl SyntaxProjector {
                 self.reg_types.insert(result_reg.clone(), Type::String);
             }
             else {
-                let inst = match op {
+                let inst = match op.token {
                     Token::Plus => Inst::Add {
                         dst: result_reg.clone(),
                         lhs: Value::Reg(left_reg),
@@ -818,10 +886,10 @@ impl SyntaxProjector {
         Ok((instructions, left_reg))
     }
 
-    fn parse_multiplicative(&mut self) -> Result<(Vec<Inst>, Reg), String> {
+    fn parse_multiplicative(&mut self) -> Result<(Vec<Inst>, Reg), ()> {
         let (mut instructions, mut left_reg) = self.parse_postfix()?;
 
-        while self.current == Token::Star || self.current == Token::Slash {
+        while self.current.token == Token::Star || self.current.token == Token::Slash {
             let op = self.current.clone();
             self.advance();
 
@@ -830,7 +898,7 @@ impl SyntaxProjector {
 
             let result_reg = self.alloc_reg();
 
-            let inst = match op {
+            let inst = match op.token {
                 Token::Star => Inst::Mul {
                     dst: result_reg.clone(),
                     lhs: Value::Reg(left_reg),
@@ -853,15 +921,15 @@ impl SyntaxProjector {
         Ok((instructions, left_reg))
     }
 
-    fn parse_postfix(&mut self) -> Result<(Vec<Inst>, Reg), String> {
+    fn parse_postfix(&mut self) -> Result<(Vec<Inst>, Reg), ()> {
         let (mut instructions, mut reg) = self.parse_term()?;
 
         loop {
             let result_reg = self.alloc_reg();
-            if self.current == Token::Dot {
+            if self.current.token == Token::Dot {
                 self.advance();
 
-                match &self.current {
+                match &self.current.token {
                     Token::Number(n) => {
                         let index = *n as usize;
                         self.advance();
@@ -875,16 +943,17 @@ impl SyntaxProjector {
                     }
                     Token::Ident(field_name) => {
                         let field = field_name.clone();
+                        let field_span = self.current.span;
                         self.advance();
 
-                        if self.current == Token::LeftParentheses {
+                        if self.current.token == Token::LeftParentheses {
                             self.advance();
 
                             let reg_type = self.reg_types.get(&reg).cloned();
 
                             match field.as_str() {
                                 "len" => {
-                                    self.expect(Token::RightParentheses)?;
+                                    self.expect(Token::RightParentheses);
 
                                     let is_string = reg_type.as_ref().map(|ty| matches!(ty, Type::String)).unwrap_or(false);
                                     let is_vec = reg_type.as_ref().map(|ty| matches!(ty, Type::Vec(_))).unwrap_or(false);
@@ -908,7 +977,7 @@ impl SyntaxProjector {
                                 "push" => {
                                     let (val_insts, val_reg) = self.parse_expression()?;
                                     instructions.extend(val_insts);
-                                    self.expect(Token::RightParentheses)?;
+                                    self.expect(Token::RightParentheses);
 
                                     let elem_ty = if let Some(Type::Vec(inner)) = self.reg_types.get(&reg) {
                                         (**inner).clone()
@@ -929,7 +998,7 @@ impl SyntaxProjector {
                                     continue;
                                 }
                                 "pop" => {
-                                    self.expect(Token::RightParentheses)?;
+                                    self.expect(Token::RightParentheses);
 
                                     let elem_ty = if let Some(Type::Vec(inner)) = self.reg_types.get(&reg) {
                                         (**inner).clone()
@@ -948,7 +1017,7 @@ impl SyntaxProjector {
                                     self.reg_types.insert(result_reg.clone(), elem_ty);
                                 }
                                 "cap" | "capacity" => {
-                                    self.expect(Token::RightParentheses)?;
+                                    self.expect(Token::RightParentheses);
 
                                     let is_hashmap = reg_type.as_ref().map(|ty| matches!(ty, Type::HashMap(_, _))).unwrap_or(false);
 
@@ -965,12 +1034,12 @@ impl SyntaxProjector {
                                     let (key_insts, key_reg) = self.parse_expression()?;
                                     instructions.extend(key_insts);
 
-                                    self.expect(Token::Comma)?;
+                                    self.expect(Token::Comma);
 
                                     let (val_insts, val_reg) = self.parse_expression()?;
                                     instructions.extend(val_insts);
 
-                                    self.expect(Token::RightParentheses)?;
+                                    self.expect(Token::RightParentheses);
 
                                     let (key_ty, value_ty) = if let Some(Type::HashMap(k, v)) = &reg_type {
                                         ((**k).clone(), (**v).clone())
@@ -998,7 +1067,7 @@ impl SyntaxProjector {
                                     let (key_insts, key_reg) = self.parse_expression()?;
                                     instructions.extend(key_insts);
 
-                                    self.expect(Token::RightParentheses)?;
+                                    self.expect(Token::RightParentheses);
 
                                     let (key_ty, value_ty) = if let Some(Type::HashMap(k, v)) = &reg_type {
                                         ((**k).clone(), (**v).clone())
@@ -1025,7 +1094,7 @@ impl SyntaxProjector {
                                     let (key_insts, key_reg) = self.parse_expression()?;
                                     instructions.extend(key_insts);
 
-                                    self.expect(Token::RightParentheses)?;
+                                    self.expect(Token::RightParentheses);
 
                                     let (key_ty, value_ty) = if let Some(Type::HashMap(k, v)) = &reg_type {
                                         ((**k).clone(), (**v).clone())
@@ -1049,7 +1118,7 @@ impl SyntaxProjector {
                                     let (key_insts, key_reg) = self.parse_expression()?;
                                     instructions.extend(key_insts);
 
-                                    self.expect(Token::RightParentheses)?;
+                                    self.expect(Token::RightParentheses);
 
                                     let (key_ty, value_ty) = if let Some(Type::HashMap(k, v)) = &reg_type {
                                         ((**k).clone(), (**v).clone())
@@ -1070,7 +1139,7 @@ impl SyntaxProjector {
                                     self.reg_types.insert(result_reg.clone(), Type::Bool);
                                 }
                                 "clear" => {
-                                    self.expect(Token::RightParentheses)?;
+                                    self.expect(Token::RightParentheses);
 
                                     instructions.push(Inst::HashMapClear {
                                         map: reg.clone()
@@ -1081,7 +1150,18 @@ impl SyntaxProjector {
                                     continue;
                                 }
                                 _ => {
-                                    return Err(format!("Unknown method: {}", field));
+                                    let diag = Diagnostic::error(
+                                        format!("unknown method `{}`", field),
+                                        field_span
+                                    );
+                                    self.diagnostics.emit(diag);
+                                    
+                                    // Skip to closing paren
+                                    while self.current.token != Token::RightParentheses && self.current.token != Token::Eof {
+                                        self.advance();
+                                    }
+                                    self.advance();
+                                    continue;
                                 }
                             }
                         }
@@ -1099,26 +1179,34 @@ impl SyntaxProjector {
                             });
                         }
                     }
-                    _ => return Err(format!("Expected field name or number after '.', got {:?}", self.current))
+                    _ => {
+                        let diag = Diagnostic::error(
+                            format!("Expected field name after `.`, found `{}`",
+                                self.token_to_string(&self.current.token)),
+                            self.current.span
+                        );
+                        self.diagnostics.emit(diag);
+                        return Err(());
+                    }
                 }
                 reg = result_reg;
 
                 continue;
             }
 
-            if self.current == Token::LeftBracket {
+            if self.current.token == Token::LeftBracket {
                 self.advance();
 
                 let (first_insts, first_reg) = self.parse_expression()?;
                 instructions.extend(first_insts);
 
-                if self.current == Token::SliceDot {
+                if self.current.token == Token::SliceDot {
                     self.advance();
 
                     let (end_insts, end_reg) = self.parse_expression()?;
                     instructions.extend(end_insts);
 
-                    self.expect(Token::RightBracket)?;
+                    self.expect(Token::RightBracket);
 
                     let result_reg = self.alloc_reg();
 
@@ -1135,7 +1223,7 @@ impl SyntaxProjector {
                     reg = result_reg;
                 }
                 else {
-                    self.expect(Token::RightBracket)?;
+                    self.expect(Token::RightBracket);
 
                     let result_reg = self.alloc_reg();
 
@@ -1192,11 +1280,11 @@ impl SyntaxProjector {
         Ok((instructions, reg))
     }
 
-    fn parse_term(&mut self) -> Result<(Vec<Inst>, Reg), String> {
+    fn parse_term(&mut self) -> Result<(Vec<Inst>, Reg), ()> {
         let mut instructions = Vec::new();
         let result_reg = self.alloc_reg();
 
-        match &self.current.clone() {
+        match &self.current.token.clone() {
             Token::Number(n) => {
                 instructions.push(Inst::Move {
                     dst: result_reg.clone(),
@@ -1215,11 +1303,12 @@ impl SyntaxProjector {
             }
             Token::Ident(name) => {
                 let name = name.clone();
+                let ident_span = self.current.span;
                 self.advance();
 
-                if self.current == Token::DoubleColon {
+                if self.current.token == Token::DoubleColon {
                     let mut path_parts = vec![name.clone()];
-                    while self.current == Token::DoubleColon {
+                    while self.current.token == Token::DoubleColon {
                         self.advance();
                         let part = self.expect_ident()?;
                         path_parts.push(part);
@@ -1230,8 +1319,8 @@ impl SyntaxProjector {
                     let prefix = &path_parts[..path_parts.len() - 1].join("::");
 
                     if name == "Vec" && last == "new" {
-                        self.expect(Token::LeftParentheses)?;
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::LeftParentheses);
+                        self.expect(Token::RightParentheses);
 
                         instructions.push(Inst::VecAlloc {
                             dst: result_reg.clone(),
@@ -1244,8 +1333,8 @@ impl SyntaxProjector {
                         return Ok((instructions, result_reg));
                     }
                     else if name == "HashMap" && last == "new" {
-                        self.expect(Token::LeftParentheses)?;
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::LeftParentheses);
+                        self.expect(Token::RightParentheses);
 
                         let key_ty = Type::I32;
                         let value_ty = Type::I32;
@@ -1262,12 +1351,12 @@ impl SyntaxProjector {
                         return Ok((instructions, result_reg));
                     }
                     else if name == "HashMap" && last == "with_capacity" {
-                        self.expect(Token::LeftParentheses)?;
+                        self.expect(Token::LeftParentheses);
 
                         let (cap_insts, cap_reg) = self.parse_expression()?;
                         instructions.extend(cap_insts);
 
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
 
                         let key_ty = Type::I32;
                         let value_ty = Type::I32;
@@ -1283,21 +1372,21 @@ impl SyntaxProjector {
 
                         return Ok((instructions, result_reg));
                     }
-                    else if self.current == Token::LeftParentheses {
+                    else if self.current.token == Token::LeftParentheses {
                         self.advance();
 
                         let mut args = Vec::new();
-                        while self.current != Token::RightParentheses {
+                        while self.current.token != Token::RightParentheses {
                             let (arg_insts, arg_reg) = self.parse_expression()?;
                             instructions.extend(arg_insts);
                             args.push(Value::Reg(arg_reg));
 
-                            if self.current == Token::Comma {
+                            if self.current.token == Token::Comma {
                                 self.advance();
                             }
                         }
 
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
 
                         instructions.push(Inst::Call {
                             dst: Some(result_reg.clone()),
@@ -1309,18 +1398,24 @@ impl SyntaxProjector {
                         return Ok((instructions, result_reg));
                     }
                     else {
-                        return Err(format!("Unknown path expression: {}", full_path));
+                        let diag = Diagnostic::error(
+                            format!("Unknown path expression: {}", full_path),
+                            ident_span
+                        );
+                        self.diagnostics.emit(diag);
+
+                        return Err(());
                     }
                 }
 
-                if self.current == Token::LeftParentheses {
+                if self.current.token == Token::LeftParentheses {
                     if name == "print" {
                         self.advance();
 
                         let (arg_insts, arg_reg) = self.parse_expression()?;
                         instructions.extend(arg_insts);
 
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
 
                         instructions.push(Inst::Print { value: arg_reg });
 
@@ -1339,7 +1434,7 @@ impl SyntaxProjector {
                         let (arg_insts, arg_reg) = self.parse_expression()?;
                         instructions.extend(arg_insts);
                         
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
                         
                         instructions.push(Inst::Println { 
                             value: arg_reg 
@@ -1360,7 +1455,7 @@ impl SyntaxProjector {
                         let (arg_insts, arg_reg) = self.parse_expression()?;
                         instructions.extend(arg_insts);
                         
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
                         
                         instructions.push(Inst::Eprint { value: arg_reg });
                         
@@ -1379,7 +1474,7 @@ impl SyntaxProjector {
                         let (arg_insts, arg_reg) = self.parse_expression()?;
                         instructions.extend(arg_insts);
                         
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
                         
                         instructions.push(Inst::Eprintln { value: arg_reg });
                         
@@ -1394,7 +1489,7 @@ impl SyntaxProjector {
                     }
                     else if name == "read_line" {
                         self.advance();
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
                         
                         instructions.push(Inst::ReadLine { 
                             dst: result_reg.clone() 
@@ -1410,7 +1505,7 @@ impl SyntaxProjector {
                         let (val_insts, val_reg) = self.parse_expression()?;
                         instructions.extend(val_insts);
 
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
 
                         instructions.push(Inst::IntToString { dst: result_reg.clone(), value: Value::Reg(val_reg) });
 
@@ -1423,16 +1518,16 @@ impl SyntaxProjector {
 
                         let (fd_insts, fd_reg) = self.parse_expression()?;
                         instructions.extend(fd_insts);
-                        self.expect(Token::Comma)?;
+                        self.expect(Token::Comma);
 
                         let (buf_insts, buf_reg) = self.parse_expression()?;
                         instructions.extend(buf_insts);
-                        self.expect(Token::Comma)?;
+                        self.expect(Token::Comma);
 
                         let (len_insts, len_reg) = self.parse_expression()?;
                         instructions.extend(len_insts);
                         
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
 
                         instructions.push(Inst::SysWrite {
                             fd: Value::Reg(fd_reg),
@@ -1450,16 +1545,16 @@ impl SyntaxProjector {
                         
                         let (fd_insts, fd_reg) = self.parse_expression()?;
                         instructions.extend(fd_insts);
-                        self.expect(Token::Comma)?;
+                        self.expect(Token::Comma);
                         
                         let (buf_insts, buf_reg) = self.parse_expression()?;
                         instructions.extend(buf_insts);
-                        self.expect(Token::Comma)?;
+                        self.expect(Token::Comma);
                         
                         let (len_insts, len_reg) = self.parse_expression()?;
                         instructions.extend(len_insts);
                         
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
                         
                         instructions.push(Inst::SysRead {
                             fd: Value::Reg(fd_reg),
@@ -1477,16 +1572,16 @@ impl SyntaxProjector {
 
                         let (path_insts, path_reg) = self.parse_expression()?;
                         instructions.extend(path_insts);
-                        self.expect(Token::Comma)?;
+                        self.expect(Token::Comma);
 
                         let (flag_insts, flag_reg) = self.parse_expression()?;
                         instructions.extend(flag_insts);
-                        self.expect(Token::Comma)?;
+                        self.expect(Token::Comma);
 
                         let (mode_insts, mode_reg) = self.parse_expression()?;
                         instructions.extend(mode_insts);
                         
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
 
                         instructions.push(Inst::SysOpen {
                             path: path_reg,
@@ -1505,7 +1600,7 @@ impl SyntaxProjector {
                         let (fd_insts, fd_reg) = self.parse_expression()?;
                         instructions.extend(fd_insts);
 
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
 
                         instructions.push(Inst::SysClose {
                             fd: Value::Reg(fd_reg),
@@ -1522,7 +1617,7 @@ impl SyntaxProjector {
                         let (path_insts, path_reg) = self.parse_expression()?;
                         instructions.extend(path_insts);
 
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
 
                         let access_result = self.alloc_reg();
 
@@ -1549,7 +1644,7 @@ impl SyntaxProjector {
                         let (path_insts, path_reg) = self.parse_expression()?;
                         instructions.extend(path_insts);
 
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
 
                         let access_result = self.alloc_reg();
 
@@ -1576,7 +1671,7 @@ impl SyntaxProjector {
                         let (path_insts, path_reg) = self.parse_expression()?;
                         instructions.extend(path_insts);
 
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
 
                         let access_result = self.alloc_reg();
 
@@ -1603,7 +1698,7 @@ impl SyntaxProjector {
                         let (path_insts, path_reg) = self.parse_expression()?;
                         instructions.extend(path_insts);
 
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
 
                         let error_reg = self.alloc_reg();
 
@@ -1623,12 +1718,12 @@ impl SyntaxProjector {
                         let (path_insts, path_reg) = self.parse_expression()?;
                         instructions.extend(path_insts);
 
-                        self.expect(Token::Comma)?;
+                        self.expect(Token::Comma);
 
                         let (content_insts, content_reg) = self.parse_expression()?;
                         instructions.extend(content_insts);
 
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
 
                         instructions.push(Inst::FileWriteString {
                             path: path_reg,
@@ -1646,12 +1741,12 @@ impl SyntaxProjector {
                         let (path_insts, path_reg) = self.parse_expression()?;
                         instructions.extend(path_insts);
 
-                        self.expect(Token::Comma)?;
+                        self.expect(Token::Comma);
 
                         let (content_insts, content_reg) = self.parse_expression()?;
                         instructions.extend(content_insts);
 
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
 
                         instructions.push(Inst::FileAppendString {
                             path: path_reg,
@@ -1669,7 +1764,7 @@ impl SyntaxProjector {
                         let (path_insts, path_reg) = self.parse_expression()?;
                         instructions.extend(path_insts);
 
-                        let mode = if self.current == Token::Comma {
+                        let mode = if self.current.token == Token::Comma {
                             self.advance();
                             
                             let (mode_insts, mode_reg) = self.parse_expression()?;
@@ -1681,7 +1776,7 @@ impl SyntaxProjector {
                             Value::Const(Const::I32(493))
                         };
 
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
 
                         instructions.push(Inst::SysMkdir {
                             path: path_reg,
@@ -1699,7 +1794,7 @@ impl SyntaxProjector {
                         let (path_insts, path_reg) = self.parse_expression()?;
                         instructions.extend(path_insts);
 
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
 
                         instructions.push(Inst::SysRmdir {
                             path: path_reg,
@@ -1716,7 +1811,7 @@ impl SyntaxProjector {
                         let (path_insts, path_reg) = self.parse_expression()?;
                         instructions.extend(path_insts);
 
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
 
                         instructions.push(Inst::SysUnlink {
                             path: path_reg,
@@ -1733,12 +1828,12 @@ impl SyntaxProjector {
                         let (old_path_insts, old_path_reg) = self.parse_expression()?;
                         instructions.extend(old_path_insts);
 
-                        self.expect(Token::Comma)?;
+                        self.expect(Token::Comma);
 
                         let (new_path_insts, new_path_reg) = self.parse_expression()?;
                         instructions.extend(new_path_insts);
 
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
 
                         instructions.push(Inst::SysRename {
                             old_path: old_path_reg,
@@ -1753,7 +1848,7 @@ impl SyntaxProjector {
                     else if name == "getcwd" || name == "current_dir" || name == "pwd" {
                         self.advance();
 
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
 
                         instructions.push(Inst::SysGetcwd {
                             dst: result_reg.clone()
@@ -1769,7 +1864,7 @@ impl SyntaxProjector {
                         let (path_insts, path_reg) = self.parse_expression()?;
                         instructions.extend(path_insts);
 
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
 
                         instructions.push(Inst::SysChdir {
                             path: path_reg,
@@ -1786,7 +1881,7 @@ impl SyntaxProjector {
                         let (path_insts, path_reg) = self.parse_expression()?;
                         instructions.extend(path_insts);
 
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
 
                         let stat_buf = self.alloc_reg();
                         let stat_result = self.alloc_reg();
@@ -1813,17 +1908,17 @@ impl SyntaxProjector {
                         let (fd_insts, fd_reg) = self.parse_expression()?;
                         instructions.extend(fd_insts);
 
-                        self.expect(Token::Comma)?;
+                        self.expect(Token::Comma);
 
                         let (offset_insts, offset_reg) = self.parse_expression()?;
                         instructions.extend(offset_insts);
 
-                        self.expect(Token::Comma)?;
+                        self.expect(Token::Comma);
 
                         let (whence_insts, whence_reg) = self.parse_expression()?;
                         instructions.extend(whence_insts);
 
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
 
                         instructions.push(Inst::SysSeek {
                             fd: Value::Reg(fd_reg),
@@ -1842,12 +1937,12 @@ impl SyntaxProjector {
                         let (path_insts, path_reg) = self.parse_expression()?;
                         instructions.extend(path_insts);
 
-                        self.expect(Token::Comma)?;
+                        self.expect(Token::Comma);
 
                         let (mode_insts, mode_reg) = self.parse_expression()?;
                         instructions.extend(mode_insts);
 
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
 
                         instructions.push(Inst::SysAccess {
                             path: path_reg,
@@ -1863,17 +1958,17 @@ impl SyntaxProjector {
                         self.advance();
 
                         let mut args = Vec::new();
-                        while self.current != Token::RightParentheses {
+                        while self.current.token != Token::RightParentheses {
                             let (arg_insts, arg_reg) = self.parse_expression()?;
                             instructions.extend(arg_insts);
                             args.push(Value::Reg(arg_reg));
 
-                            if self.current == Token::Comma {
+                            if self.current.token == Token::Comma {
                                 self.advance();
                             }
                         }
 
-                        self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses);
 
                         instructions.push(Inst::Call {
                             dst: Some(result_reg.clone()),
@@ -1883,7 +1978,7 @@ impl SyntaxProjector {
                         });
                     }
                 }
-                else if self.current == Token::LeftBrace {
+                else if self.current.token == Token::LeftBrace {
                     self.advance();
 
                     let struct_reg = self.alloc_reg();
@@ -1892,9 +1987,9 @@ impl SyntaxProjector {
                         struct_name: name.to_string()
                     });
 
-                    while self.current != Token::RightBrace && self.current != Token::Eof {
+                    while self.current.token != Token::RightBrace && self.current.token != Token::Eof {
                         let field_name = self.expect_ident()?;
-                        self.expect(Token::Colon)?;
+                        self.expect(Token::Colon);
 
                         let (field_insts, field_reg) = self.parse_expression()?;
                         instructions.extend(field_insts);
@@ -1906,7 +2001,7 @@ impl SyntaxProjector {
                             ty: Type::Unknown
                         });
 
-                        if self.current == Token::Comma {
+                        if self.current.token == Token::Comma {
                             self.advance();
                         }
                     }
@@ -1931,7 +2026,13 @@ impl SyntaxProjector {
                         self.reg_types.insert(result_reg.clone(), var_type);
                     }
                     else {
-                        return Err(format!("Unknown variable: {}", name));
+                        self.error_undefined_variable(&name, ident_span);
+
+                        instructions.push(Inst::Move {
+                            dst: result_reg.clone(),
+                            src: Value::Const(Const::I32(0)),
+                            ty: Type::I32
+                        });
                     }
                 }
             }
@@ -1941,19 +2042,19 @@ impl SyntaxProjector {
                 let (first_insts, first_reg) = self.parse_expression()?;
                 instructions.extend(first_insts);
 
-                if self.current == Token::Comma {
+                if self.current.token == Token::Comma {
                     self.advance();
 
                     let mut elements = vec![first_reg];
                     let mut element_types = vec![Type::Unknown];
 
-                    while self.current != Token::RightParentheses && self.current != Token::Eof {
+                    while self.current.token != Token::RightParentheses && self.current.token != Token::Eof {
                         let (elem_insts, elem_reg) = self.parse_expression()?;
                         instructions.extend(elem_insts);
                         elements.push(elem_reg);
                         element_types.push(Type::Unknown);
 
-                        if self.current == Token::Comma {
+                        if self.current.token == Token::Comma {
                             self.advance();
                         }
                         else {
@@ -1961,7 +2062,7 @@ impl SyntaxProjector {
                         }
                     }
 
-                    self.expect(Token::RightParentheses)?;
+                    self.expect(Token::RightParentheses);
 
                     let tuple_reg = self.alloc_reg();
                     instructions.push(Inst::TupleAlloc {
@@ -1987,7 +2088,7 @@ impl SyntaxProjector {
                     self.reg_types.insert(result_reg.clone(), Type::Tuple(vec![Type::Unknown; elements.len()]));
                 }
                 else {
-                    self.expect(Token::RightParentheses)?;
+                    self.expect(Token::RightParentheses);
 
                         instructions.push(Inst::Move {
                         dst: result_reg.clone(),
@@ -2011,7 +2112,7 @@ impl SyntaxProjector {
                 let mut elements = Vec::new();
                 let mut element_type = Type::Unknown;
 
-                while self.current != Token::RightBracket && self.current != Token::Eof {
+                while self.current.token != Token::RightBracket && self.current.token != Token::Eof {
                     let (elem_insts, elem_reg) = self.parse_expression()?;
                     instructions.extend(elem_insts);
                     elements.push(elem_reg);
@@ -2021,12 +2122,12 @@ impl SyntaxProjector {
                         element_type = Type::I32
                     }
 
-                    if self.current == Token::Comma {
+                    if self.current.token == Token::Comma {
                         self.advance();
                     }
                 }
 
-                self.expect(Token::RightBracket)?;
+                self.expect(Token::RightBracket);
 
                 let array_size = elements.len();
 
@@ -2052,21 +2153,35 @@ impl SyntaxProjector {
                     ty: Type::Array(Box::new(element_type), array_size)
                 });
             }
-            _ => return Err(format!("Unexpected token in expression: {:?}", self.current))
+            _ => {
+                let diag = Diagnostic::error(
+                    format!("Unexpected token `{}` in expression", 
+                        self.token_to_string(&self.current.token)),
+                    self.current.span
+                );
+                self.diagnostics.emit(diag);
+                
+                self.advance();
+                instructions.push(Inst::Move {
+                    dst: result_reg.clone(),
+                    src: Value::Const(Const::I32(0)),
+                    ty: Type::I32
+                });
+            }
         }
 
         Ok((instructions, result_reg))
     }
 
-    fn parse_type(&mut self) -> Result<Type, String> {
+    fn parse_type(&mut self) -> Result<Type, ()> {
         let type_name = self.expect_ident()?;
 
         if type_name == "Vec" {
-            if self.current == Token::Less {
+            if self.current.token == Token::Less {
                 self.advance();
 
                 let inner_type = self.parse_type()?;
-                self.expect(Token::Greater)?;
+                self.expect(Token::Greater);
 
                 return Ok(Type::Vec(Box::new(inner_type)));
             }
@@ -2075,13 +2190,13 @@ impl SyntaxProjector {
         }
 
         if type_name == "HashMap" {
-            if self.current == Token::Less {
+            if self.current.token == Token::Less {
                 self.advance();
 
                 let key_type = self.parse_type()?;
-                self.expect(Token::Comma)?;
+                self.expect(Token::Comma);
                 let value_type = self.parse_type()?;
-                self.expect(Token::Greater)?;
+                self.expect(Token::Greater);
 
                 return Ok(Type::HashMap(Box::new(key_type), Box::new(value_type)));
             }
@@ -2103,17 +2218,17 @@ impl SyntaxProjector {
         }
     }
 
-    fn parse_attributes(&mut self) -> Result<Vec<String>, String> {
+    fn parse_attributes(&mut self) -> Result<Vec<String>, ()> {
         let mut attributes = Vec::new();
 
-        while self.current == Token::Hash {
-            self.expect(Token::Hash)?;
-            self.expect(Token::LeftBracket)?;
+        while self.current.token == Token::Hash {
+            self.expect(Token::Hash);
+            self.expect(Token::LeftBracket);
 
             let attr_name = self.expect_ident()?;
             attributes.push(attr_name);
 
-            self.expect(Token::RightBracket)?;
+            self.expect(Token::RightBracket);
         }
 
         Ok(attributes)
@@ -2155,7 +2270,7 @@ impl SyntaxProjector {
         }
 
         if !matches!(self.config.style.block_style, BlockStyle::Indentation) {
-            while self.current == Token::Newline {
+            while self.current.token == Token::Newline {
                 if let Some(token) = self.peek_buffer.take() {
                     self.current = token;
                 }
@@ -2167,31 +2282,106 @@ impl SyntaxProjector {
     }
 
     fn skip_newlines(&mut self) {
-        while self.current == Token::Newline {
+        while self.current.token == Token::Newline {
             self.current = self.lexer.next_token();
         }
     }
 
-    fn expect(&mut self, token: Token) -> Result<(), String> {
-        if std::mem::discriminant(&self.current) == std::mem::discriminant(&token) {
+    fn expect(&mut self, expected: Token) -> Result<SpannedToken, ()> {
+        if std::mem::discriminant(&self.current.token) == std::mem::discriminant(&expected) {
+            let token = self.current.clone();
             self.advance();
 
-            Ok(())
+            Ok(token)
         }
         else {
-            Err(format!("Expected {:?}, got {:?}", token, self.current))
+            let found_str = self.token_to_string(&self.current.token);
+            let expected_str = self.token_to_string(&expected);
+
+            let diag = Diagnostic::unexpected_token(&found_str, &expected_str, self.current.span)
+                .with_note(format!("while parsing at this location"));
+
+            self.diagnostics.emit(diag);
+
+            Err(())
         }
     }
 
-    fn expect_ident(&mut self) -> Result<String, String> {
-        match &self.current {
+    fn expect_ident(&mut self) -> Result<String, ()> {
+        match &self.current.token {
             Token::Ident(name) => {
                 let n = name.clone();
                 self.advance();
                 
                 Ok(n)
             }
-            _ => Err(format!("Expected identifier, got {:?}", self.current))
+            _ => {
+                let found = self.token_to_string(&self.current.token);
+                let diag = Diagnostic::error(
+                    format!("Expected identifier, found `{}`", found),
+                    self.current.span
+                );
+
+                self.diagnostics.emit(diag);
+
+                Err(())
+            }
         }
+    }
+
+    fn token_to_string(&self, token: &Token) -> String {
+        match token {
+            Token::Function => self.config.keywords.function.clone(),
+            Token::Return => self.config.keywords.return_kw.clone(),
+            Token::If => self.config.keywords.if_kw.clone(),
+            Token::Else => self.config.keywords.else_kw.clone(),
+            Token::While => self.config.keywords.while_kw.clone(),
+            Token::For => self.config.keywords.for_kw.clone(),
+            Token::Let => self.config.keywords.let_kw.clone(),
+            Token::Struct => self.config.keywords.struct_kw.clone(),
+            Token::Ident(s) => s.clone(),
+            Token::Number(n) => n.to_string(),
+            Token::Float(f) => f.to_string(),
+            Token::String(s) => format!("\"{}\"", s),
+            Token::Bool(b) => b.to_string(),
+            Token::Plus => "+".to_string(),
+            Token::Minus => "-".to_string(),
+            Token::Star => "*".to_string(),
+            Token::Slash => "/".to_string(),
+            Token::Assignment => "=".to_string(),
+            Token::DoubleEquals => "==".to_string(),
+            Token::Less => "<".to_string(),
+            Token::Greater => ">".to_string(),
+            Token::LeftParentheses => "(".to_string(),
+            Token::RightParentheses => ")".to_string(),
+            Token::LeftBrace => "{".to_string(),
+            Token::RightBrace => "}".to_string(),
+            Token::LeftBracket => "[".to_string(),
+            Token::RightBracket => "]".to_string(),
+            Token::Semicolon => ";".to_string(),
+            Token::Colon => ":".to_string(),
+            Token::Comma => ",".to_string(),
+            Token::Arrow => "->".to_string(),
+            Token::Dot => ".".to_string(),
+            Token::Eof => "end of file".to_string(),
+            Token::Newline => "newline".to_string(),
+            _ => format!("{:?}", token),
+        }
+    }
+
+    fn error_undefined_variable(&mut self, name: &str, span: Span) {
+        let known: Vec<&str> = self.var_regs.keys().map(|s| s.as_str()).collect();
+
+        let diag = Diagnostic::undefined_variable(name, span, &known);
+
+        self.diagnostics.emit(diag);
+    }
+
+    fn error_undefined_function(&mut self, name: &str, span: Span) {
+        let known: Vec<&str> = self.known_funcs.iter().map(|s| s.as_str()).collect();
+
+        let diag = Diagnostic::undefined_function(name, span, &known);
+
+        self.diagnostics.emit(diag);
     }
 }

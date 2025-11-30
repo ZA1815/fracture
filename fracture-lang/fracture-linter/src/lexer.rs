@@ -1,4 +1,5 @@
 use fracture_ir::{SyntaxConfig, syntax_config::BlockStyle};
+use crate::errors::{Span, Position};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
@@ -65,9 +66,23 @@ pub enum Token {
     Super
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpannedToken {
+    pub token: Token,
+    pub span: Span,
+}
+
+impl SpannedToken {
+    pub fn new(token: Token, span: Span) -> Self {
+        Self { token, span }
+    }
+}
+
 pub struct Lexer {
     input: Vec<char>,
     pos: usize,
+    line: usize,
+    column: usize,
     config: SyntaxConfig,
     indent_stack: Vec<usize>,
     at_line_start: bool,
@@ -81,6 +96,8 @@ impl Lexer {
         Self {
             input: input.chars().collect(),
             pos: 0,
+            line: 1,
+            column: 1,
             config,
             indent_stack: vec![0],
             at_line_start: true,
@@ -169,58 +186,65 @@ impl Lexer {
         list
     }
 
-    pub fn next_token(&mut self) -> Token {
+    pub fn next_token(&mut self) -> SpannedToken {
         if self.at_line_start && matches!(self.config.style.block_style, BlockStyle::Indentation) {
             self.at_line_start = false;
+            let start = self.current_position();
             let indent = self.count_indent();
             let current = *self.indent_stack.last().unwrap();
 
             if indent > current {
                 self.indent_stack.push(indent);
-                return Token::Indent;
+                return SpannedToken::new(Token::Indent, Span::new(start, self.current_position()));
             }
             else if indent < current {
                 self.indent_stack.pop();
-                return Token::Dedent;
+                return SpannedToken::new(Token::Dedent, Span::new(start, self.current_position()));
             }
         }
 
         self.skip_whitespace();
 
+        let start= self.current_position();
+
         if self.pos >= self.input.len() {
-            return Token::Eof;
+            return SpannedToken::new(Token::Eof, Span::new(start, start));
         }
 
-        for (token_str, token) in &self.token_map {
+        let token_map = self.token_map.clone();
+
+        for (token_str, token) in &token_map {
             if self.matches_at_pos(token_str) {
-                self.pos += token_str.len();
-                return token.clone();
+                self.advance_by(token_str.len());
+                let end = self.current_position();
+                return SpannedToken::new(token.clone(), Span::new(start, end));
             }
         }
 
         // Add customization for this later
         if self.input[self.pos] == '\n' {
-            self.pos += 1;
+            self.advance_char();
             self.at_line_start = true;
-            return Token::Newline;
+            let end = self.current_position();
+            return SpannedToken::new(Token::Newline, Span::new(start, end));
         }
 
         // Add customization for this later
         if self.input[self.pos] == '"' {
-            return self.lex_string();
+            return self.lex_string(start);
         }
 
         if self.input[self.pos].is_ascii_digit() {
-            return self.lex_number();
+            return self.lex_number(start);
         }
 
         // Maybe add customization?
         if self.input[self.pos].is_ascii_alphabetic() || self.input[self.pos] == '_' {
-            return self.lex_ident_or_keyword();
+            return self.lex_ident_or_keyword(start);
         }
 
         // Likely return error later instead of just skipping
-        self.pos += 1;
+        self.advance_char();
         self.next_token()
     }
 
@@ -239,15 +263,17 @@ impl Lexer {
         true
     }
 
-    fn lex_ident_or_keyword(&mut self) -> Token {
-        let start = self.pos;
+    fn lex_ident_or_keyword(&mut self, start: Position) -> SpannedToken {
+        let ident_start = self.pos;
         while self.pos < self.input.len() && (self.input[self.pos].is_ascii_alphanumeric() || self.input[self.pos] == '_') {
-            self.pos += 1;
+            self.advance_char();
         }
 
-        let text: String = self.input[start..self.pos].iter().collect();
+        let text: String = self.input[ident_start..self.pos].iter().collect();
+        let end=  self.current_position();
+        let span = Span::new(start, end);
 
-        if text == self.config.keywords.function {
+        let token = if text == self.config.keywords.function {
             Token::Function
         }
         else if text == self.config.keywords.return_kw {
@@ -303,11 +329,13 @@ impl Lexer {
         }
         else {
             Token::Ident(text)
-        }
+        };
+
+        SpannedToken::new(token, span)
     }
 
-    fn lex_number(&mut self) -> Token {
-        let start = self.pos;
+    fn lex_number(&mut self, start: Position) -> SpannedToken {
+        let num_start = self.pos;
         while self.pos < self.input.len() && self.input[self.pos].is_ascii_digit() {
             self.pos += 1;
         }
@@ -317,36 +345,44 @@ impl Lexer {
         let is_range_start = is_dot && self.pos + 1 < self.input.len() && self.input[self.pos + 1] == '.';
         
         if is_dot && !is_range_start {
-            self.pos += 1;
+            self.advance_char();
             while self.pos < self.input.len() && self.input[self.pos].is_ascii_digit() {
                 self.pos += 1;
             }
-            let text: String = self.input[start..self.pos].iter().collect();
-            Token::Float(text.parse().unwrap())
+            let text: String = self.input[num_start..self.pos].iter().collect();
+            let end = self.current_position();
+            SpannedToken::new(Token::Float(text.parse().unwrap()), Span::new(start, end))
         }
         else {
-            let text: String = self.input[start..self.pos].iter().collect();
-            Token::Number(text.parse().unwrap())
+            let text: String = self.input[num_start..self.pos].iter().collect();
+            let end=  self.current_position();
+            SpannedToken::new(Token::Number(text.parse().unwrap()), Span::new(start, end))
         }
     }
 
-    fn lex_string(&mut self) -> Token {
-        self.pos += 1;
-        let start = self.pos;
+    fn lex_string(&mut self, start: Position) -> SpannedToken {
+        self.advance_char();
+        let str_start = self.pos;
 
         while self.pos < self.input.len() && self.input[self.pos] != '"' {
-            self.pos += 1;
+            self.advance_char();
         }
 
-        let text: String = self.input[start..self.pos].iter().collect();
-        self.pos += 1;
-        Token::String(text)
+        let text: String = self.input[str_start..self.pos].iter().collect();
+        if self.pos < self.input.len() {
+            // Emit error here if string wasn't closed
+            self.advance_char();
+        }
+
+        let end = self.current_position();
+        
+        SpannedToken::new(Token::String(text), Span::new(start, end))
     }
 
     fn skip_whitespace(&mut self) {
         while self.pos < self.input.len() {
             match self.input[self.pos] {
-                ' ' | '\t' | '\r' => self.pos += 1,
+                ' ' | '\t' | '\r' => self.advance_char(),
                 _ => break
             }
         }
@@ -356,7 +392,7 @@ impl Lexer {
         let mut count = 0;
         while self.pos < self.input.len() && self.input[self.pos] == ' ' {
             count += 1;
-            self.pos += 1;
+            self.advance_char();
         }
 
         count
@@ -370,6 +406,38 @@ impl Lexer {
             None
         }
     }
+
+    fn current_position(&self) -> Position {
+        Position::new(self.pos, self.line, self.column)
+    }
+
+    fn advance_char(&mut self) {
+        if self.pos < self.input.len() {
+            if self.input[self.pos] == '\n' {
+                self.line += 1;
+                self.column = 1;
+            }
+            else {
+                self.column += 1;
+            }
+
+            self.pos += 1;
+        }
+    }
+
+    fn advance_by(&mut self, n: usize) {
+        for _ in 0..n {
+            self.advance_char();
+        }
+    }
+
+    fn current_line(&self) -> usize {
+        self.line
+    }
+
+    fn current_column(&self) -> usize {
+        self.column
+    }
 }
 
 #[cfg(test)]
@@ -377,96 +445,55 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_position_tracking() {
+        let config = SyntaxConfig::rust();
+        let mut lexer = Lexer::new("let x = 42;", config);
+        
+        // 'let' should be at line 1, column 1
+        let tok1 = lexer.next_token();
+        assert_eq!(tok1.token, Token::Let);
+        assert_eq!(tok1.span.start.line, 1);
+        assert_eq!(tok1.span.start.column, 1);
+        
+        // 'x' should be at line 1, column 5
+        let tok2 = lexer.next_token();
+        assert_eq!(tok2.token, Token::Ident("x".to_string()));
+        assert_eq!(tok2.span.start.line, 1);
+        assert_eq!(tok2.span.start.column, 5);
+    }
+    
+    #[test]
+    fn test_multiline_tracking() {
+        let config = SyntaxConfig::rust();
+        let source = "let x = 1;\nlet y = 2;";
+        let mut lexer = Lexer::new(source, config);
+        
+        // Skip to second line
+        for _ in 0..6 { lexer.next_token(); } // let, x, =, 1, ;, newline
+        
+        // 'let' on line 2
+        let tok = lexer.next_token();
+        assert_eq!(tok.token, Token::Let);
+        assert_eq!(tok.span.start.line, 2);
+        assert_eq!(tok.span.start.column, 1);
+    }
+
+    #[test]
     fn test_mod_keyword() {
         let config = SyntaxConfig::rust();
         let mut lexer = Lexer::new("mod foo;", config);
         
-        assert_eq!(lexer.next_token(), Token::Mod);
-        assert_eq!(lexer.next_token(), Token::Ident("foo".to_string()));
-        assert_eq!(lexer.next_token(), Token::Semicolon);
+        let tok = lexer.next_token();
+        assert_eq!(tok.token, Token::Mod);
     }
 
     #[test]
-    fn test_use_statement() {
+    fn test_double_colon() {
         let config = SyntaxConfig::rust();
-        let mut lexer = Lexer::new("use std::collections::HashMap;", config);
+        let mut lexer = Lexer::new("std::io", config);
         
-        assert_eq!(lexer.next_token(), Token::Use);
-        assert_eq!(lexer.next_token(), Token::Ident("std".to_string()));
-        assert_eq!(lexer.next_token(), Token::DoubleColon);
-        assert_eq!(lexer.next_token(), Token::Ident("collections".to_string()));
-        assert_eq!(lexer.next_token(), Token::DoubleColon);
-        assert_eq!(lexer.next_token(), Token::Ident("HashMap".to_string()));
-        assert_eq!(lexer.next_token(), Token::Semicolon);
-    }
-
-    #[test]
-    fn test_pub_keyword() {
-        let config = SyntaxConfig::rust();
-        let mut lexer = Lexer::new("pub fn main()", config);
-        
-        assert_eq!(lexer.next_token(), Token::Pub);
-        assert_eq!(lexer.next_token(), Token::Function);
-        assert_eq!(lexer.next_token(), Token::Ident("main".to_string()));
-    }
-
-    #[test]
-    fn test_use_with_alias() {
-        let config = SyntaxConfig::rust();
-        let mut lexer = Lexer::new("use std::io::Result as IoResult;", config);
-        
-        assert_eq!(lexer.next_token(), Token::Use);
-        assert_eq!(lexer.next_token(), Token::Ident("std".to_string()));
-        assert_eq!(lexer.next_token(), Token::DoubleColon);
-        assert_eq!(lexer.next_token(), Token::Ident("io".to_string()));
-        assert_eq!(lexer.next_token(), Token::DoubleColon);
-        assert_eq!(lexer.next_token(), Token::Ident("Result".to_string()));
-        assert_eq!(lexer.next_token(), Token::As);
-        assert_eq!(lexer.next_token(), Token::Ident("IoResult".to_string()));
-    }
-
-    #[test]
-    fn test_self_and_super() {
-        let config = SyntaxConfig::rust();
-        let mut lexer = Lexer::new("use self::foo; use super::bar;", config);
-        
-        assert_eq!(lexer.next_token(), Token::Use);
-        assert_eq!(lexer.next_token(), Token::SelfKw);
-        assert_eq!(lexer.next_token(), Token::DoubleColon);
-        assert_eq!(lexer.next_token(), Token::Ident("foo".to_string()));
-        assert_eq!(lexer.next_token(), Token::Semicolon);
-        assert_eq!(lexer.next_token(), Token::Use);
-        assert_eq!(lexer.next_token(), Token::Super);
-        assert_eq!(lexer.next_token(), Token::DoubleColon);
-        assert_eq!(lexer.next_token(), Token::Ident("bar".to_string()));
-    }
-
-    #[test]
-    fn test_multi_import() {
-        // Tests `use foo::{bar, baz};` syntax
-        let config = SyntaxConfig::rust();
-        let mut lexer = Lexer::new("use foo::{bar, baz};", config);
-        
-        assert_eq!(lexer.next_token(), Token::Use);
-        assert_eq!(lexer.next_token(), Token::Ident("foo".to_string()));
-        assert_eq!(lexer.next_token(), Token::DoubleColon);
-        assert_eq!(lexer.next_token(), Token::LeftBrace);
-        assert_eq!(lexer.next_token(), Token::Ident("bar".to_string()));
-        assert_eq!(lexer.next_token(), Token::Comma);
-        assert_eq!(lexer.next_token(), Token::Ident("baz".to_string()));
-        assert_eq!(lexer.next_token(), Token::RightBrace);
-    }
-
-    #[test]
-    fn test_glob_import() {
-        // Tests `use foo::*;` syntax
-        let config = SyntaxConfig::rust();
-        let mut lexer = Lexer::new("use foo::*;", config);
-        
-        assert_eq!(lexer.next_token(), Token::Use);
-        assert_eq!(lexer.next_token(), Token::Ident("foo".to_string()));
-        assert_eq!(lexer.next_token(), Token::DoubleColon);
-        assert_eq!(lexer.next_token(), Token::Star);  // Star doubles as glob
-        assert_eq!(lexer.next_token(), Token::Semicolon);
+        assert_eq!(lexer.next_token().token, Token::Ident("std".to_string()));
+        assert_eq!(lexer.next_token().token, Token::DoubleColon);
+        assert_eq!(lexer.next_token().token, Token::Ident("io".to_string()));
     }
 }

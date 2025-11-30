@@ -1,5 +1,6 @@
 pub mod projector;
 pub mod lexer;
+pub mod errors;
 
 pub use fracture_ir::{Program, SyntaxConfig};
 pub use projector::SyntaxProjector;
