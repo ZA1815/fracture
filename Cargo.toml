@@ -6,7 +6,6 @@ members = [
     "fracture-lang/fracture-ir",
     "fracture-lang/fracture-linter",
     "fracture-lang/fracture-compiler",
-    "fracture-lang/fracture-cli",
     "fracture-lang/fracture-rift"
 ]
 

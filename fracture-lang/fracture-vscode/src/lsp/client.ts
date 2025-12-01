@@ -482,11 +482,9 @@ class MockLspImplementation {
         const diagnostics: Diagnostic[] = [];
         const lines = source.split('\n');
         
-        // Simple mock diagnostics
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
             
-            // Check for unused variables (mock)
             if (line.includes('_unused')) {
                 diagnostics.push({
                     severity: 'warning',
@@ -500,7 +498,6 @@ class MockLspImplementation {
                 });
             }
             
-            // Check for TODO comments
             if (line.includes('TODO')) {
                 diagnostics.push({
                     severity: 'info',
@@ -526,7 +523,6 @@ class MockLspImplementation {
     }
     
     formatCode(source: string, syntaxStyle: string): string {
-        // Simple formatting: normalize indentation
         const lines = source.split('\n');
         const formatted: string[] = [];
         let indentLevel = 0;
@@ -535,19 +531,16 @@ class MockLspImplementation {
         for (const line of lines) {
             const trimmed = line.trim();
             
-            // Decrease indent before closing braces
             if (trimmed.startsWith('}') || trimmed.startsWith(']') || trimmed.startsWith(')')) {
                 indentLevel = Math.max(0, indentLevel - 1);
             }
             
-            // Add the line with proper indentation
             if (trimmed) {
                 formatted.push(indentStr.repeat(indentLevel) + trimmed);
             } else {
                 formatted.push('');
             }
             
-            // Increase indent after opening braces or colons (Python)
             if (trimmed.endsWith('{') || trimmed.endsWith('[') || 
                 (syntaxStyle === 'python' && trimmed.endsWith(':'))) {
                 indentLevel++;
@@ -558,13 +551,11 @@ class MockLspImplementation {
     }
     
     getHover(source: string, syntaxStyle: string, line: number, column: number): HoverResult | null {
-        // Mock hover - return type info for known patterns
         const lines = source.split('\n');
         if (line > lines.length) return null;
         
         const currentLine = lines[line - 1];
         
-        // Check if hovering over a function name
         const fnMatch = currentLine.match(/(?:fn|def)\s+(\w+)/);
         if (fnMatch) {
             return {
