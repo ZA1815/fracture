@@ -74,7 +74,7 @@ pub enum Value {
 pub enum Visibility {
     Private,
     Public,
-    Crate
+    Shard
 
     // Might expand this later with pub(super), pub(in path) etc.
 }
@@ -95,7 +95,7 @@ pub enum PathSegment {
     Ident(String),
     SelfKw,
     Super,
-    Crate
+    Shard
 }
 
 impl ModulePath {
@@ -125,7 +125,7 @@ impl ModulePath {
                 PathSegment::Ident(name) => name.clone(),
                 PathSegment::SelfKw => "self".to_string(),
                 PathSegment::Super => "super".to_string(),
-                PathSegment::Crate => "crate".to_string()
+                PathSegment::Shard => "shard".to_string()
             })
             .collect::<Vec<_>>()
             .join("::")
@@ -181,8 +181,8 @@ impl Module {
 
     pub fn root() -> Self {
         Self {
-            name: "crate".to_string(),
-            path: ModulePath { segments: vec![PathSegment::Crate] },
+            name: "shard".to_string(),
+            path: ModulePath { segments: vec![PathSegment::Shard] },
             visibility: Visibility::Public,
             uses: Vec::new(),
             functions: HashMap::new(),

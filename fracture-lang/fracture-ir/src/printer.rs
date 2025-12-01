@@ -78,7 +78,7 @@ pub fn print_path(path: &ModulePath) -> String {
             PathSegment::Ident(name) => name.clone(),
             PathSegment::SelfKw => "self".to_string(),
             PathSegment::Super => "super".to_string(),
-            PathSegment::Crate => "crate".to_string(),
+            PathSegment::Shard => "shard".to_string(),
         })
         .collect::<Vec<_>>()
         .join("::")

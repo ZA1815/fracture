@@ -77,6 +77,9 @@ impl Compiler {
 
         println!("  Checking {} safe function(s), skipping {} unsafe function(s)", safe_funcs, unsafe_funcs);
 
+        passes::resolution_check::check(program)?;
+        println!("  Resolution check passed.");
+
         passes::type_check::check(program)?;
         println!("  Type check passed.");
 

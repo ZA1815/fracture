@@ -66,7 +66,6 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
-        // Have to account for string concat later
         Inst::Add { dst, lhs, rhs, ty } |
         Inst::Sub { dst, lhs, rhs, ty } |
         Inst::Mul { dst, lhs, rhs, ty } |
