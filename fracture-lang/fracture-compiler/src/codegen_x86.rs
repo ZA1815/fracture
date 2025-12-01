@@ -1,4 +1,4 @@
-use fracture_ir::hsir::*;
+use fracture_ir::fss::*;
 use std::{collections::HashMap, io::empty};
 
 pub struct X86CodeGen {

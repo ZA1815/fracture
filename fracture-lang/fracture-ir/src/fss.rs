@@ -18,6 +18,8 @@ pub enum Type {
     Future(Box<Type>),
     Vec(Box<Type>),
     HashMap(Box<Type>, Box<Type>),
+    Option(Box<Type>),
+    Result(Box<Type>, Box<Type>),
     Void,
     Unknown
 }
@@ -41,8 +43,32 @@ impl Type {
             Type::Struct(_) => true,
             Type::Function(_, _) => false,
             Type::Future(_) => true,
+            Type::Option(inner) => inner.needs_drop(),
+            Type::Result(ok_ty, err_ty) => ok_ty.needs_drop() || err_ty.needs_drop(),
             Type::Unknown => true
         }
+    }
+
+    pub fn option_inner(&self) -> Option<&Type> {
+        match self {
+            Type::Option(inner) => Some(inner),
+            _ => None
+        }
+    }
+
+    pub fn result_types(&self) -> Option<(&Type, &Type)> {
+        match self {
+            Type::Result(ok, err) => Some((ok, err)),
+            _ => None
+        }
+    }
+
+    pub fn is_option(&self) -> bool {
+        matches!(self, Type::Option(_))
+    }
+
+    pub fn is_result(&self) -> bool {
+        matches!(self, Type::Result(_, _))
     }
 }
 
@@ -325,7 +351,35 @@ pub enum Inst {
     DropUnregister { reg: Reg },
     DropCall { reg: Reg, ty: Type },
     DropFlag { reg: Reg, flag_reg: Reg },
-    DropIfFlag { reg: Reg, flag_reg: Reg, ty: Type }
+    DropIfFlag { reg: Reg, flag_reg: Reg, ty: Type },
+
+    OptionSome { dst: Reg, value: Value, inner_ty: Type },
+    OptionNone { dst: Reg, inner_ty: Type },
+    OptionIsSome { dst: Reg, option: Reg },
+    OptionIsNone { dst: Reg, option: Reg },
+    OptionUnwrap { dst: Reg, option: Reg, inner_ty: Type },
+    OptionUnwrapOr { dst: Reg, option: Reg, default: Value, inner_ty: Type },
+    OptionUnwrapOrElse { dst: Reg, option: Reg, default_fn: Value, inner_ty: Type },
+    OptionMap { dst: Reg, option: Reg, map_fn: Value, input_ty: Type, output_ty: Type },
+    OptionMatch { option: Reg, value_dst: Option<Reg>, some_label: Label, none_label: Label, inner_ty: Type },
+
+    ResultOk { dst: Reg, value: Value, ok_ty: Type, err_ty: Type },
+    ResultErr { dst: Reg, error: Value, ok_ty: Type, err_ty: Type },
+    ResultIsOk { dst: Reg, result: Reg },
+    ResultIsErr { dst: Reg, result: Reg },
+    ResultUnwrap { dst: Reg, result: Reg, ok_ty: Type },
+    ResultUnwrapErr { dst: Reg, result: Reg, err_ty: Type },
+    ResultUnwrapOr { dst: Reg, result: Reg, default: Value, ok_ty: Type },
+    ResultExpect { dst: Reg, result: Reg, message: String, ok_ty: Type },
+    ResultMap { dst: Reg, result: Reg, map_fn: Value, input_ty: Type, output_ty: Type, err_ty: Type },
+    ResultMapErr { dst: Reg, result: Reg, map_fn: Value, ok_ty: Type, input_err_ty: Type, output_err_ty: Type },
+    ResultMatch { result: Reg, ok_dst: Option<Reg>, err_dst: Option<Reg>, ok_label: Label, err_label: Label, ok_ty: Type, err_ty: Type },
+    ResultTry { dst: Reg, result: Reg, ok_ty: Reg, err_ty: Type, error_return_label: Label },
+
+    Panic { message: Reg },
+    PanicStatic { message: String },
+
+    Unreachable
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

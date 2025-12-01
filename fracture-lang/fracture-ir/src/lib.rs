@@ -1,9 +1,9 @@
-pub mod hsir;
+pub mod fss;
 pub mod parser;
 pub mod printer;
 pub mod syntax_config;
 
-pub use hsir::{
+pub use fss::{
     Inst,
     Type,
     Value,

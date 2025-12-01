@@ -1,4 +1,4 @@
-use crate::hsir::*;
+use crate::fss::*;
 
 pub struct Parser {
     input: Vec<String>,

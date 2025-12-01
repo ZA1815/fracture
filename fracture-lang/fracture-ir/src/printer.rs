@@ -1,4 +1,4 @@
-use crate::hsir::*;
+use crate::fss::*;
 
 pub fn print_inst(inst: &Inst) -> String {
     match inst {
@@ -25,7 +25,7 @@ pub fn print_inst(inst: &Inst) -> String {
     }
 }
 
-pub fn print_program(program: &crate::hsir::Program) -> String {
+pub fn print_program(program: &crate::fss::Program) -> String {
     program.to_text()
 }
 

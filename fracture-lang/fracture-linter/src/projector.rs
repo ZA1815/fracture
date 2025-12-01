@@ -1,4 +1,4 @@
-use fracture_ir::hsir::*;
+use fracture_ir::fss::*;
 use fracture_ir::{SyntaxConfig, syntax_config::BlockStyle};
 use crate::lexer::*;
 use crate::errors::{Span, Position, Diagnostic, DiagnosticCollector, find_similar};
