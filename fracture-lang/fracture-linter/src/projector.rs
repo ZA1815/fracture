@@ -3,6 +3,8 @@ use fracture_ir::{SyntaxConfig, syntax_config::BlockStyle};
 use crate::lexer::*;
 use crate::errors::{Span, Position, Diagnostic, DiagnosticCollector, find_similar};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::fs;
 
 pub struct SyntaxProjector {
     config: SyntaxConfig,
@@ -248,100 +250,41 @@ impl SyntaxProjector {
 
     fn parse_module_declaration(&mut self, visibility: Visibility) -> Result<Module, ()> {
         self.expect(Token::Mod)?;
-
         let module_name = self.expect_ident()?;
 
-        self.current_module_path.push(module_name.clone());
-
-        let mut module = Module::new(&module_name);
-        module.visibility = visibility;
-        module.path = ModulePath {
-            segments: self.current_module_path.iter()
-                .map(|s| PathSegment::Ident(s.clone()))
-                .collect()
-        };
-
         if self.current.token == Token::LeftBrace {
+            self.current_module_path.push(module_name.clone());
+            
+            let mut module = Module::new(&module_name);
+            module.visibility = visibility;
+            module.path = ModulePath {
+                segments: self.current_module_path.iter()
+                    .map(|s| PathSegment::Ident(s.clone()))
+                    .collect()
+            };
+
             self.advance();
-
-            while self.current.token != Token::RightBrace && self.current.token != Token::Eof {
-                if self.current.token == Token::Newline {
-                    self.advance();
-                    continue;
-                }
-
-                if self.current.token == Token::Use {
-                    let use_statement = self.parse_use_statement(Visibility::Private)?;
-                    module.uses.push(use_statement);
-                    continue;
-                }
-
-                if self.current.token == Token::Mod {
-                    let nested = self.parse_module_declaration(Visibility::Private)?;
-                    module.add_child(nested);
-                    continue;
-                }
-
-                if self.current.token == Token::Pub {
-                    let peek = self.peek();
-
-                    match peek.token {
-                        Token::Use => {
-                            self.advance();
-                            let use_statement = self.parse_use_statement(Visibility::Public)?;
-                            module.uses.push(use_statement);
-                            continue;
-                        }
-                        Token::Mod => {
-                            self.advance();
-                            let nested = self.parse_module_declaration(Visibility::Public)?;
-                            module.add_child(nested);
-                            continue;
-                        }
-                        Token::Function => {
-                            self.advance();
-                            let func = self.parse_function(Visibility::Public)?;
-                            module.add_function(func);
-                            continue;
-                        }
-                        Token::Struct => {
-                            self.advance();
-                            let s = self.parse_struct(Visibility::Public)?;
-                            module.add_struct(s);
-                            continue;
-                        }
-                        _ => {}
-                    }
-                }
-
-                if self.current.token == Token::Function {
-                    let func = self.parse_function(Visibility::Private)?;
-                    module.add_function(func);
-                    continue;
-                }
-
-                if self.current.token == Token::Struct {
-                    let s = self.parse_struct(Visibility::Private)?;
-                    module.add_struct(s);
-                    continue;
-                }
-
-                self.advance();
-            }
+            
+            self.parse_module_items(&mut module, Token::RightBrace)?;
             
             self.expect(Token::RightBrace)?;
+            self.current_module_path.pop();
+            
+            Ok(module)
         }
         else {
-            module.external_mods.push(module_name.clone());
-
             if self.config.style.needs_semicolon {
-                self.expect(Token::Semicolon);
+                self.expect(Token::Semicolon)?;
             }
+            
+            let file_path = self.resolve_module_path(&module_name)?;
+            
+            println!("[Projector] Loading module '{}' from {:?}", module_name, file_path);
+
+            let module = self.parse_file_module(&file_path, &module_name, visibility)?;
+            
+            Ok(module)
         }
-
-        self.current_module_path.pop();
-
-        Ok(module)
     }
 
     fn parse_use_statement(&mut self, visibility: Visibility) -> Result<UseStatement, ()> {
@@ -2777,5 +2720,128 @@ impl SyntaxProjector {
         let diag = Diagnostic::undefined_function(name, span, &known);
 
         self.diagnostics.emit(diag);
+    }
+
+    fn resolve_module_path(&mut self, mod_name: &str) -> Result<PathBuf, ()> {
+        let current_path = Path::new(&self.filename);
+        let parent_dir = current_path.parent().unwrap_or(Path::new("."));
+
+        let file_ext = "frac";
+
+        let path_dir = parent_dir.join(format!("{}.{}", mod_name, file_ext));
+        if path_dir.exists() {
+            return Ok(path_dir);
+        }
+
+        let path_nested = parent_dir.join(mod_name).join(format!("mod.{}", file_ext));
+        if path_nested.exists() {
+            return Ok(path_nested);
+        }
+
+        let diag = Diagnostic::error(
+            format!("Could not find module `{}`", mod_name),
+            self.current.span
+        ).with_note(format!("Checked {:?} and {:?}", path_dir, path_nested));
+
+        self.diagnostics.emit(diag);
+        Err(())
+    }
+
+    fn parse_file_module(&self, path: &Path, mod_name: &str, visibility: Visibility) -> Result<Module, ()> {
+        let source = fs::read_to_string(path).map_err(|_| { () })?;
+
+        let mut sub_projector = SyntaxProjector::new(&source, self.config.clone())
+            .with_filename(path.to_str().unwrap());
+
+        let mut new_mod_path = self.current_module_path.clone();
+        new_mod_path.push(mod_name.to_string());
+        sub_projector.current_module_path = new_mod_path;
+
+        let mut module = Module::new(mod_name);
+        module.visibility = visibility;
+        module.path = ModulePath {
+            segments: sub_projector.current_module_path.iter()
+                .map(|s| PathSegment::Ident(s.clone()))
+                .collect()
+        };
+
+        sub_projector.parse_module_items(&mut module, Token::Eof)?;
+        
+        if sub_projector.diagnostics.has_errors() {
+            sub_projector.diagnostics.emit_all();
+            return Err(());
+        }
+
+        Ok(module)
+    }
+
+    fn parse_module_items(&mut self, module: &mut Module, terminator: Token) -> Result<(), ()> {
+        while self.current.token != terminator && self.current.token != Token::Eof {
+            if self.current.token == Token::Newline {
+                self.advance();
+                continue;
+            }
+
+            if self.current.token == Token::Use {
+                let use_stmt = self.parse_use_statement(Visibility::Private)?;
+                module.uses.push(use_stmt);
+                continue;
+            }
+
+            if self.current.token == Token::Pub && self.peek().token == Token::Use {
+                self.advance();
+                let use_stmt = self.parse_use_statement(Visibility::Public)?;
+                module.uses.push(use_stmt);
+                continue;
+            }
+
+            if self.current.token == Token::Mod {
+                let submodule = self.parse_module_declaration(Visibility::Private)?;
+                module.add_child(submodule);
+                continue;
+            }
+
+            if self.current.token == Token::Pub && self.peek().token == Token::Mod {
+                self.advance();
+                let submodule = self.parse_module_declaration(Visibility::Public)?;
+                module.add_child(submodule);
+                continue;
+            }
+
+            if self.current.token == Token::Function {
+                let func = self.parse_function(Visibility::Private)?;
+                module.add_function(func);
+                continue;
+            }
+
+            if self.current.token == Token::Pub && self.peek().token == Token::Function {
+                self.advance();
+                let func = self.parse_function(Visibility::Public)?;
+                module.add_function(func);
+                continue;
+            }
+
+            if self.current.token == Token::Struct {
+                let s = self.parse_struct(Visibility::Private)?;
+                module.add_struct(s);
+                continue;
+            }
+
+            if self.current.token == Token::Pub && self.peek().token == Token::Struct {
+                self.advance();
+                let s = self.parse_struct(Visibility::Public)?;
+                module.add_struct(s);
+                continue;
+            }
+
+            let diag = Diagnostic::error(
+                format!("Unexpected token `{}` in module", self.token_to_string(&self.current.token)),
+                self.current.span
+            );
+            self.diagnostics.emit(diag);
+            self.advance();
+        }
+
+        Ok(())
     }
 }
