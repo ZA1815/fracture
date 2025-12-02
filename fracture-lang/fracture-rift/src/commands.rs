@@ -222,11 +222,23 @@ impl BuildCommand {
         );
         
         let lockfile_path = project_root.join("rift.lock");
-        let lockfile = Lockfile::load(&lockfile_path)?;
+        let mut lockfile = Lockfile::load(&lockfile_path)?;
         
         if lockfile.is_none() && !manifest.dependencies.is_empty() {
             println!("{} No lockfile found, resolving dependencies...", "→".blue());
-            // TODO: Actually resolve dependencies
+            
+            let resolver = crate::resolver::Resolver::new();
+            let graph = resolver.resolve(&manifest, &project_root)?;
+            let new_lockfile = graph.to_lockfile();
+            new_lockfile.save(&lockfile_path)?;
+
+            println!("{} Generated rift.lock", "✓".green());
+
+            lockfile = Some(new_lockfile);
+        }
+
+        if !manifest.dependencies.is_empty() && lockfile.is_none() {
+            return Err("Failed to load or generate lockfile".to_string());
         }
         
         let entry_point = manifest.entry_point(&project_root)
