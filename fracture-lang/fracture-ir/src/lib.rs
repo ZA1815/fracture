@@ -1,5 +1,4 @@
 pub mod hsir;
-pub mod parser;
 pub mod printer;
 pub mod syntax_config;
 
@@ -19,5 +18,4 @@ pub use hsir::{
     Visibility,
     StructDef,
 };
-pub use parser::Parser;
 pub use syntax_config::SyntaxConfig;
