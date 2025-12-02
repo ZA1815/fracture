@@ -29,6 +29,7 @@ pub struct SyntaxProjector {
     diagnostics: DiagnosticCollector,
 
     known_funcs: Vec<String>,
+    func_signatures: HashMap<String, Type>,
     known_vars: Vec<String>
 }
 
@@ -60,6 +61,48 @@ impl SyntaxProjector {
                 "read_file".to_string(), "write_file".to_string(),
                 "mkdir".to_string(), "rmdir".to_string(), "getcwd".to_string(),
             ],
+            func_signatures: {
+                let mut m = HashMap::new();
+                m.insert("itoa".to_string(), Type::String);
+                m.insert("to_string".to_string(), Type::String);
+                m.insert("read_line".to_string(), Type::String);
+                m.insert("read_file".to_string(), Type::String);
+                m.insert("fs_read".to_string(), Type::String);
+                m.insert("getcwd".to_string(), Type::String);
+                m.insert("current_dir".to_string(), Type::String);
+                m.insert("pwd".to_string(), Type::String);
+                
+                m.insert("sys_write".to_string(), Type::I64);
+                m.insert("sys_read".to_string(), Type::I64);
+                m.insert("sys_open".to_string(), Type::I32);
+                m.insert("sys_close".to_string(), Type::I32);
+                m.insert("file_exists".to_string(), Type::Bool);
+                m.insert("path_exists".to_string(), Type::Bool);
+                m.insert("is_readable".to_string(), Type::Bool);
+                m.insert("is_writable".to_string(), Type::Bool);
+                m.insert("write_file".to_string(), Type::I64);
+                m.insert("fs_write".to_string(), Type::I64);
+                m.insert("append_file".to_string(), Type::I64);
+                m.insert("fs_append".to_string(), Type::I64);
+                m.insert("mkdir".to_string(), Type::I64);
+                m.insert("create_dir".to_string(), Type::I64);
+                m.insert("rmdir".to_string(), Type::I64);
+                m.insert("remove_dir".to_string(), Type::I64);
+                m.insert("unlink".to_string(), Type::I64);
+                m.insert("remove_file".to_string(), Type::I64);
+                m.insert("delete_file".to_string(), Type::I64);
+                m.insert("rename".to_string(), Type::I64);
+                m.insert("mv".to_string(), Type::I64);
+                m.insert("chdir".to_string(), Type::I64);
+                m.insert("cd".to_string(), Type::I64);
+                m.insert("set_current_dir".to_string(), Type::I64);
+                m.insert("file_size".to_string(), Type::I64);
+                m.insert("sys_seek".to_string(), Type::I64);
+                m.insert("lseek".to_string(), Type::I64);
+                m.insert("sys_access".to_string(), Type::I64);
+                m.insert("access".to_string(), Type::I64);
+                m
+            },
             known_vars: Vec::new(),
         }
     }
@@ -376,6 +419,7 @@ impl SyntaxProjector {
         self.var_regs.clear();
         self.var_types.clear();
         self.known_vars.clear();
+        self.reg_types.clear();
         self.next_reg = 0;
 
         self.expect(Token::Function)?;
@@ -416,18 +460,27 @@ impl SyntaxProjector {
             Type::Void
         };
 
-        let body = self.parse_block()?;
+        let (mut body, body_result) = self.parse_block()?;
+
+        self.func_signatures.insert(name.clone(), return_type.clone());
+
+        if let Some(reg) = body_result {
+            body.push(Inst::Return { val: Some(Value::Reg(reg)) });
+        } else if !matches!(return_type, Type::Void) {
+            body.push(Inst::Return { val: None });
+        }
+        else {
+            body.push(Inst::Return { val: None });
+        }
 
         let mut locals: HashMap<Reg, Type> = HashMap::new();
 
-        for (var_name, reg) in &self.var_regs {
-            if let Some(ty) = self.var_types.get(var_name) {
-                locals.insert(reg.clone(), ty.clone());
-            }
+        for (reg, ty) in &self.reg_types {
+            locals.insert(reg.clone(), ty.clone());
         }
 
         let module_path = if self.current_module_path.is_empty() {
-            None
+            Some(ModulePath { segments: vec![PathSegment::Shard] })
         }
         else {
             Some(ModulePath {
@@ -494,15 +547,18 @@ impl SyntaxProjector {
         Ok(StructDef { name: struct_name, fields, visibility, field_visibility })
     }
 
-    fn parse_block(&mut self) -> Result<Vec<Inst>, ()> {
+    fn parse_block(&mut self) -> Result<(Vec<Inst>, Option<Reg>), ()> {
         let mut instructions = Vec::new();
+        let mut last_reg = None;
 
         match self.config.style.block_style {
             BlockStyle::Braces => {
                 self.expect(Token::LeftBrace)?;
 
                 while self.current.token != Token::RightBrace && self.current.token != Token::Eof {
-                    instructions.extend(self.parse_statement()?);
+                    let (stmt_insts, stmt_reg) = self.parse_statement()?;
+                    instructions.extend(stmt_insts);
+                    last_reg = stmt_reg;
                 }
 
                 self.expect(Token::RightBrace)?;
@@ -513,7 +569,9 @@ impl SyntaxProjector {
                 self.expect(Token::Indent)?;
 
                 while self.current.token != Token::Dedent && self.current.token != Token::Eof {
-                    instructions.extend(self.parse_statement()?);
+                    let (stmt_insts, stmt_reg) = self.parse_statement()?;
+                    instructions.extend(stmt_insts);
+                    last_reg = stmt_reg;
                     self.skip_newlines();
                 }
 
@@ -528,11 +586,12 @@ impl SyntaxProjector {
             }
         }
 
-        Ok(instructions)
+        Ok((instructions, last_reg))
     }
 
-    fn parse_statement(&mut self) -> Result<Vec<Inst>, ()> {
+    fn parse_statement(&mut self) -> Result<(Vec<Inst>, Option<Reg>), ()> {
         let mut instructions = Vec::new();
+        let mut result_reg = None;
 
         let token = self.current.clone();
         let mut requires_semicolon = true;
@@ -622,21 +681,28 @@ impl SyntaxProjector {
                     });
                 }
                 else {
-                    let (expr_insts, _) = self.parse_expression()?;
+                    let (expr_insts, reg) = self.parse_expression()?;
                     instructions.extend(expr_insts);
+                    result_reg = Some(reg);
                 }
             }
             _ => {
-                let (expr_insts, _) = self.parse_expression()?;
+                let (expr_insts, reg) = self.parse_expression()?;
                 instructions.extend(expr_insts);
+                result_reg = Some(reg);
             }
         }
 
         if self.config.style.needs_semicolon && requires_semicolon {
-            self.expect(Token::Semicolon)?;
+            if self.current.token == Token::RightBrace && result_reg.is_some() {
+                // Implicit return
+            } else {
+                self.expect(Token::Semicolon)?;
+                result_reg = None;
+            }
         }
 
-        Ok(instructions)
+        Ok((instructions, result_reg))
     }
 
     fn parse_if_statement(&mut self) -> Result<Vec<Inst>, ()> {
@@ -651,7 +717,7 @@ impl SyntaxProjector {
         // Need to add comparison ops
         instructions.push(Inst::JumpIfFalse { cond: Value::Reg(cond_reg), target: else_label.clone() });
 
-        let if_body = self.parse_block()?;
+        let (if_body, _) = self.parse_block()?;
         instructions.extend(if_body);
 
         instructions.push(Inst::Jump { target: end_label.clone() });
@@ -665,7 +731,7 @@ impl SyntaxProjector {
 
         if self.current.token == Token::Else {
             self.advance();
-            let else_body = self.parse_block()?;
+            let (else_body, _) = self.parse_block()?;
             instructions.extend(else_body);
         }
 
@@ -688,7 +754,7 @@ impl SyntaxProjector {
 
         instructions.push(Inst::JumpIfFalse { cond: Value::Reg(cond_reg), target: loop_end.clone() });
 
-        let body = self.parse_block()?;
+        let (body, _) = self.parse_block()?;
         instructions.extend(body);
 
         instructions.push(Inst::Jump { target: loop_start });
@@ -1569,12 +1635,12 @@ impl SyntaxProjector {
             }
             Token::Err => {
                 self.advance();
-                self.expect(Token::LeftParentheses);
+                self.expect(Token::LeftParentheses)?;
                 
                 let (err_insts, err_reg) = self.parse_expression()?;
                 instructions.extend(err_insts);
                 
-                self.expect(Token::RightParentheses);
+                self.expect(Token::RightParentheses)?;
                 
                 let ok_ty = Type::Unknown;
                 let err_ty = self.reg_types.get(&err_reg).cloned().unwrap_or(Type::Unknown);
@@ -2282,11 +2348,14 @@ impl SyntaxProjector {
 
                         self.expect(Token::RightParentheses)?;
 
+                        let call_ty = self.func_signatures.get(&name).cloned().unwrap_or(Type::Unknown);
+                        self.reg_types.insert(result_reg.clone(), call_ty.clone());
+
                         instructions.push(Inst::Call {
                             dst: Some(result_reg.clone()),
                             func: Value::Label(Label(name.to_string())),
                             args,
-                            ty: Type::Unknown // Need type inference
+                            ty: call_ty
                         });
                     }
                 }
@@ -2465,6 +2534,27 @@ impl SyntaxProjector {
                     ty: Type::Array(Box::new(element_type), array_size)
                 });
             }
+            Token::Minus => {
+                self.advance();
+                let (term_insts, term_reg) = self.parse_term()?;
+                instructions.extend(term_insts);
+
+                let zero_reg = self.alloc_reg();
+                instructions.push(Inst::Move {
+                    dst: zero_reg.clone(),
+                    src: Value::Const(Const::I32(0)),
+                    ty: Type::I32
+                });
+
+                instructions.push(Inst::Sub {
+                    dst: result_reg.clone(),
+                    lhs: Value::Reg(zero_reg),
+                    rhs: Value::Reg(term_reg),
+                    ty: Type::I32
+                });
+                
+                self.reg_types.insert(result_reg.clone(), Type::I32);
+            }
             _ => {
                 let diag = Diagnostic::error(
                     format!("Unexpected token `{}` in expression", 
@@ -2572,6 +2662,7 @@ impl SyntaxProjector {
             let reg = self.alloc_reg();
             self.var_regs.insert(name.to_string(), reg.clone());
             self.var_types.insert(name.to_string(), ty.clone());
+            self.reg_types.insert(reg.clone(), ty.clone());
 
             reg
         }

@@ -190,9 +190,9 @@ impl SyntaxConfig {
                 some_kw:"Some".to_string(),
                 none_kw: "None".to_string(),
                 ok_kw: "Ok".to_string(),
-                err_kw: "".to_string(),
+                err_kw: "Err".to_string(),
                 match_kw: "".to_string(),
-                panic_kw: "".to_string()
+                panic_kw: "panic".to_string()
             },
             tokens: TokenConfig {
                 arrow: "->".to_string(),

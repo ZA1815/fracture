@@ -538,6 +538,13 @@ impl Program {
             }
         }
 
+        if let PathSegment::Shard = &path.segments[0] {
+            let remaining = ModulePath {
+                segments: path.segments[1..].to_vec()
+            };
+            return self.resolve_in_module(module, &remaining);
+        }
+
         if let PathSegment::Ident(first) = &path.segments[0] {
             if let Some(child) = module.children.get(first) {
                 let remaining = ModulePath {

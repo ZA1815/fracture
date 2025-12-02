@@ -1383,6 +1383,30 @@ fn types_compatible(t1: &Type, t2: &Type) -> bool {
         return types_compatible(&k1, k2) && types_compatible(&v1, v2);
     }
 
+    if let (Type::Option(inner1), Type::Option(inner2)) = (t1, t2) {
+        return types_compatible(inner1, inner2);
+    }
+
+    if let (Type::Result(ok1, err1), Type::Result(ok2, err2)) = (t1, t2) {
+        return types_compatible(ok1, ok2) && types_compatible(err1, err2);
+    }
+
+    if let (Type::Vec(inner1), Type::Vec(inner2)) = (t1, t2) {
+        return types_compatible(inner1, inner2);
+    }
+
+    if let (Type::Array(inner1, size1), Type::Array(inner2, size2)) = (t1, t2) {
+        return size1 == size2 && types_compatible(inner1, inner2);
+    }
+
+    if let (Type::Slice(inner1), Type::Slice(inner2)) = (t1, t2) {
+        return types_compatible(inner1, inner2);
+    }
+
+    if let (Type::Ptr(inner1), Type::Ptr(inner2)) = (t1, t2) {
+        return types_compatible(inner1, inner2);
+    }
+
     // Add more compatibility rules later
     false
 }
