@@ -63,7 +63,16 @@ pub enum Token {
     Pub,
     As,
     SelfKw,
-    Super
+    Super,
+
+    Some,
+    None,
+    Ok,
+    Err,
+    Match,
+
+    QuestionMark,
+    Panic
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -180,6 +189,7 @@ impl Lexer {
         list.push((".".to_string(), Token::Dot));
         // Have to change later but its complicated
         list.push(("::".to_string(), Token::DoubleColon));
+        list.push(("?".to_string(), Token::QuestionMark));
 
         list.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
         
@@ -320,6 +330,24 @@ impl Lexer {
         }
         else if !self.config.keywords.super_kw.is_empty() && text == self.config.keywords.super_kw {
             Token::Super
+        }
+        else if !self.config.keywords.some_kw.is_empty() && text == self.config.keywords.some_kw {
+            Token::Some
+        }
+        else if !self.config.keywords.none_kw.is_empty() && text == self.config.keywords.none_kw {
+            Token::None
+        }
+        else if !self.config.keywords.ok_kw.is_empty() && text == self.config.keywords.ok_kw {
+            Token::Ok
+        }
+        else if !self.config.keywords.err_kw.is_empty() && text == self.config.keywords.err_kw {
+            Token::Err
+        }
+        else if !self.config.keywords.match_kw.is_empty() && text == self.config.keywords.match_kw {
+            Token::Match
+        }
+        else if !self.config.keywords.panic_kw.is_empty() && text == self.config.keywords.panic_kw {
+            Token::Panic
         }
         else if text == "true" {
             Token::Bool(true)

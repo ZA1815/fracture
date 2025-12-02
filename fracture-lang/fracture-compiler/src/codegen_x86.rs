@@ -1,4 +1,4 @@
-use fracture_ir::fss::*;
+use fracture_ir::hsir::*;
 use std::{collections::HashMap, io::empty};
 
 pub struct X86CodeGen {
@@ -510,6 +510,80 @@ impl X86CodeGen {
             }
             Inst::FileAppendString { path, content, result_dst } => {
                 self.compile_file_append_string(path, content, result_dst);
+            }
+            Inst::OptionSome { dst, value, inner_ty } => {
+                self.compile_option_some(dst, value, inner_ty);
+            }
+            Inst::OptionNone { dst, inner_ty } => {
+                self.compile_option_none(dst, inner_ty);
+            }
+            Inst::OptionIsSome { dst, option } => {
+                self.compile_option_is_some(dst, option);
+            }
+            Inst::OptionIsNone { dst, option } => {
+                self.compile_option_is_none(dst, option);
+            }
+            Inst::OptionUnwrap { dst, option, inner_ty } => {
+                self.compile_option_unwrap(dst, option, inner_ty);
+            }
+            Inst::OptionUnwrapOr { dst, option, default, inner_ty } => {
+                self.compile_option_unwrap_or(dst, option, default, inner_ty);
+            }
+            Inst::OptionUnwrapOrElse { dst, option, default_fn, inner_ty } => {
+                // Placeholder
+            }
+            Inst::OptionMap { dst, option, map_fn, input_ty, output_ty } => {
+                // Placeholder
+            }
+            Inst::OptionMatch { option, value_dst, some_label, none_label, inner_ty } => {
+                self.compile_option_match(option, value_dst, some_label, none_label, inner_ty);
+            }
+            
+            Inst::ResultOk { dst, value, ok_ty, err_ty } => {
+                self.compile_result_ok(dst, value, ok_ty, err_ty);
+            }
+            Inst::ResultErr { dst, error, ok_ty, err_ty } => {
+                self.compile_result_err(dst, error, ok_ty, err_ty);
+            }
+            Inst::ResultIsOk { dst, result } => {
+                self.compile_result_is_ok(dst, result);
+            }
+            Inst::ResultIsErr { dst, result } => {
+                self.compile_result_is_err(dst, result);
+            }
+            Inst::ResultUnwrap { dst, result, ok_ty } => {
+                self.compile_result_unwrap(dst, result, ok_ty);
+            }
+            Inst::ResultUnwrapErr { dst, result, err_ty } => {
+                self.compile_result_unwrap_err(dst, result, err_ty);
+            }
+            Inst::ResultUnwrapOr { dst, result, default, ok_ty } => {
+                self.compile_result_unwrap_or(dst, result, default, ok_ty);
+            }
+            Inst::ResultExpect { dst, result, message, ok_ty } => {
+                self.compile_result_expect(dst, result, message, ok_ty);
+            }
+            Inst::ResultMap { .. } => {
+                // Placeholder
+            }
+            Inst::ResultMapErr { .. } => {
+                // Placeholder
+            }
+            Inst::ResultMatch { result, ok_dst, err_dst, ok_label, err_label, ok_ty, err_ty } => {
+                self.compile_result_match(result, ok_dst, err_dst, ok_label, err_label, ok_ty, err_ty);
+            }
+            Inst::ResultTry { dst, result, ok_ty, err_ty, error_return_label } => {
+                self.compile_result_try(dst, result, ok_ty, err_ty, error_return_label);
+            }
+            
+            Inst::Panic { message } => {
+                self.compile_panic(message);
+            }
+            Inst::PanicStatic { message } => {
+                self.compile_panic_static(message);
+            }
+            Inst::Unreachable => {
+                self.emit("    ud2");
             }
             Inst::SimPoint { id, metadata } => {
                 self.emit(&format!("    # SimPoint: {}", id));
@@ -1998,6 +2072,410 @@ impl X86CodeGen {
         self.emit(&format!("{}:", done_label));
     }
 
+    fn compile_option_some(&mut self, dst: &Reg, value: &Value, inner_ty: &Type) {
+        let inner_size = self.type_size(inner_ty);
+        let total_size = inner_size + 8;
+        let option_offset = self.next_stack_offset + total_size as i32;
+        self.next_stack_offset = option_offset + 8;
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], 1", option_offset));
+        self.load_value_to_rax(value, inner_ty);
+        match inner_size {
+            1 => self.emit(&format!("   mov BYTE PTR [rbp-{}], al", option_offset - 8)),
+            2 => self.emit(&format!("   mov WORD PTR [rbp-{}], ax", option_offset - 8)),
+            4 => self.emit(&format!("   mov DWORD PTR [rbp-{}], eax", option_offset - 8)),
+            _ => self.emit(&format!("   mov QWORD PTR [rbp-{}], rax", option_offset - 8))
+        }
+        let dst_offset = self.get_or_alloc_reg_offset(dst);
+        self.emit(&format!("    lea rax, [rbp-{}]", option_offset));
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+    }
+
+    fn compile_option_none(&mut self, dst: &Reg, inner_ty: &Type) {
+        let inner_size = self.type_size(inner_ty);
+        let total_size = inner_size + 8;
+        let option_offset = self.next_stack_offset + total_size as i32;
+        self.next_stack_offset = option_offset + 8;
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], 0", option_offset));
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], 0", option_offset - 8));
+        let dst_offset = self.get_or_alloc_reg_offset(dst);
+        self.emit(&format!("    lea rax, [rbp-{}]", option_offset));
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+    }
+
+    fn compile_option_is_some(&mut self, dst: &Reg, option: &Reg) {
+        let option_offset = self.get_or_alloc_reg_offset(option);
+        let dst_offset = self.get_or_alloc_reg_offset(dst);
+        self.emit(&format!("    mov rax, QWORD PTR [rbp-{}]", option_offset));
+        self.emit("    mov rax, QWORD PTR [rax]");
+        self.emit("    cmp rax, 1");
+        self.emit("    sete al");
+        self.emit("    movzx rax, al");
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset))
+    }
+
+    fn compile_option_is_none(&mut self, dst: &Reg, option: &Reg) {
+        let option_offset = self.get_or_alloc_reg_offset(option);
+        let dst_offset = self.get_or_alloc_reg_offset(dst);
+        self.emit(&format!("    mov rax, QWORD PTR [rbp-{}]", option_offset));
+        self.emit("    mov rax, QWORD PTR [rax]");
+        self.emit("    cmp rax, 0");
+        self.emit("    sete al");
+        self.emit("    movzx rax, al");
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+    }
+
+    fn compile_option_unwrap(&mut self, dst: &Reg, option: &Reg, inner_ty: &Type) {
+        let id = self.next_label_id();
+        let option_offset = self.get_or_alloc_reg_offset(option);
+        let dst_offset = self.get_or_alloc_reg_offset(dst);
+        let ok_label = format!("option_unwrap_ok_{}", id);
+        self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", option_offset));
+        self.emit("    mov rax, QWORD PTR [r12]");
+        self.emit("    cmp rax, 1");
+        self.emit(&format!("    je {}", ok_label));
+        let panic_msg = self.alloc_data_label("Panic: Called unwrap() on None value");
+        self.emit(&format!("    lea rsi, [rip+{}]", panic_msg));
+        self.emit(&format!("    mov rdx, {}_len", panic_msg));
+        self.emit("    mov rdi, 2");
+        self.emit("    mov rax, 1");
+        self.emit("    syscall");
+        self.emit("    lea rsi, [rip+_newline]");
+        self.emit("    mov rdx, 1");
+        self.emit("    mov rdi, 2");
+        self.emit("    mov rax, 1");
+        self.emit("    syscall");
+        self.emit("    mov rdi, 101");
+        self.emit("    mov rax, 60");
+        self.emit("    syscall");
+        self.emit(&format!("{}:", ok_label));
+        let inner_size = self.type_size(inner_ty);;
+        match inner_size {
+            1 => self.emit("    movzx rax, BYTE PTR [r12+8]"),
+            2 => self.emit("    movzx  rax, WORD PTR [r12+8]"),
+            4 => self.emit("    mov eax, DWORD PTR [r12+8]"),
+            _ => self.emit("    mov rax, QWORD PTR [r12+8]")
+        }
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+    }
+
+    fn compile_option_unwrap_or(&mut self, dst: &Reg, option: &Reg, default: &Value, inner_ty: &Type) {
+        let id = self.next_label_id();
+        let option_offset = self.get_or_alloc_reg_offset(option);
+        let dst_offset = self.get_or_alloc_reg_offset(dst);
+        let some_label = format!("option_unwrap_or_some_{}", id);
+        let done_label = format!("option_unwrap_or_done_{}", id);
+        self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", option_offset));
+        self.emit("    mov rax, QWORD PTR [r12]");
+        self.emit("    cmp rax, 1");
+        self.emit(&format!("    je {}", some_label));
+        self.load_value_to_rax(default, inner_ty);
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+        self.emit(&format!("    jmp {}", done_label));
+        self.emit(&format!("{}:", some_label));
+        let inner_size = self.type_size(inner_ty);
+        match inner_size {
+            1 => self.emit("    movzx rax, BYTE PTR [r12+8]"),
+            2 => self.emit("    movzx rax, WORD PTR [r12+8]"),
+            4 => self.emit("    mov eax, DWORD PTR [r12+8]"),
+            _ => self.emit("    mov rax, QWORD PTR [r12+8]"),
+        }
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+        self.emit(&format!("{}:", done_label));
+    }
+
+    fn compile_option_match(&mut self, option: &Reg, value_dst: &Option<Reg>, some_label: &Label, none_label: &Label, inner_ty: &Type) {
+        let option_offset = self.get_or_alloc_reg_offset(option);
+        self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", option_offset));
+        self.emit("    mov rax, QWORD PTR [r12]");
+        self.emit("    cmp rax, 1");
+        self.emit(&format!("    jne {}", none_label.0));
+        if let Some(val_dst) = value_dst {
+            let dst_offset = self.get_or_alloc_reg_offset(val_dst);
+            let inner_size = self.type_size(inner_ty);
+            match inner_size {
+                1 => self.emit("    movzx rax, BYTE PTR [r12+8]"),
+                2 => self.emit("    movzx rax, WORD PTR [r12+8]"),
+                4 => self.emit("    mov eax, DWORD PTR [r12+8]"),
+                _ => self.emit("    mov rax, QWORD PTR [r12+8]")
+            }
+            self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+        }
+        self.emit(&format!("    jmp {}", some_label.0));
+    }
+
+    fn compile_result_ok(&mut self, dst: &Reg, value: &Value, ok_ty: &Type, err_ty: &Type) {
+        let ok_size = self.type_size(ok_ty);
+        let err_size = self.type_size(err_ty);
+        let payload_size = std::cmp::max(ok_size, err_size);
+        let total_size = payload_size + 8;
+        let result_offset = self.next_stack_offset + total_size as i32;
+        self.next_stack_offset = result_offset + 8;
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], 0", result_offset));
+        self.load_value_to_rax(value, ok_ty);
+        match ok_size {
+            1 => self.emit(&format!("   mov BYTE PTR [rbp-{}], al", result_offset - 8)),
+            2 => self.emit(&format!("   mov WORD PTR [rbp-{}], ax", result_offset - 8)),
+            4 => self.emit(&format!("   mov DWORD PTR [rbp-{}], eax", result_offset - 8)),
+            _ => self.emit(&format!("   mov QWORD PTR [rbp-{}], rax", result_offset - 8))
+        }
+        let dst_offset = self.get_or_alloc_reg_offset(dst);
+        self.emit(&format!("    lea rax, [rbp-{}]", result_offset));
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+    }
+
+    fn compile_result_err(&mut self, dst: &Reg, error: &Value, ok_ty: &Type, err_ty: &Type) {
+        let ok_size = self.type_size(ok_ty);
+        let err_size = self.type_size(err_ty);
+        let payload_size = std::cmp::max(ok_size, err_size);
+        let total_size = payload_size + 8;
+        let result_offset = self.next_stack_offset + total_size as i32;
+        self.next_stack_offset = result_offset + 8;
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], 1", result_offset));
+        self.load_value_to_rax(error, err_ty);
+        match err_size {
+            1 => self.emit(&format!("   mov BYTE PTR [rbp-{}], al", result_offset - 8)),
+            2 => self.emit(&format!("   mov WORD PTR [rbp-{}], ax", result_offset - 8)),
+            4 => self.emit(&format!("   mov DWORD PTR [rbp-{}], eax", result_offset - 8)),
+            _ => self.emit(&format!("   mov QWORD PTR [rbp-{}], rax", result_offset - 8))
+        }
+        let dst_offset = self.get_or_alloc_reg_offset(dst);
+        self.emit(&format!("    lea rax, [rbp-{}]", result_offset));
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+    }
+
+    fn compile_result_is_ok(&mut self, dst: &Reg, result: &Reg) {
+        let result_offset = self.get_or_alloc_reg_offset(result);
+        let dst_offset = self.get_or_alloc_reg_offset(dst);
+        self.emit(&format!("    mov rax, QWORD PTR [rbp-{}]", result_offset));
+        self.emit("    mov rax, QWORD PTR [rax]");
+        self.emit("    cmp rax, 0");
+        self.emit("    sete al");
+        self.emit("    movzx rax, al");
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+    }
+
+    fn compile_result_is_err(&mut self, dst: &Reg, result: &Reg) {
+        let result_offset = self.get_or_alloc_reg_offset(result);
+        let dst_offset = self.get_or_alloc_reg_offset(dst);
+        self.emit(&format!("    mov rax, QWORD PTR [rbp-{}]", result_offset));
+        self.emit("    mov rax, QWORD PTR [rax]");
+        self.emit("    cmp rax, 1");
+        self.emit("    sete al");
+        self.emit("    movzx rax, al");
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+    }
+
+    fn compile_result_unwrap(&mut self, dst: &Reg, result: &Reg, ok_ty: &Type) {
+        let id = self.next_label_id();
+        let result_offset = self.get_or_alloc_reg_offset(result);
+        let dst_offset = self.get_or_alloc_reg_offset(dst);
+        let ok_label = format!("result_unwrap_ok_{}", id);
+        self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", result_offset));
+        self.emit("    mov rax, QWORD PTR [r12]");
+        self.emit("    cmp rax, 0");
+        self.emit(&format!("    je {}", ok_label));
+        let panic_msg = self.alloc_data_label("Panic: Called unwrap() on Err value");
+        self.emit(&format!("    lea rsi, [rip+{}]", panic_msg));
+        self.emit(&format!("    mov rdx, {}_len", panic_msg));
+        self.emit("    mov rdi, 2");
+        self.emit("    mov rax, 1");
+        self.emit("    syscall");
+        self.emit("    lea rsi, [rip+_newline]");
+        self.emit("    mov rdx, 1");
+        self.emit("    mov rdi, 2");
+        self.emit("    mov rax, 1");
+        self.emit("    syscall");
+        self.emit("    mov rdi, 101");
+        self.emit("    mov rax, 60");
+        self.emit("    syscall");
+        self.emit(&format!("{}:", ok_label));
+        let ok_size = self.type_size(ok_ty);
+        match ok_size {
+            1 => self.emit("    movzx rax, BYTE PTR [r12+8]"),
+            2 => self.emit("    movzx rax, WORD PTR [r12+8]"),
+            4 => self.emit("    mov eax, DWORD PTR [r12+8]"),
+            _ => self.emit("    mov rax, QWORD PTR [r12+8]")
+        }
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+    }
+
+    fn compile_result_unwrap_err(&mut self, dst: &Reg, result: &Reg, err_ty: &Type) {
+        let id = self.next_label_id();
+        let result_offset = self.get_or_alloc_reg_offset(result);
+        let dst_offset = self.get_or_alloc_reg_offset(dst);
+        let err_label = format!("result_unwrap_err_{}", id);
+        self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", result_offset));
+        self.emit("    mov rax, QWORD PTR [r12]");
+        self.emit("    cmp rax, 1");
+        self.emit(&format!("    je {}", err_label));
+        let panic_msg = self.alloc_data_label("Panic: Called unwrap_err() on Ok value");
+        self.emit(&format!("    lea rsi, [rip+{}]", panic_msg));
+        self.emit(&format!("    mov rdx, {}_len", panic_msg));
+        self.emit("    mov rdi, 2");
+        self.emit("    mov rax, 1");
+        self.emit("    syscall");
+        self.emit("    lea rsi, [rip+_newline]");
+        self.emit("    mov rdx, 1");
+        self.emit("    mov rdi, 2");
+        self.emit("    mov rax, 1");
+        self.emit("    syscall");
+        self.emit("    mov rdi, 101");
+        self.emit("    mov rax, 60");
+        self.emit("    syscall");
+        self.emit(&format!("{}:", err_label));
+        let err_size = self.type_size(err_ty);
+        match err_size {
+            1 => self.emit("    movzx rax, BYTE PTR [r12+8]"),
+            2 => self.emit("    movzx rax, WORD PTR [r12+8]"),
+            4 => self.emit("    mov eax, DWORD PTR [r12+8]"),
+            _ => self.emit("    mov rax, QWORD PTR [r12+8]")
+        }
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+    }
+
+    fn compile_result_unwrap_or(&mut self, dst: &Reg, result: &Reg, default: &Value, ok_ty: &Type) {
+        let id = self.next_label_id();
+        let result_offset = self.get_or_alloc_reg_offset(result);
+        let dst_offset = self.get_or_alloc_reg_offset(dst);
+        let ok_label = format!("result_unwrap_or_ok_{}", id);
+        let done_label = format!("result_unwrap_or_done_{}", id);
+        self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", result_offset));
+        self.emit("    mov rax, QWORD PTR [r12]");
+        self.emit("    cmp rax, 0");
+        self.emit(&format!("    je {}", ok_label));
+        self.load_value_to_rax(default, ok_ty);
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+        self.emit(&format!("    jmp {}", done_label));
+        self.emit(&format!("{}:", ok_label));
+        let ok_size = self.type_size(ok_ty);
+        match ok_size {
+            1 => self.emit("    movzx rax, BYTE PTR [r12+8]"),
+            2 => self.emit("    movzx rax, WORD PTR [r12+8]"),
+            4 => self.emit("    mov eax, DWORD PTR [r12+8]"),
+            _ => self.emit("    mov rax, QWORD PTR [r12+8]")
+        }
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+        self.emit(&format!("{}:", done_label));
+    }
+
+    fn compile_result_expect(&mut self, dst: &Reg, result: &Reg, message: &str, ok_ty: &Type) {
+        let id = self.next_label_id();
+        let result_offset = self.get_or_alloc_reg_offset(result);
+        let dst_offset = self.get_or_alloc_reg_offset(dst);
+        let ok_label = format!("result_expect_ok_{}", id);
+        self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", result_offset));
+        self.emit("    mov rax, QWORD PTR [r12]");
+        self.emit("    cmp rax, 0");
+        self.emit(&format!("    je {}", ok_label));
+        let panic_msg = self.alloc_data_label(message);
+        self.emit(&format!("    lea rsi, [rip+{}]", panic_msg));
+        self.emit(&format!("    mov rdx, {}_len", panic_msg));
+        self.emit("    mov rdi, 2");
+        self.emit("    mov rax, 1");
+        self.emit("    syscall");
+        self.emit("    lea rsi, [rip+_newline]");
+        self.emit("    mov rdx, 1");
+        self.emit("    mov rdi, 2");
+        self.emit("    mov rax, 1");
+        self.emit("    syscall");
+        self.emit("    mov rdi, 101");
+        self.emit("    mov rax, 60");
+        self.emit("    syscall");
+        self.emit(&format!("{}:", ok_label));
+        let ok_size = self.type_size(ok_ty);
+        match ok_size {
+            1 => self.emit("    movzx rax, BYTE PTR [r12+8]"),
+            2 => self.emit("    movzx rax, WORD PTR [r12+8]"),
+            4 => self.emit("    mov eax, DWORD PTR [r12+8]"),
+            _ => self.emit("    mov rax, QWORD PTR [r12+8]"),
+        }
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+    }
+
+    fn compile_result_match(&mut self, result: &Reg, ok_dst: &Option<Reg>, err_dst: &Option<Reg>, ok_label: &Label, err_label: &Label, ok_ty: &Type, err_ty: &Type) {
+        let result_offset = self.get_or_alloc_reg_offset(result);
+        self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", result_offset));
+        self.emit("    mov rax, QWORD PTR [r12]");
+        self.emit("    cmp rax, 0");
+        self.emit(&format!("    jne {}", err_label.0));
+        if let Some(ok_d) = ok_dst {
+            let dst_offset = self.get_or_alloc_reg_offset(ok_d);
+            let ok_size = self.type_size(ok_ty);
+            match ok_size {
+                1 => self.emit("    movzx rax, BYTE PTR [r12+8]"),
+                2 => self.emit("    movzx rax, WORD PTR [r12+8]"),
+                4 => self.emit("    mov eax, DWORD PTR [r12+8]"),
+                _ => self.emit("    mov rax, QWORD PTR [r12+8]"),
+            }
+            self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+        }
+        self.emit(&format!("    jmp  {}", ok_label.0));
+    }
+
+    fn compile_result_try(&mut self, dst: &Reg, result: &Reg, ok_ty: &Type, _err_ty: &Type, error_return_label: &Label) {
+        let result_offset = self.get_or_alloc_reg_offset(result);
+        let dst_offset = self.get_or_alloc_reg_offset(dst);
+        self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", result_offset));
+        self.emit("    mov rax, QWORD PTR [r12]");
+        self.emit("    cmp rax, 1");
+        self.emit(&format!("    je {}", error_return_label.0));
+        let ok_size = self.type_size(ok_ty);
+        match ok_size {
+            1 => self.emit("    movzx rax, BYTE PTR [r12+8]"),
+            2 => self.emit("    movzx rax, WORD PTR [r12+8]"),
+            4 => self.emit("    mov eax, DWORD PTR [r12+8]"),
+            _ => self.emit("    mov rax, QWORD PTR [r12+8]"),
+        }
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
+    }
+
+    fn compile_panic(&mut self, message: &Reg) {
+        let msg_offset = self.get_or_alloc_reg_offset(message);
+        let prefix = self.alloc_data_label("Panic: ");
+        self.emit(&format!("    lea rsi, [rip+{}]", prefix));
+        self.emit(&format!("    mov rdx, {}_len", prefix));
+        self.emit("    mov rdi, 2");
+        self.emit("    mov rax, 1");
+        self.emit("    syscall");
+        self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", msg_offset));
+        self.emit("    mov rsi, QWORD PTR [r12]");
+        self.emit("    mov rdx, QWORD PTR [r12+8]");
+        self.emit("    mov rdi, 2");
+        self.emit("    mov rax, 1");
+        self.emit("    syscall");
+        self.emit("    lea rsi, [rip+_newline]");
+        self.emit("    mov rdx, 1");
+        self.emit("    mov rdi, 2");
+        self.emit("    mov rax, 1");
+        self.emit("    syscall");
+        self.emit("    mov rdi, 101");
+        self.emit("    mov rax, 60");
+        self.emit("    syscall");
+    }
+
+    fn compile_panic_static(&mut self, message: &str) {
+        let prefix = self.alloc_data_label("Panic: ");
+        self.emit(&format!("    lea rsi, [rip+{}]", prefix));
+        self.emit(&format!("    mov rdx, {}_len", prefix));
+        self.emit("    mov rdi, 2");
+        self.emit("    mov rax, 1");
+        self.emit("    syscall");
+        let msg_label = self.alloc_data_label(message);
+        self.emit(&format!("    lea rsi, [rip+{}]", msg_label));
+        self.emit(&format!("    mov rdx, {}_len", msg_label));
+        self.emit("    mov rdi, 2");
+        self.emit("    mov rax, 1");
+        self.emit("    syscall");
+        self.emit("    lea rsi, [rip+_newline]");
+        self.emit("    mov rdx, 1");
+        self.emit("    mov rdi, 2");
+        self.emit("    mov rax, 1");
+        self.emit("    syscall");
+        self.emit("    mov rdi, 101");
+        self.emit("    mov rax, 60");
+        self.emit("    syscall");
+    }
+
     fn get_field_offset_without_struct(&self, field_name: &str) -> Option<usize> {
         for layout in self.struct_layouts.values() {
             for (fname, offset, _) in layout {
@@ -2065,6 +2543,16 @@ impl X86CodeGen {
         self.emit("    movzx rax, al");
         let offset = self.get_or_alloc_reg_offset(dst);
         self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", offset));
+    }
+
+    fn option_size(&self, inner_ty: &Type) -> usize {
+        self.type_size(inner_ty) + 8
+    }
+
+    fn result_size(&self, ok_ty: &Type, err_ty: &Type) -> usize {
+        let ok_size = self.type_size(ok_ty);
+        let err_size = self.type_size(err_ty);
+        std::cmp::max(ok_size, err_size) + 8
     }
 
     fn emit(&mut self, line: &str) {

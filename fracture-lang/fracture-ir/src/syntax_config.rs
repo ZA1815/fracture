@@ -33,7 +33,14 @@ pub struct Keywords {
     pub pub_kw: String,
     pub as_kw: String,
     pub self_kw: String,
-    pub super_kw: String
+    pub super_kw: String,
+
+    pub some_kw: String,
+    pub none_kw: String,
+    pub ok_kw: String,
+    pub err_kw: String,
+    pub match_kw: String,
+    pub panic_kw: String
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,7 +121,13 @@ impl SyntaxConfig {
                 pub_kw: "".to_string(),
                 as_kw: "as".to_string(),
                 self_kw: ".".to_string(),
-                super_kw: "..".to_string()
+                super_kw: "..".to_string(),
+                some_kw: "".to_string(),
+                none_kw: "".to_string(),
+                ok_kw: "".to_string(),
+                err_kw: "".to_string(),
+                match_kw: "".to_string(),
+                panic_kw: "".to_string()
             },
             tokens: TokenConfig {
                 arrow: "->".to_string(),
@@ -173,7 +186,13 @@ impl SyntaxConfig {
                 pub_kw: "pub".to_string(),
                 as_kw: "as".to_string(),
                 self_kw: "self".to_string(),
-                super_kw: "super".to_string()
+                super_kw: "super".to_string(),
+                some_kw:"Some".to_string(),
+                none_kw: "None".to_string(),
+                ok_kw: "Ok".to_string(),
+                err_kw: "".to_string(),
+                match_kw: "".to_string(),
+                panic_kw: "".to_string()
             },
             tokens: TokenConfig {
                 arrow: "->".to_string(),
@@ -209,6 +228,10 @@ impl SyntaxConfig {
             }
         }
     }
+
+    // pub fn fss() -> Self {
+        // Fracture Standard Syntax (add later)
+    //}
 
     pub fn validate(&self) -> Result<(), String> {
         let mut all_tokens = Vec::new();

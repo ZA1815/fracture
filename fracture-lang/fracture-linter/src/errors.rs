@@ -244,7 +244,7 @@ impl DiagnosticCollector {
         if errors > 0 || warnings > 0 {
             let mut summary = String::new();
             if errors > 0 {
-                summary.push_str(&format!("{}", format!("{}, error(s)", errors).red().bold()));
+                summary.push_str(&format!("{}", format!("{} error(s)", errors).red().bold()));
             }
             if warnings > 0 {
                 if !summary.is_empty() {

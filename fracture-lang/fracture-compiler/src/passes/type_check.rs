@@ -993,6 +993,353 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
             
             Ok(())
         }
+        Inst::OptionSome { dst, value, inner_ty } => {
+            let val_ty = infer_value_type(value, env)?;
+            
+            if !types_compatible(inner_ty, &val_ty) && !matches!(inner_ty, Type::Unknown) {
+                return Err(format!(
+                    "Option::Some type mismatch in {}: expected {:?}, got {:?}",
+                    func_name, inner_ty, val_ty
+                ));
+            }
+            
+            let actual_inner = if matches!(inner_ty, Type::Unknown) { val_ty } else { inner_ty.clone() };
+            env.insert(dst.clone(), Type::Option(Box::new(actual_inner)));
+            
+            Ok(())
+        }
+        Inst::OptionNone { dst, inner_ty } => {
+            env.insert(dst.clone(), Type::Option(Box::new(inner_ty.clone())));
+            Ok(())
+        }
+        Inst::OptionIsSome { dst, option } => {
+            let opt_ty = env.get(option)
+                .ok_or_else(|| format!("Option register r{} not found in {}", option.0, func_name))?;
+            
+            if !opt_ty.is_option() {
+                return Err(format!(
+                    "OptionIsSome in {}: expected Option type, got {:?}",
+                    func_name, opt_ty
+                ));
+            }
+            
+            env.insert(dst.clone(), Type::Bool);
+            Ok(())
+        }
+        Inst::OptionIsNone { dst, option } => {
+            let opt_ty = env.get(option)
+                .ok_or_else(|| format!("Option register r{} not found in {}", option.0, func_name))?;
+            
+            if !opt_ty.is_option() {
+                return Err(format!(
+                    "OptionIsNone in {}: expected Option type, got {:?}",
+                    func_name, opt_ty
+                ));
+            }
+            
+            env.insert(dst.clone(), Type::Bool);
+            Ok(())
+        }
+        Inst::OptionUnwrap { dst, option, inner_ty } => {
+            let opt_ty = env.get(option)
+                .ok_or_else(|| format!("Option register r{} not found in {}", option.0, func_name))?;
+            
+            if let Type::Option(inner) = opt_ty {
+                env.insert(dst.clone(), (**inner).clone());
+            } else {
+                return Err(format!(
+                    "OptionUnwrap in {}: expected Option type, got {:?}",
+                    func_name, opt_ty
+                ));
+            }
+            
+            Ok(())
+        }
+        Inst::OptionUnwrapOr { dst, option, default, inner_ty } => {
+            let opt_ty = env.get(option)
+                .ok_or_else(|| format!("Option register r{} not found in {}", option.0, func_name))?;
+            let default_ty = infer_value_type(default, env)?;
+            
+            if let Type::Option(inner) = opt_ty {
+                if !types_compatible(inner, &default_ty) {
+                    return Err(format!(
+                        "OptionUnwrapOr in {}: default type mismatch, expected {:?}, got {:?}",
+                        func_name, inner, default_ty
+                    ));
+                }
+                env.insert(dst.clone(), (**inner).clone());
+            } else {
+                return Err(format!(
+                    "OptionUnwrapOr in {}: expected Option type, got {:?}",
+                    func_name, opt_ty
+                ));
+            }
+            
+            Ok(())
+        }
+        Inst::OptionUnwrapOrElse { dst, option, default_fn, inner_ty } => {
+            let opt_ty = env.get(option)
+                .ok_or_else(|| format!("Option register r{} not found in {}", option.0, func_name))?;
+            
+            if let Type::Option(inner) = opt_ty {
+                env.insert(dst.clone(), (**inner).clone());
+            } else {
+                return Err(format!(
+                    "OptionUnwrapOrElse in {}: expected Option type, got {:?}",
+                    func_name, opt_ty
+                ));
+            }
+            
+            Ok(())
+        }
+        Inst::OptionMap { dst, option, map_fn, input_ty, output_ty } => {
+            let opt_ty = env.get(option)
+                .ok_or_else(|| format!("Option register r{} not found in {}", option.0, func_name))?;
+            
+            if !opt_ty.is_option() {
+                return Err(format!(
+                    "OptionMap in {}: expected Option type, got {:?}",
+                    func_name, opt_ty
+                ));
+            }
+            
+            env.insert(dst.clone(), Type::Option(Box::new(output_ty.clone())));
+            Ok(())
+        }
+        Inst::OptionMatch { option, value_dst, some_label, none_label, inner_ty } => {
+            let opt_ty = env.get(option)
+                .ok_or_else(|| format!("Option register r{} not found in {}", option.0, func_name))?;
+            
+            if let Type::Option(inner) = opt_ty {
+                if let Some(val_dst) = value_dst {
+                    env.insert(val_dst.clone(), (**inner).clone());
+                }
+            } else {
+                return Err(format!(
+                    "OptionMatch in {}: expected Option type, got {:?}",
+                    func_name, opt_ty
+                ));
+            }
+            
+            Ok(())
+        }
+        Inst::ResultOk { dst, value, ok_ty, err_ty } => {
+            let val_ty = infer_value_type(value, env)?;
+            
+            if !types_compatible(ok_ty, &val_ty) && !matches!(ok_ty, Type::Unknown) {
+                return Err(format!(
+                    "Result::Ok type mismatch in {}: expected {:?}, got {:?}",
+                    func_name, ok_ty, val_ty
+                ));
+            }
+            
+            let actual_ok = if matches!(ok_ty, Type::Unknown) { val_ty } else { ok_ty.clone() };
+            env.insert(dst.clone(), Type::Result(Box::new(actual_ok), Box::new(err_ty.clone())));
+            
+            Ok(())
+        }
+        Inst::ResultErr { dst, error, ok_ty, err_ty } => {
+            let err_val_ty = infer_value_type(error, env)?;
+            
+            if !types_compatible(err_ty, &err_val_ty) && !matches!(err_ty, Type::Unknown) {
+                return Err(format!(
+                    "Result::Err type mismatch in {}: expected {:?}, got {:?}",
+                    func_name, err_ty, err_val_ty
+                ));
+            }
+            
+            let actual_err = if matches!(err_ty, Type::Unknown) { err_val_ty } else { err_ty.clone() };
+            env.insert(dst.clone(), Type::Result(Box::new(ok_ty.clone()), Box::new(actual_err)));
+            
+            Ok(())
+        }
+        Inst::ResultIsOk { dst, result } => {
+            let res_ty = env.get(result)
+                .ok_or_else(|| format!("Result register r{} not found in {}", result.0, func_name))?;
+            
+            if !res_ty.is_result() {
+                return Err(format!(
+                    "ResultIsOk in {}: expected Result type, got {:?}",
+                    func_name, res_ty
+                ));
+            }
+            
+            env.insert(dst.clone(), Type::Bool);
+            Ok(())
+        }
+        Inst::ResultIsErr { dst, result } => {
+            let res_ty = env.get(result)
+                .ok_or_else(|| format!("Result register r{} not found in {}", result.0, func_name))?;
+            
+            if !res_ty.is_result() {
+                return Err(format!(
+                    "ResultIsErr in {}: expected Result type, got {:?}",
+                    func_name, res_ty
+                ));
+            }
+            
+            env.insert(dst.clone(), Type::Bool);
+            Ok(())
+        }
+        Inst::ResultUnwrap { dst, result, ok_ty } => {
+            let res_ty = env.get(result)
+                .ok_or_else(|| format!("Result register r{} not found in {}", result.0, func_name))?;
+            
+            if let Type::Result(ok, _) = res_ty {
+                env.insert(dst.clone(), (**ok).clone());
+            } else {
+                return Err(format!(
+                    "ResultUnwrap in {}: expected Result type, got {:?}",
+                    func_name, res_ty
+                ));
+            }
+            
+            Ok(())
+        }
+        Inst::ResultUnwrapErr { dst, result, err_ty } => {
+            let res_ty = env.get(result)
+                .ok_or_else(|| format!("Result register r{} not found in {}", result.0, func_name))?;
+            
+            if let Type::Result(_, err) = res_ty {
+                env.insert(dst.clone(), (**err).clone());
+            } else {
+                return Err(format!(
+                    "ResultUnwrapErr in {}: expected Result type, got {:?}",
+                    func_name, res_ty
+                ));
+            }
+            
+            Ok(())
+        }
+        Inst::ResultUnwrapOr { dst, result, default, ok_ty } => {
+            let res_ty = env.get(result)
+                .ok_or_else(|| format!("Result register r{} not found in {}", result.0, func_name))?;
+            let default_ty = infer_value_type(default, env)?;
+            
+            if let Type::Result(ok, _) = res_ty {
+                if !types_compatible(ok, &default_ty) {
+                    return Err(format!(
+                        "ResultUnwrapOr in {}: default type mismatch, expected {:?}, got {:?}",
+                        func_name, ok, default_ty
+                    ));
+                }
+                env.insert(dst.clone(), (**ok).clone());
+            } else {
+                return Err(format!(
+                    "ResultUnwrapOr in {}: expected Result type, got {:?}",
+                    func_name, res_ty
+                ));
+            }
+            
+            Ok(())
+        }
+        Inst::ResultExpect { dst, result, message, ok_ty } => {
+            let res_ty = env.get(result)
+                .ok_or_else(|| format!("Result register r{} not found in {}", result.0, func_name))?;
+            
+            if let Type::Result(ok, _) = res_ty {
+                env.insert(dst.clone(), (**ok).clone());
+            } else {
+                return Err(format!(
+                    "ResultExpect in {}: expected Result type, got {:?}",
+                    func_name, res_ty
+                ));
+            }
+            
+            Ok(())
+        }
+        Inst::ResultMap { dst, result, map_fn, input_ty, output_ty, err_ty } => {
+            let res_ty = env.get(result)
+                .ok_or_else(|| format!("Result register r{} not found in {}", result.0, func_name))?;
+            
+            if !res_ty.is_result() {
+                return Err(format!(
+                    "ResultMap in {}: expected Result type, got {:?}",
+                    func_name, res_ty
+                ));
+            }
+            
+            env.insert(dst.clone(), Type::Result(Box::new(output_ty.clone()), Box::new(err_ty.clone())));
+            Ok(())
+        }
+        Inst::ResultMapErr { dst, result, map_fn, ok_ty, input_err_ty, output_err_ty } => {
+            let res_ty = env.get(result)
+                .ok_or_else(|| format!("Result register r{} not found in {}", result.0, func_name))?;
+            
+            if !res_ty.is_result() {
+                return Err(format!(
+                    "ResultMapErr in {}: expected Result type, got {:?}",
+                    func_name, res_ty
+                ));
+            }
+            
+            env.insert(dst.clone(), Type::Result(Box::new(ok_ty.clone()), Box::new(output_err_ty.clone())));
+            Ok(())
+        }
+        Inst::ResultMatch { result, ok_dst, err_dst, ok_label, err_label, ok_ty, err_ty } => {
+            let (ok_type, err_type) = {
+                let res_ty = env.get(result)
+                    .ok_or_else(|| format!("Result register r{} not found in {}", result.0, func_name))?;
+                
+                if let Type::Result(ok, err) = res_ty {
+                    ((**ok).clone(), (**err).clone())
+                }
+                else {
+                    return Err(format!(
+                        "ResultMatch in {}: expected Result type, got {:?}",
+                        func_name, res_ty
+                    ));
+                }
+            };
+
+            if let Some(ok_d) = ok_dst {
+                env.insert(ok_d.clone(), ok_type);
+            }
+            if let Some(err_d) = err_dst {
+                env.insert(err_d.clone(), err_type);
+            }
+            
+            Ok(())
+        }
+        Inst::ResultTry { dst, result, ok_ty, err_ty, error_return_label } => {
+            let res_ty = env.get(result)
+                .ok_or_else(|| format!("Result register r{} not found in {}", result.0, func_name))?;
+            
+            if let Type::Result(ok, _) = res_ty {
+                env.insert(dst.clone(), (**ok).clone());
+            } else {
+                return Err(format!(
+                    "ResultTry in {}: expected Result type, got {:?}",
+                    func_name, res_ty
+                ));
+            }
+            
+            Ok(())
+        }
+        Inst::Panic { message } => {
+            if !env.contains_key(message) {
+                return Err(format!(
+                    "Panic in {}: message register r{} not found",
+                    func_name, message.0
+                ));
+            }
+            
+            let msg_ty = env.get(message).cloned().unwrap_or(Type::Unknown);
+            if !matches!(msg_ty, Type::String | Type::Unknown) {
+                return Err(format!(
+                    "Panic in {}: message should be String, got {:?}",
+                    func_name, msg_ty
+                ));
+            }
+            
+            Ok(())
+        }
+        Inst::PanicStatic { .. } => {
+            Ok(())
+        }
+        Inst::Unreachable => {
+            Ok(())
+        }
         // Implement type checking for other insts later
         _ => Ok(())
     }

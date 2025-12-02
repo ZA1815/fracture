@@ -1,4 +1,4 @@
-use crate::fss::*;
+use crate::hsir::*;
 
 pub fn print_inst(inst: &Inst) -> String {
     match inst {
@@ -25,7 +25,7 @@ pub fn print_inst(inst: &Inst) -> String {
     }
 }
 
-pub fn print_program(program: &crate::fss::Program) -> String {
+pub fn print_program(program: &crate::hsir::Program) -> String {
     program.to_text()
 }
 
@@ -167,5 +167,7 @@ fn print_type(ty: &Type) -> String {
             format!("fn({}) -> {}", params_str, print_type(ret))
         }
         Type::Future(inner) => format!("Future<{}>", print_type(inner)),
+        Type::Option(inner) => format!("Option<{}>", print_type(inner)),
+        Type::Result(ok, err) => format!("Result<{}, {}>", print_type(ok), print_type(err))
     }
 }

@@ -374,7 +374,7 @@ pub enum Inst {
     ResultMap { dst: Reg, result: Reg, map_fn: Value, input_ty: Type, output_ty: Type, err_ty: Type },
     ResultMapErr { dst: Reg, result: Reg, map_fn: Value, ok_ty: Type, input_err_ty: Type, output_err_ty: Type },
     ResultMatch { result: Reg, ok_dst: Option<Reg>, err_dst: Option<Reg>, ok_label: Label, err_label: Label, ok_ty: Type, err_ty: Type },
-    ResultTry { dst: Reg, result: Reg, ok_ty: Reg, err_ty: Type, error_return_label: Label },
+    ResultTry { dst: Reg, result: Reg, ok_ty: Type, err_ty: Type, error_return_label: Label },
 
     Panic { message: Reg },
     PanicStatic { message: String },

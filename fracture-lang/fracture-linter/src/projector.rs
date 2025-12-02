@@ -1,4 +1,4 @@
-use fracture_ir::fss::*;
+use fracture_ir::hsir::*;
 use fracture_ir::{SyntaxConfig, syntax_config::BlockStyle};
 use crate::lexer::*;
 use crate::errors::{Span, Position, Diagnostic, DiagnosticCollector, find_similar};
@@ -247,7 +247,7 @@ impl SyntaxProjector {
     }
 
     fn parse_module_declaration(&mut self, visibility: Visibility) -> Result<Module, ()> {
-        self.expect(Token::Mod);
+        self.expect(Token::Mod)?;
 
         let module_name = self.expect_ident()?;
 
@@ -329,7 +329,7 @@ impl SyntaxProjector {
                 self.advance();
             }
             
-            self.expect(Token::RightBrace);
+            self.expect(Token::RightBrace)?;
         }
         else {
             module.external_mods.push(module_name.clone());
@@ -345,12 +345,12 @@ impl SyntaxProjector {
     }
 
     fn parse_use_statement(&mut self, visibility: Visibility) -> Result<UseStatement, ()> {
-        self.expect(Token::Use);
+        self.expect(Token::Use)?;
 
         let tree = self.parse_use_tree()?;
 
         if self.config.style.needs_semicolon {
-            self.expect(Token::Semicolon);
+            self.expect(Token::Semicolon)?;
         }
 
         Ok(UseStatement { tree, visibility })
@@ -390,7 +390,7 @@ impl SyntaxProjector {
                 if self.current.token == Token::LeftBrace {
                     self.advance();
                     let items = self.parse_use_tree_list()?;
-                    self.expect(Token::RightBrace);
+                    self.expect(Token::RightBrace)?;
                     return Ok(UseTree::Nested { path: ModulePath { segments: path_segments }, items });
                 }
             }
@@ -435,11 +435,11 @@ impl SyntaxProjector {
         self.known_vars.clear();
         self.next_reg = 0;
 
-        self.expect(Token::Function);
+        self.expect(Token::Function)?;
 
         let name = self.expect_ident()?;
 
-        self.expect(Token::LeftParentheses);
+        self.expect(Token::LeftParentheses)?;
 
         let mut params = Vec::new();
         while self.current.token != Token::RightParentheses {
@@ -463,7 +463,7 @@ impl SyntaxProjector {
             }
         }
 
-        self.expect(Token::RightParentheses);
+        self.expect(Token::RightParentheses)?;
 
         let return_type = if self.current.token == Token::Arrow {
             self.advance();
@@ -509,7 +509,7 @@ impl SyntaxProjector {
 
         let struct_name = self.expect_ident()?;
 
-        self.expect(Token::LeftBrace);
+        self.expect(Token::LeftBrace)?;
 
         let mut fields = Vec::new();
         let mut field_visibility = HashMap::new();
@@ -531,7 +531,7 @@ impl SyntaxProjector {
 
             let field_name = self.expect_ident()?;
             // Maybe customize this later
-            self.expect(Token::Colon);
+            self.expect(Token::Colon)?;
             let field_type = self.parse_type();
 
             fields.push((field_name.clone(), field_type.unwrap()));
@@ -556,18 +556,18 @@ impl SyntaxProjector {
 
         match self.config.style.block_style {
             BlockStyle::Braces => {
-                self.expect(Token::LeftBrace);
+                self.expect(Token::LeftBrace)?;
 
                 while self.current.token != Token::RightBrace && self.current.token != Token::Eof {
                     instructions.extend(self.parse_statement()?);
                 }
 
-                self.expect(Token::RightBrace);
+                self.expect(Token::RightBrace)?;
             }
             BlockStyle::Indentation => {
-                self.expect(Token::Colon);
+                self.expect(Token::Colon)?;
                 self.skip_newlines();
-                self.expect(Token::Indent);
+                self.expect(Token::Indent)?;
 
                 while self.current.token != Token::Dedent && self.current.token != Token::Eof {
                     instructions.extend(self.parse_statement()?);
@@ -665,7 +665,7 @@ impl SyntaxProjector {
                         var_type = self.parse_type()?;
                     }
                     
-                    self.expect(Token::Assignment);
+                    self.expect(Token::Assignment)?;
 
                     let (expr_insts, result_reg) = self.parse_expression()?;
                     instructions.extend(expr_insts);
@@ -690,7 +690,7 @@ impl SyntaxProjector {
         }
 
         if self.config.style.needs_semicolon && requires_semicolon {
-            self.expect(Token::Semicolon);
+            self.expect(Token::Semicolon)?;
         }
 
         Ok(instructions)
@@ -953,7 +953,7 @@ impl SyntaxProjector {
 
                             match field.as_str() {
                                 "len" => {
-                                    self.expect(Token::RightParentheses);
+                                    self.expect(Token::RightParentheses)?;
 
                                     let is_string = reg_type.as_ref().map(|ty| matches!(ty, Type::String)).unwrap_or(false);
                                     let is_vec = reg_type.as_ref().map(|ty| matches!(ty, Type::Vec(_))).unwrap_or(false);
@@ -977,7 +977,7 @@ impl SyntaxProjector {
                                 "push" => {
                                     let (val_insts, val_reg) = self.parse_expression()?;
                                     instructions.extend(val_insts);
-                                    self.expect(Token::RightParentheses);
+                                    self.expect(Token::RightParentheses)?;
 
                                     let elem_ty = if let Some(Type::Vec(inner)) = self.reg_types.get(&reg) {
                                         (**inner).clone()
@@ -998,7 +998,7 @@ impl SyntaxProjector {
                                     continue;
                                 }
                                 "pop" => {
-                                    self.expect(Token::RightParentheses);
+                                    self.expect(Token::RightParentheses)?;
 
                                     let elem_ty = if let Some(Type::Vec(inner)) = self.reg_types.get(&reg) {
                                         (**inner).clone()
@@ -1017,7 +1017,7 @@ impl SyntaxProjector {
                                     self.reg_types.insert(result_reg.clone(), elem_ty);
                                 }
                                 "cap" | "capacity" => {
-                                    self.expect(Token::RightParentheses);
+                                    self.expect(Token::RightParentheses)?;
 
                                     let is_hashmap = reg_type.as_ref().map(|ty| matches!(ty, Type::HashMap(_, _))).unwrap_or(false);
 
@@ -1034,12 +1034,12 @@ impl SyntaxProjector {
                                     let (key_insts, key_reg) = self.parse_expression()?;
                                     instructions.extend(key_insts);
 
-                                    self.expect(Token::Comma);
+                                    self.expect(Token::Comma)?;
 
                                     let (val_insts, val_reg) = self.parse_expression()?;
                                     instructions.extend(val_insts);
 
-                                    self.expect(Token::RightParentheses);
+                                    self.expect(Token::RightParentheses)?;
 
                                     let (key_ty, value_ty) = if let Some(Type::HashMap(k, v)) = &reg_type {
                                         ((**k).clone(), (**v).clone())
@@ -1067,7 +1067,7 @@ impl SyntaxProjector {
                                     let (key_insts, key_reg) = self.parse_expression()?;
                                     instructions.extend(key_insts);
 
-                                    self.expect(Token::RightParentheses);
+                                    self.expect(Token::RightParentheses)?;
 
                                     let (key_ty, value_ty) = if let Some(Type::HashMap(k, v)) = &reg_type {
                                         ((**k).clone(), (**v).clone())
@@ -1094,7 +1094,7 @@ impl SyntaxProjector {
                                     let (key_insts, key_reg) = self.parse_expression()?;
                                     instructions.extend(key_insts);
 
-                                    self.expect(Token::RightParentheses);
+                                    self.expect(Token::RightParentheses)?;
 
                                     let (key_ty, value_ty) = if let Some(Type::HashMap(k, v)) = &reg_type {
                                         ((**k).clone(), (**v).clone())
@@ -1118,7 +1118,7 @@ impl SyntaxProjector {
                                     let (key_insts, key_reg) = self.parse_expression()?;
                                     instructions.extend(key_insts);
 
-                                    self.expect(Token::RightParentheses);
+                                    self.expect(Token::RightParentheses)?;
 
                                     let (key_ty, value_ty) = if let Some(Type::HashMap(k, v)) = &reg_type {
                                         ((**k).clone(), (**v).clone())
@@ -1139,7 +1139,7 @@ impl SyntaxProjector {
                                     self.reg_types.insert(result_reg.clone(), Type::Bool);
                                 }
                                 "clear" => {
-                                    self.expect(Token::RightParentheses);
+                                    self.expect(Token::RightParentheses)?;
 
                                     instructions.push(Inst::HashMapClear {
                                         map: reg.clone()
@@ -1149,9 +1149,184 @@ impl SyntaxProjector {
 
                                     continue;
                                 }
+                                "is_some" => {
+                                    self.expect(Token::RightParentheses)?;
+
+                                    instructions.push(Inst::OptionIsSome { dst: result_reg.clone(), option: reg });
+                                    self.reg_types.insert(result_reg.clone(), Type::Bool);
+                                }
+                                "is_none" => {
+                                    self.expect(Token::RightParentheses)?;
+
+                                    instructions.push(Inst::OptionIsNone { dst: result_reg.clone(), option: reg });
+                                    self.reg_types.insert(result_reg.clone(), Type::Bool);
+                                }
+                                "unwrap" => {
+                                    self.expect(Token::RightParentheses)?;
+
+                                    let is_option = reg_type.as_ref()
+                                        .map(|t| matches!(t, Type::Option(_)))
+                                        .unwrap_or(false);
+                                    let is_result = reg_type.as_ref()
+                                        .map(|t| matches!(t, Type::Result(_, _)))
+                                        .unwrap_or(false);
+
+                                    if is_option {
+                                        let inner_ty = if let Some(Type::Option(inner)) = &reg_type {
+                                            (**inner).clone()
+                                        }
+                                        else {
+                                            Type::Unknown
+                                        };
+
+                                        instructions.push(Inst::OptionUnwrap {
+                                            dst: result_reg.clone(),
+                                            option: reg,
+                                            inner_ty: inner_ty.clone()
+                                        });
+
+                                        self.reg_types.insert(result_reg.clone(), inner_ty);
+                                    }
+                                    else if is_result {
+                                        let ok_ty = if let Some(Type::Result(ok, _)) = &reg_type {
+                                            (**ok).clone()
+                                        }
+                                        else {
+                                            Type::Unknown
+                                        };
+
+                                        instructions.push(Inst::ResultUnwrap {
+                                            dst: result_reg.clone(),
+                                            result: reg,
+                                            ok_ty: ok_ty.clone()
+                                        });
+
+                                        self.reg_types.insert(result_reg.clone(), ok_ty);
+                                    }
+                                    else {
+                                        let diag = Diagnostic::error(
+                                            "unwrap() can only be called on Option or Result types",
+                                            field_span
+                                        );
+                                        self.diagnostics.emit(diag);
+                                        return Err(());
+                                    }
+                                }
+                                "unwrap_or" => {
+                                    let (default_insts, default_reg) = self.parse_expression()?;
+                                    instructions.extend(default_insts);
+                                    self.expect(Token::RightParentheses)?;
+
+                                    let is_option = reg_type.as_ref()
+                                        .map(|t| matches!(t, Type::Option(_)))
+                                        .unwrap_or(false);
+                                    let is_result = reg_type.as_ref()
+                                        .map(|t| matches!(t, Type::Result(_, _)))
+                                        .unwrap_or(false);
+
+                                    if is_option {
+                                        let inner_ty = if let Some(Type::Option(inner)) = &reg_type {
+                                            (**inner).clone()
+                                        } else {
+                                            Type::Unknown
+                                        };
+                                        
+                                        instructions.push(Inst::OptionUnwrapOr {
+                                            dst: result_reg.clone(),
+                                            option: reg,
+                                            default: Value::Reg(default_reg),
+                                            inner_ty: inner_ty.clone(),
+                                        });
+                                        
+                                        self.reg_types.insert(result_reg.clone(), inner_ty);
+                                    }
+                                    else if is_result {
+                                        let ok_ty = if let Some(Type::Result(ok, _)) = &reg_type {
+                                            (**ok).clone()
+                                        } else {
+                                            Type::Unknown
+                                        };
+                                        
+                                        instructions.push(Inst::ResultUnwrapOr {
+                                            dst: result_reg.clone(),
+                                            result: reg,
+                                            default: Value::Reg(default_reg),
+                                            ok_ty: ok_ty.clone(),
+                                        });
+                                        
+                                        self.reg_types.insert(result_reg.clone(), ok_ty);
+                                    }
+                                    else {
+                                        let diag = Diagnostic::error(
+                                            "unwrap_or() can only be called on Option or Result types",
+                                            field_span
+                                        );
+                                        self.diagnostics.emit(diag);
+                                        return Err(());
+                                    }
+                                }
+                                "is_ok" => {
+                                    self.expect(Token::RightParentheses);
+                                    
+                                    instructions.push(Inst::ResultIsOk {
+                                        dst: result_reg.clone(),
+                                        result: reg,
+                                    });
+                                    
+                                    self.reg_types.insert(result_reg.clone(), Type::Bool);
+                                }
+                                "is_err" => {
+                                    self.expect(Token::RightParentheses);
+                                    
+                                    instructions.push(Inst::ResultIsErr {
+                                        dst: result_reg.clone(),
+                                        result: reg,
+                                    });
+                                    
+                                    self.reg_types.insert(result_reg.clone(), Type::Bool);
+                                }
+                                "unwrap_err" => {
+                                    self.expect(Token::RightParentheses);
+                                    
+                                    let err_ty = if let Some(Type::Result(_, err)) = &reg_type {
+                                        (**err).clone()
+                                    }
+                                    else {
+                                        Type::Unknown
+                                    };
+                                    
+                                    instructions.push(Inst::ResultUnwrapErr {
+                                        dst: result_reg.clone(),
+                                        result: reg,
+                                        err_ty: err_ty.clone(),
+                                    });
+                                    
+                                    self.reg_types.insert(result_reg.clone(), err_ty);
+                                }
+                                "expect" => {
+                                    let (msg_insts, _msg_reg) = self.parse_expression()?;
+                                    instructions.extend(msg_insts);
+                                    self.expect(Token::RightParentheses)?;
+                                    
+                                    let ok_ty = if let Some(Type::Result(ok, _)) = &reg_type {
+                                        (**ok).clone()
+                                    } else {
+                                        Type::Unknown
+                                    };
+                                    
+                                    // Using static message (change later)
+                                    instructions.push(Inst::ResultExpect {
+                                        dst: result_reg.clone(),
+                                        result: reg,
+                                        message: "expectation failed".to_string(),
+                                        ok_ty: ok_ty.clone(),
+                                    });
+                                    
+                                    self.reg_types.insert(result_reg.clone(), ok_ty);
+                                }
                                 _ => {
                                     let diag = Diagnostic::error(
-                                        format!("unknown method `{}`", field),
+                                        format!("Unknown method `{}`", field),
                                         field_span
                                     );
                                     self.diagnostics.emit(diag);
@@ -1206,7 +1381,7 @@ impl SyntaxProjector {
                     let (end_insts, end_reg) = self.parse_expression()?;
                     instructions.extend(end_insts);
 
-                    self.expect(Token::RightBracket);
+                    self.expect(Token::RightBracket)?;
 
                     let result_reg = self.alloc_reg();
 
@@ -1223,7 +1398,7 @@ impl SyntaxProjector {
                     reg = result_reg;
                 }
                 else {
-                    self.expect(Token::RightBracket);
+                    self.expect(Token::RightBracket)?;
 
                     let result_reg = self.alloc_reg();
 
@@ -1274,6 +1449,102 @@ impl SyntaxProjector {
                     continue;
                 }
             }
+            if self.current.token == Token::QuestionMark {
+                self.advance();
+
+                let reg_type = self.reg_types.get(&reg).cloned();
+
+                if let Some(Type::Result(ok_ty, err_ty)) = reg_type {
+                    let error_label = self.alloc_label();
+                    let continue_label = self.alloc_label();
+
+                    let is_err_reg = self.alloc_reg();
+                    instructions.push(Inst::ResultIsErr {
+                        dst: is_err_reg.clone(),
+                        result: reg.clone()
+                    });
+
+                    instructions.push(Inst::JumpIfFalse {
+                        cond: Value::Reg(is_err_reg),
+                        target: continue_label.clone()
+                    });
+
+                    let err_val_reg = self.alloc_reg();
+                    instructions.push(Inst::ResultUnwrapErr {
+                        dst: err_val_reg.clone(),
+                        result: reg.clone(),
+                        err_ty: (*err_ty).clone()
+                    });
+
+                    let return_err_reg = self.alloc_reg();
+                    instructions.push(Inst::ResultErr {
+                        dst: return_err_reg.clone(),
+                        error: Value::Reg(err_val_reg),
+                        ok_ty: Type::Unknown,
+                        err_ty: (*err_ty).clone()
+                    });
+
+                    instructions.push(Inst::Return { val: Some(Value::Reg(return_err_reg)) });
+
+                    instructions.push(Inst::Label { target: continue_label });
+                    
+                    let unwrapped_reg = self.alloc_reg();
+                    instructions.push(Inst::ResultUnwrap {
+                        dst: unwrapped_reg.clone(),
+                        result: reg,
+                        ok_ty: (*ok_ty).clone()
+                    });
+
+                    self.reg_types.insert(unwrapped_reg.clone(), (*ok_ty).clone());
+                    reg = unwrapped_reg;
+
+                    continue;
+                }
+                else if let Some(Type::Option(inner_ty)) = reg_type {
+                    let none_label = self.alloc_label();
+                    let continue_label = self.alloc_label();
+
+                    let is_none_reg = self.alloc_reg();
+                    instructions.push(Inst::OptionIsNone {
+                        dst: is_none_reg.clone(),
+                        option: reg.clone()
+                    });
+
+                    instructions.push(Inst::JumpIfFalse {
+                        cond: Value::Reg(is_none_reg),
+                        target: continue_label.clone()
+                    });
+
+                    let return_none_reg = self.alloc_reg();
+                    instructions.push(Inst::OptionNone {
+                        dst: return_none_reg.clone(),
+                        inner_ty: Type::Unknown
+                    });
+
+                    instructions.push(Inst::Return { val: Some(Value::Reg(return_none_reg)) });
+
+                    instructions.push(Inst::Label { target: continue_label });
+                    
+                    let unwrapped_reg = self.alloc_reg();
+                    instructions.push(Inst::OptionUnwrap {
+                        dst: unwrapped_reg.clone(),
+                        option: reg,
+                        inner_ty: (*inner_ty).clone(),
+                    });
+                    
+                    self.reg_types.insert(unwrapped_reg.clone(), (*inner_ty).clone());
+                    reg = unwrapped_reg;
+                    
+                    continue;
+                }
+                else {
+                    let diag = Diagnostic::error(
+                        "The `?` operator can only be used on Result or Option types",
+                        self.current.span
+                    );
+                    self.diagnostics.emit(diag);
+                }
+            }
             break;
         }
 
@@ -1284,11 +1555,11 @@ impl SyntaxProjector {
         let mut instructions = Vec::new();
         let result_reg = self.alloc_reg();
 
-        match &self.current.token.clone() {
+        match self.current.token.clone() {
             Token::Number(n) => {
                 instructions.push(Inst::Move {
                     dst: result_reg.clone(),
-                    src: Value::Const(Const::I32(*n as i32)),
+                    src: Value::Const(Const::I32(n as i32)),
                     ty: Type::I32
                 });
                 self.advance();
@@ -1296,10 +1567,108 @@ impl SyntaxProjector {
             Token::Bool(b) => {
                 instructions.push(Inst::Move {
                     dst: result_reg.clone(),
-                    src: Value::Const(Const::Bool(*b)),
+                    src: Value::Const(Const::Bool(b)),
                     ty: Type::Bool
                 });
                 self.advance();
+            }
+            Token::Some => {
+                self.advance();
+                self.expect(Token::LeftParentheses)?;
+
+                let (val_insts, val_reg) = self.parse_expression()?;
+                instructions.extend(val_insts);
+
+                self.expect(Token::RightParentheses)?;
+
+                let inner_ty = self.reg_types.get(&val_reg).cloned().unwrap_or(Type::Unknown);
+
+                instructions.push(Inst::OptionSome {
+                    dst: result_reg.clone(),
+                    value: Value::Reg(val_reg),
+                    inner_ty: inner_ty.clone()
+                });
+
+                self.reg_types.insert(result_reg.clone(), Type::Option(Box::new(inner_ty)));
+            }
+            Token::None => {
+                self.advance();
+
+                let inner_ty = Type::Unknown;
+
+                instructions.push(Inst::OptionNone {
+                    dst: result_reg.clone(),
+                    inner_ty: inner_ty.clone()
+                });
+
+                self.reg_types.insert(result_reg.clone(), Type::Option(Box::new(inner_ty)));
+            }
+            Token::Ok => {
+                self.advance();
+                self.expect(Token::LeftParentheses)?;
+
+                let (val_insts, val_reg) = self.parse_expression()?;
+                instructions.extend(val_insts);
+
+                self.expect(Token::RightParentheses)?;
+
+                let ok_ty = self.reg_types.get(&val_reg).cloned().unwrap_or(Type::Unknown);
+                let err_ty = Type::Unknown;
+
+                instructions.push(Inst::ResultOk {
+                    dst: result_reg.clone(),
+                    value: Value::Reg(val_reg),
+                    ok_ty: ok_ty.clone(),
+                    err_ty: err_ty.clone()
+                });
+
+                self.reg_types.insert(result_reg.clone(), Type::Result(Box::new(ok_ty), Box::new(err_ty)));
+            }
+            Token::Err => {
+                self.advance();
+                self.expect(Token::LeftParentheses);
+                
+                let (err_insts, err_reg) = self.parse_expression()?;
+                instructions.extend(err_insts);
+                
+                self.expect(Token::RightParentheses);
+                
+                let ok_ty = Type::Unknown;
+                let err_ty = self.reg_types.get(&err_reg).cloned().unwrap_or(Type::Unknown);
+                
+                instructions.push(Inst::ResultErr {
+                    dst: result_reg.clone(),
+                    error: Value::Reg(err_reg),
+                    ok_ty: ok_ty.clone(),
+                    err_ty: err_ty.clone(),
+                });
+                
+                self.reg_types.insert(result_reg.clone(), Type::Result(Box::new(ok_ty), Box::new(err_ty)));
+            }
+            Token::Panic => {
+                self.advance();
+                self.expect(Token::LeftParentheses)?;
+
+                if let Token::String(msg) = self.current.token.clone() {
+                    let message = msg.clone();
+                    self.advance();
+                    self.expect(Token::RightParentheses)?;
+
+                    instructions.push(Inst::PanicStatic { message });
+                }
+                else {
+                    let (msg_insts, msg_reg) = self.parse_expression()?;
+                    instructions.extend(msg_insts);
+                    self.expect(Token::RightParentheses)?;
+
+                    instructions.push(Inst::Panic { message: msg_reg });
+                }
+
+                instructions.push(Inst::Move {
+                    dst: result_reg.clone(),
+                    src: Value::Const(Const::I32(0)),
+                    ty: Type::I32
+                });
             }
             Token::Ident(name) => {
                 let name = name.clone();
@@ -1319,8 +1688,8 @@ impl SyntaxProjector {
                     let prefix = &path_parts[..path_parts.len() - 1].join("::");
 
                     if name == "Vec" && last == "new" {
-                        self.expect(Token::LeftParentheses);
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::LeftParentheses)?;
+                        self.expect(Token::RightParentheses)?;
 
                         instructions.push(Inst::VecAlloc {
                             dst: result_reg.clone(),
@@ -1333,8 +1702,8 @@ impl SyntaxProjector {
                         return Ok((instructions, result_reg));
                     }
                     else if name == "HashMap" && last == "new" {
-                        self.expect(Token::LeftParentheses);
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::LeftParentheses)?;
+                        self.expect(Token::RightParentheses)?;
 
                         let key_ty = Type::I32;
                         let value_ty = Type::I32;
@@ -1351,12 +1720,12 @@ impl SyntaxProjector {
                         return Ok((instructions, result_reg));
                     }
                     else if name == "HashMap" && last == "with_capacity" {
-                        self.expect(Token::LeftParentheses);
+                        self.expect(Token::LeftParentheses)?;
 
                         let (cap_insts, cap_reg) = self.parse_expression()?;
                         instructions.extend(cap_insts);
 
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
 
                         let key_ty = Type::I32;
                         let value_ty = Type::I32;
@@ -1386,7 +1755,7 @@ impl SyntaxProjector {
                             }
                         }
 
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
 
                         instructions.push(Inst::Call {
                             dst: Some(result_reg.clone()),
@@ -1415,7 +1784,7 @@ impl SyntaxProjector {
                         let (arg_insts, arg_reg) = self.parse_expression()?;
                         instructions.extend(arg_insts);
 
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
 
                         instructions.push(Inst::Print { value: arg_reg });
 
@@ -1434,7 +1803,7 @@ impl SyntaxProjector {
                         let (arg_insts, arg_reg) = self.parse_expression()?;
                         instructions.extend(arg_insts);
                         
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
                         
                         instructions.push(Inst::Println { 
                             value: arg_reg 
@@ -1455,7 +1824,7 @@ impl SyntaxProjector {
                         let (arg_insts, arg_reg) = self.parse_expression()?;
                         instructions.extend(arg_insts);
                         
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
                         
                         instructions.push(Inst::Eprint { value: arg_reg });
                         
@@ -1474,7 +1843,7 @@ impl SyntaxProjector {
                         let (arg_insts, arg_reg) = self.parse_expression()?;
                         instructions.extend(arg_insts);
                         
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
                         
                         instructions.push(Inst::Eprintln { value: arg_reg });
                         
@@ -1489,7 +1858,7 @@ impl SyntaxProjector {
                     }
                     else if name == "read_line" {
                         self.advance();
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
                         
                         instructions.push(Inst::ReadLine { 
                             dst: result_reg.clone() 
@@ -1505,7 +1874,7 @@ impl SyntaxProjector {
                         let (val_insts, val_reg) = self.parse_expression()?;
                         instructions.extend(val_insts);
 
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
 
                         instructions.push(Inst::IntToString { dst: result_reg.clone(), value: Value::Reg(val_reg) });
 
@@ -1518,16 +1887,16 @@ impl SyntaxProjector {
 
                         let (fd_insts, fd_reg) = self.parse_expression()?;
                         instructions.extend(fd_insts);
-                        self.expect(Token::Comma);
+                        self.expect(Token::Comma)?;
 
                         let (buf_insts, buf_reg) = self.parse_expression()?;
                         instructions.extend(buf_insts);
-                        self.expect(Token::Comma);
+                        self.expect(Token::Comma)?;
 
                         let (len_insts, len_reg) = self.parse_expression()?;
                         instructions.extend(len_insts);
                         
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
 
                         instructions.push(Inst::SysWrite {
                             fd: Value::Reg(fd_reg),
@@ -1545,16 +1914,16 @@ impl SyntaxProjector {
                         
                         let (fd_insts, fd_reg) = self.parse_expression()?;
                         instructions.extend(fd_insts);
-                        self.expect(Token::Comma);
+                        self.expect(Token::Comma)?;
                         
                         let (buf_insts, buf_reg) = self.parse_expression()?;
                         instructions.extend(buf_insts);
-                        self.expect(Token::Comma);
+                        self.expect(Token::Comma)?;
                         
                         let (len_insts, len_reg) = self.parse_expression()?;
                         instructions.extend(len_insts);
                         
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
                         
                         instructions.push(Inst::SysRead {
                             fd: Value::Reg(fd_reg),
@@ -1572,16 +1941,16 @@ impl SyntaxProjector {
 
                         let (path_insts, path_reg) = self.parse_expression()?;
                         instructions.extend(path_insts);
-                        self.expect(Token::Comma);
+                        self.expect(Token::Comma)?;
 
                         let (flag_insts, flag_reg) = self.parse_expression()?;
                         instructions.extend(flag_insts);
-                        self.expect(Token::Comma);
+                        self.expect(Token::Comma)?;
 
                         let (mode_insts, mode_reg) = self.parse_expression()?;
                         instructions.extend(mode_insts);
                         
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
 
                         instructions.push(Inst::SysOpen {
                             path: path_reg,
@@ -1600,7 +1969,7 @@ impl SyntaxProjector {
                         let (fd_insts, fd_reg) = self.parse_expression()?;
                         instructions.extend(fd_insts);
 
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
 
                         instructions.push(Inst::SysClose {
                             fd: Value::Reg(fd_reg),
@@ -1617,7 +1986,7 @@ impl SyntaxProjector {
                         let (path_insts, path_reg) = self.parse_expression()?;
                         instructions.extend(path_insts);
 
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
 
                         let access_result = self.alloc_reg();
 
@@ -1644,7 +2013,7 @@ impl SyntaxProjector {
                         let (path_insts, path_reg) = self.parse_expression()?;
                         instructions.extend(path_insts);
 
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
 
                         let access_result = self.alloc_reg();
 
@@ -1671,7 +2040,7 @@ impl SyntaxProjector {
                         let (path_insts, path_reg) = self.parse_expression()?;
                         instructions.extend(path_insts);
 
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
 
                         let access_result = self.alloc_reg();
 
@@ -1698,7 +2067,7 @@ impl SyntaxProjector {
                         let (path_insts, path_reg) = self.parse_expression()?;
                         instructions.extend(path_insts);
 
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
 
                         let error_reg = self.alloc_reg();
 
@@ -1718,12 +2087,12 @@ impl SyntaxProjector {
                         let (path_insts, path_reg) = self.parse_expression()?;
                         instructions.extend(path_insts);
 
-                        self.expect(Token::Comma);
+                        self.expect(Token::Comma)?;
 
                         let (content_insts, content_reg) = self.parse_expression()?;
                         instructions.extend(content_insts);
 
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
 
                         instructions.push(Inst::FileWriteString {
                             path: path_reg,
@@ -1741,12 +2110,12 @@ impl SyntaxProjector {
                         let (path_insts, path_reg) = self.parse_expression()?;
                         instructions.extend(path_insts);
 
-                        self.expect(Token::Comma);
+                        self.expect(Token::Comma)?;
 
                         let (content_insts, content_reg) = self.parse_expression()?;
                         instructions.extend(content_insts);
 
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
 
                         instructions.push(Inst::FileAppendString {
                             path: path_reg,
@@ -1776,7 +2145,7 @@ impl SyntaxProjector {
                             Value::Const(Const::I32(493))
                         };
 
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
 
                         instructions.push(Inst::SysMkdir {
                             path: path_reg,
@@ -1794,7 +2163,7 @@ impl SyntaxProjector {
                         let (path_insts, path_reg) = self.parse_expression()?;
                         instructions.extend(path_insts);
 
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
 
                         instructions.push(Inst::SysRmdir {
                             path: path_reg,
@@ -1811,7 +2180,7 @@ impl SyntaxProjector {
                         let (path_insts, path_reg) = self.parse_expression()?;
                         instructions.extend(path_insts);
 
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
 
                         instructions.push(Inst::SysUnlink {
                             path: path_reg,
@@ -1828,12 +2197,12 @@ impl SyntaxProjector {
                         let (old_path_insts, old_path_reg) = self.parse_expression()?;
                         instructions.extend(old_path_insts);
 
-                        self.expect(Token::Comma);
+                        self.expect(Token::Comma)?;
 
                         let (new_path_insts, new_path_reg) = self.parse_expression()?;
                         instructions.extend(new_path_insts);
 
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
 
                         instructions.push(Inst::SysRename {
                             old_path: old_path_reg,
@@ -1848,7 +2217,7 @@ impl SyntaxProjector {
                     else if name == "getcwd" || name == "current_dir" || name == "pwd" {
                         self.advance();
 
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
 
                         instructions.push(Inst::SysGetcwd {
                             dst: result_reg.clone()
@@ -1864,7 +2233,7 @@ impl SyntaxProjector {
                         let (path_insts, path_reg) = self.parse_expression()?;
                         instructions.extend(path_insts);
 
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
 
                         instructions.push(Inst::SysChdir {
                             path: path_reg,
@@ -1881,7 +2250,7 @@ impl SyntaxProjector {
                         let (path_insts, path_reg) = self.parse_expression()?;
                         instructions.extend(path_insts);
 
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
 
                         let stat_buf = self.alloc_reg();
                         let stat_result = self.alloc_reg();
@@ -1908,17 +2277,17 @@ impl SyntaxProjector {
                         let (fd_insts, fd_reg) = self.parse_expression()?;
                         instructions.extend(fd_insts);
 
-                        self.expect(Token::Comma);
+                        self.expect(Token::Comma)?;
 
                         let (offset_insts, offset_reg) = self.parse_expression()?;
                         instructions.extend(offset_insts);
 
-                        self.expect(Token::Comma);
+                        self.expect(Token::Comma)?;
 
                         let (whence_insts, whence_reg) = self.parse_expression()?;
                         instructions.extend(whence_insts);
 
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
 
                         instructions.push(Inst::SysSeek {
                             fd: Value::Reg(fd_reg),
@@ -1937,12 +2306,12 @@ impl SyntaxProjector {
                         let (path_insts, path_reg) = self.parse_expression()?;
                         instructions.extend(path_insts);
 
-                        self.expect(Token::Comma);
+                        self.expect(Token::Comma)?;
 
                         let (mode_insts, mode_reg) = self.parse_expression()?;
                         instructions.extend(mode_insts);
 
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
 
                         instructions.push(Inst::SysAccess {
                             path: path_reg,
@@ -1968,7 +2337,7 @@ impl SyntaxProjector {
                             }
                         }
 
-                        self.expect(Token::RightParentheses);
+                        self.expect(Token::RightParentheses)?;
 
                         instructions.push(Inst::Call {
                             dst: Some(result_reg.clone()),
@@ -1989,7 +2358,7 @@ impl SyntaxProjector {
 
                     while self.current.token != Token::RightBrace && self.current.token != Token::Eof {
                         let field_name = self.expect_ident()?;
-                        self.expect(Token::Colon);
+                        self.expect(Token::Colon)?;
 
                         let (field_insts, field_reg) = self.parse_expression()?;
                         instructions.extend(field_insts);
@@ -2062,7 +2431,7 @@ impl SyntaxProjector {
                         }
                     }
 
-                    self.expect(Token::RightParentheses);
+                    self.expect(Token::RightParentheses)?;
 
                     let tuple_reg = self.alloc_reg();
                     instructions.push(Inst::TupleAlloc {
@@ -2088,7 +2457,7 @@ impl SyntaxProjector {
                     self.reg_types.insert(result_reg.clone(), Type::Tuple(vec![Type::Unknown; elements.len()]));
                 }
                 else {
-                    self.expect(Token::RightParentheses);
+                    self.expect(Token::RightParentheses)?;
 
                         instructions.push(Inst::Move {
                         dst: result_reg.clone(),
@@ -2127,7 +2496,7 @@ impl SyntaxProjector {
                     }
                 }
 
-                self.expect(Token::RightBracket);
+                self.expect(Token::RightBracket)?;
 
                 let array_size = elements.len();
 
@@ -2181,29 +2550,47 @@ impl SyntaxProjector {
                 self.advance();
 
                 let inner_type = self.parse_type()?;
-                self.expect(Token::Greater);
+                self.expect(Token::Greater)?;
 
                 return Ok(Type::Vec(Box::new(inner_type)));
             }
 
             return Ok(Type::Vec(Box::new(Type::Unknown)));
         }
-
         if type_name == "HashMap" {
             if self.current.token == Token::Less {
                 self.advance();
 
                 let key_type = self.parse_type()?;
-                self.expect(Token::Comma);
+                self.expect(Token::Comma)?;
                 let value_type = self.parse_type()?;
-                self.expect(Token::Greater);
+                self.expect(Token::Greater)?;
 
                 return Ok(Type::HashMap(Box::new(key_type), Box::new(value_type)));
             }
             // Fix with type inference later
             return Ok(Type::HashMap(Box::new(Type::I32), Box::new(Type::I32)));
         }
-
+        if type_name == "Option" {
+            if self.current.token == Token::Less {
+                self.advance();
+                let inner_type = self.parse_type()?;
+                self.expect(Token::Greater)?;
+                return Ok(Type::Option(Box::new(inner_type)));
+            }
+            return Ok(Type::Option(Box::new(Type::Unknown)));
+        }
+        if type_name == "Result" {
+            if self.current.token == Token::Less {
+                self.advance();
+                let ok_type = self.parse_type()?;
+                self.expect(Token::Comma)?;
+                let err_type = self.parse_type()?;
+                self.expect(Token::Greater)?;
+                return Ok(Type::Result(Box::new(ok_type), Box::new(err_type)));
+            }
+            return Ok(Type::Result(Box::new(Type::Unknown), Box::new(Type::Unknown)));
+        }
         if type_name == self.config.keywords.int_type {
             Ok(Type::I32)
         }
@@ -2222,13 +2609,13 @@ impl SyntaxProjector {
         let mut attributes = Vec::new();
 
         while self.current.token == Token::Hash {
-            self.expect(Token::Hash);
-            self.expect(Token::LeftBracket);
+            self.expect(Token::Hash)?;
+            self.expect(Token::LeftBracket)?;
 
             let attr_name = self.expect_ident()?;
             attributes.push(attr_name);
 
-            self.expect(Token::RightBracket);
+            self.expect(Token::RightBracket)?;
         }
 
         Ok(attributes)
@@ -2365,6 +2752,13 @@ impl SyntaxProjector {
             Token::Dot => ".".to_string(),
             Token::Eof => "end of file".to_string(),
             Token::Newline => "newline".to_string(),
+            Token::Some => "Some".to_string(),
+            Token::None => "None".to_string(),
+            Token::Ok => "Ok".to_string(),
+            Token::Err => "Err".to_string(),
+            Token::Match => "match".to_string(),
+            Token::QuestionMark => "?".to_string(),
+            Token::Panic => "panic".to_string(),
             _ => format!("{:?}", token),
         }
     }
