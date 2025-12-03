@@ -398,20 +398,38 @@ impl Lexer {
 
     fn lex_string(&mut self, start: Position) -> SpannedToken {
         self.advance_char();
-        let str_start = self.pos;
+
+        let mut text = String::new();
 
         while self.pos < self.input.len() && self.input[self.pos] != '"' {
-            self.advance_char();
+            if self.input[self.pos] == '\\' && self.pos + 1 < self.input.len() {
+                self.advance_char();
+                match self.input[self.pos] {
+                    'n' => text.push('\n'),
+                    't' => text.push('\t'),
+                    'r' => text.push('\r'),
+                    '\\' => text.push('\\'),
+                    '"' => text.push('"'),
+                    '0' => text.push('\0'),
+                    _ => {
+                        text.push('\\');
+                        text.push(self.input[self.pos]);
+                    }
+                }
+                self.advance_char();
+            }
+            else {
+                text.push(self.input[self.pos]);
+                self.advance_char();
+            }
         }
 
-        let text: String = self.input[str_start..self.pos].iter().collect();
         if self.pos < self.input.len() {
-            // Emit error here if string wasn't closed
             self.advance_char();
         }
 
         let end = self.current_position();
-        
+
         SpannedToken::new(Token::String(text), Span::new(start, end))
     }
 

@@ -594,20 +594,54 @@ impl Program {
             ModuleData::Glyph(_) => return None,
         };
 
-        if path.segments.len() == 1 {
-            if let PathSegment::Ident(name) = &path.segments[0] {
+        if path.segments.is_empty() {
+            return None;
+        }
+
+        let segments = if let PathSegment::Shard = &path.segments[0] {
+            &path.segments[1..]
+        } else {
+            &path.segments[..]
+        };
+
+        if segments.is_empty() {
+            return None;
+        }
+
+        if segments.len() == 1 {
+            if let PathSegment::Ident(name) = &segments[0] {
                 return shard.functions.get(name);
+            }
+            return None;
+        }
+
+        if let PathSegment::Ident(child_name) = &segments[0] {
+            if let Some(child_shard) = shard.children.get(child_name) {
+                return self.resolve_in_child_shard(child_shard, &segments[1..]);
             }
         }
 
-        if let PathSegment::Shard = &path.segments[0] {
-            let remaining = ModulePath {
-                segments: path.segments[1..].to_vec()
-            };
-            return self.resolve_in_module(module, &remaining);
+        None
+    }
+
+    fn resolve_in_child_shard<'a>(&'a self, shard: &'a Shard, segments: &[PathSegment]) -> Option<&'a Function> {
+        if segments.is_empty() {
+            return None;
         }
 
-        // This will need proper refactoring to handle Module hierarchy correctly
+        if segments.len() == 1 {
+            if let PathSegment::Ident(name) = &segments[0] {
+                return shard.functions.get(name);
+            }
+            return None;
+        }
+
+        if let PathSegment::Ident(child_name) = &segments[0] {
+            if let Some(child_shard) = shard.children.get(child_name) {
+                return self.resolve_in_child_shard(child_shard, &segments[1..]);
+            }
+        }
+
         None
     }
 }

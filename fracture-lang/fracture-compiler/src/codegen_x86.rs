@@ -170,7 +170,8 @@ impl X86CodeGen {
         self.emit("    push rbp");
         self.emit("    mov rbp, rsp");
 
-        let stack_size = (func.locals.len() + func.params.len() + 4) * 16;
+        let string_count = func.body.iter().filter(|inst| matches!(inst, Inst::StringAlloc { .. })).count();
+        let stack_size = (func.locals.len() + func.params.len() + string_count * 6 + 4) * 16;
         self.current_function_stack_size = stack_size as i32;
         self.emit(&format!("    sub rsp, {}", stack_size));
 
