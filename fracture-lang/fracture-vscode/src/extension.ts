@@ -362,6 +362,10 @@ async function showFssPanel(context: vscode.ExtensionContext, uri: vscode.Uri): 
     
     // Apply syntax highlighting for FSS
     const highlighted = escaped
+        // String literals FIRST (before adding any HTML)
+        .replace(/"([^"\\]|\\.)*"/g, '<span class="string">$&</span>')
+        // Numbers
+        .replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="number">$1</span>')
         // Comments
         .replace(/^(\s*)(\/\/.*)$/gm, '$1<span class="comment">$2</span>')
         // Keywords: fn, let, pub, etc.
@@ -370,14 +374,11 @@ async function showFssPanel(context: vscode.ExtensionContext, uri: vscode.Uri): 
         // Types
         .replace(/\b(String|i32|i64|u32|u64|bool|void|f32|f64)\b/g,
             '<span class="type">$1</span>')
-        // String literals
-        .replace(/"([^"\\]|\\.)*"/g, '<span class="string">$&</span>')
-        // Numbers
-        .replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="number">$1</span>')
         // Function names after fn
         .replace(/\b(fn)\s+(\w+)/g, '<span class="keyword">$1</span> <span class="function">$2</span>');
     
     console.log('[Fracture] FSS Highlighted HTML (first 500 chars):', highlighted.substring(0, 500));
+
 
 
     panel.webview.html = `<!DOCTYPE html>
