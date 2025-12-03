@@ -114,16 +114,20 @@
                     "match": "\\b(if|elif|else|while|for|return|match|break|continue|panic|pass|yield|raise|try|except|finally|with|assert)\\b"
                 },
                 {
+                    "name": "storage.modifier.fracture",
+                    "match": "\\b(pub|public|private|protected|mut|static|global|nonlocal|extern)\\b"
+                },
+                {
+                    "name": "keyword.declaration.fracture",
+                    "match": "\\b(fn|def|struct|class|mod|module|trait|impl|interface|enum|type)\\b"
+                },
+                {
                     "name": "keyword.other.fracture",
-                    "match": "\\b(fn|def|let|var|const|mut|struct|class|mod|module|use|import|from|pub|public|private|protected|as|self|super|this|glyph|shard|type|trait|impl|interface|enum)\\b"
+                    "match": "\\b(let|var|const|use|import|from|as|self|super|this|glyph|shard)\\b"
                 },
                 {
                     "name": "keyword.control.async.fracture",
                     "match": "\\b(async|await)\\b"
-                },
-                {
-                    "name": "storage.modifier.fracture",
-                    "match": "\\b(static|global|nonlocal|extern)\\b"
                 }
             ]
         },

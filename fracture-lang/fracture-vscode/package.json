@@ -88,8 +88,8 @@
       "properties": {
         "fracture.compiler.path": {
           "type": "string",
-          "default": "fracture",
-          "description": "Path to the Fracture compiler executable"
+          "default": "rift",
+          "description": "Path to the Fracture compiler executable (rift)"
         },
         "fracture.lsp.enabled": {
           "type": "boolean",

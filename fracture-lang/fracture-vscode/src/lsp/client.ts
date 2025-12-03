@@ -35,7 +35,7 @@ export class FractureLspClient {
     }
 
     async start(): Promise<void> {
-        const compilerPath = vscode.workspace.getConfiguration('fracture').get<string>('compiler.path', 'fracture');
+        const compilerPath = vscode.workspace.getConfiguration('fracture').get<string>('compiler.path', 'rift');
 
         this.outputChannel.appendLine(`Starting Fracture LSP with ${compilerPath} --lsp`);
 
@@ -72,12 +72,15 @@ export class FractureLspClient {
             
         }
         catch (e) {
-            this.outputChannel.appendLine(`Compiler not found/failed, using mock LSP: ${e}`);
+            this.outputChannel.appendLine(`Failed to start LSP (${compilerPath}): ${e}`);
+            this.outputChannel.appendLine('Note: LSP mode (--lsp flag) may not be implemented in the compiler yet.');
+            this.outputChannel.appendLine('Using mock LSP implementation for development/testing.');
             this.useMock = true;
             
             vscode.window.showInformationMessage(
-                'Fracture: Using mock language server (compiler not found). ' +
-                'Install the Fracture compiler for full functionality.'
+                `Fracture: Using mock LSP (compiler LSP mode not available). ` +
+                'The mock LSP provides basic functionality for development.',
+                'Dismiss'
             );
         }
     }
