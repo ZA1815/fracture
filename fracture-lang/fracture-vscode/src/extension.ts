@@ -376,6 +376,9 @@ async function showFssPanel(context: vscode.ExtensionContext, uri: vscode.Uri): 
         .replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="number">$1</span>')
         // Function names after fn
         .replace(/\b(fn)\s+(\w+)/g, '<span class="keyword">$1</span> <span class="function">$2</span>');
+    
+    console.log('[Fracture] FSS Highlighted HTML (first 500 chars):', highlighted.substring(0, 500));
+
 
     panel.webview.html = `<!DOCTYPE html>
 <html>
