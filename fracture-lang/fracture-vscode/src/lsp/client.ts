@@ -226,111 +226,61 @@ export class FractureLspClient {
 // Mock LSP client to test before linking to real compiler
 class MockLspImplementation {
     syntaxToFss(source: string, syntaxStyle: string): string {
+        // FSS is the canonical form - if already FSS, return as-is
+        if (syntaxStyle === 'fss') {
+            return source;
+        }
+        
+        // For other syntaxes, convert to FSS format
         const lines: string[] = [
-            '; FSS generated from ' + syntaxStyle + ' syntax',
-            '; Lines: ' + source.split('\n').length,
+            '// FSS translation from ' + syntaxStyle + ' syntax',
             ''
         ];
         
         const sourceLines = source.split('\n');
-        let inFunction = false;
         
         for (const line of sourceLines) {
             const trimmed = line.trim();
             
-            if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('#')) {
-                if (trimmed.startsWith('//') || trimmed.startsWith('#')) {
-                    lines.push('; ' + trimmed.substring(trimmed.startsWith('//') ? 2 : 1).trim());
-                }
+            // Pass through comments
+            if (trimmed.startsWith('//')) {
+                lines.push(line);
+                continue;
+            }
+            if (trimmed.startsWith('#')) {
+                lines.push(line.replace(/^(\s*)#/, '$1//'));
+                continue;
+            }
+            if (!trimmed) {
+                lines.push('');
                 continue;
             }
             
+            // Convert Python def to FSS fn
             if (syntaxStyle === 'python' && trimmed.startsWith('def ')) {
-                const match = trimmed.match(/def\s+(\w+)\s*\(([^)]*)\)/);
+                const match = trimmed.match(/def\s+(\w+)\s*\(([^)]*)\)(?:\s*->\s*(\w+))?:/);
                 if (match) {
-                    if (inFunction) lines.push('END');
-                    lines.push('');
-                    lines.push('FUNC ' + match[1]);
-                    
-                    if (match[2]) {
-                        const params = match[2].split(',').map(p => p.trim());
-                        for (const param of params) {
-                            const [name, type] = param.split(':').map(s => s.trim());
-                            lines.push('    PARAM ' + name + (type ? ': ' + type : ': any'));
-                        }
-                    }
-                    lines.push('BODY');
-                    inFunction = true;
-                }
-            }
-            else if (syntaxStyle === 'fss' && trimmed.startsWith('fn ')) {
-                const match = trimmed.match(/fn\s+(\w+)\s*\(([^)]*)\)(?:\s*->\s*(\w+))?/);
-                if (match) {
-                    if (inFunction) lines.push('END');
-                    lines.push('');
-                    lines.push('FUNC ' + match[1]);
-                    
-                    if (match[2]) {
-                        const params = match[2].split(',').map(p => p.trim());
-                        for (const param of params) {
-                            const parts = param.split(':').map(s => s.trim());
-                            if (parts.length >= 2) {
-                                lines.push('    PARAM ' + parts[0] + ': ' + parts[1]);
-                            }
-                        }
-                    }
-                    if (match[3]) {
-                        lines.push('    RET ' + match[3]);
-                    }
-                    lines.push('BODY');
-                    inFunction = true;
+                    const name = match[1];
+                    const params = match[2];
+                    const returnType = match[3] || 'void';
+                    const indent = line.match(/^(\s*)/)?.[1] || '';
+                    lines.push(`${indent}fn ${name}(${params}) -> ${returnType} {`);
+                    continue;
                 }
             }
             
-            else if (trimmed.startsWith('let ') || trimmed.startsWith('mut ')) {
-                const match = trimmed.match(/(?:let|mut)\s+(\w+)(?:\s*:\s*(\w+))?\s*=\s*(.+?);?$/);
-                if (match) {
-                    lines.push('    LOCAL ' + match[1] + (match[2] ? ': ' + match[2] : ''));
-                    lines.push('    STORE ' + match[1] + ', ' + match[3].replace(/;$/, ''));
-                }
-            }
-            else if (trimmed.match(/^\w+\s*=\s*.+/) && syntaxStyle === 'python') {
+            // Convert Python variable assignment to FSS let
+            if (syntaxStyle === 'python' && trimmed.match(/^\w+\s*=\s*.+$/)) {
                 const match = trimmed.match(/^(\w+)\s*=\s*(.+)$/);
                 if (match) {
-                    lines.push('    LOCAL ' + match[1]);
-                    lines.push('    STORE ' + match[1] + ', ' + match[2]);
+                    const indent = line.match(/^(\s*)/)?.[1] || '';
+                    lines.push(`${indent}let ${match[1]} = ${match[2]};`);
+                    continue;
                 }
             }
             
-            else if (trimmed.match(/^\w+\s*\(/)) {
-                const match = trimmed.match(/^(\w+)\s*\(([^)]*)\)/);
-                if (match) {
-                    lines.push('    CALL ' + match[1]);
-                    if (match[2]) {
-                        const args = match[2].split(',').map(a => a.trim());
-                        for (const arg of args) {
-                            lines.push('        ARG ' + arg);
-                        }
-                    }
-                }
-            }
-            
-            else if (trimmed.startsWith('return ')) {
-                const value = trimmed.replace(/^return\s+/, '').replace(/;$/, '');
-                lines.push('    RET ' + value);
-            }
-            
-            else if (trimmed.startsWith('print(') || trimmed.startsWith('println!(')) {
-                const match = trimmed.match(/print(?:ln!)?\(([^)]+)\)/);
-                if (match) {
-                    lines.push('    CALL print');
-                    lines.push('        ARG ' + match[1]);
-                }
-            }
-        }
-        
-        if (inFunction) {
-            lines.push('END');
+            // Pass through FSS-like syntax
+            lines.push(line);
         }
         
         return lines.join('\n');
