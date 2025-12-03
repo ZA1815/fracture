@@ -23,8 +23,7 @@
     "programming language"
   ],
   "activationEvents": [
-    "onLanguage:fracture",
-    "workspaceContains:rift.toml"
+    "*"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -139,15 +138,18 @@
       "fracture-explorer": [
         {
           "id": "fracture.astView",
-          "name": "AST Explorer"
+          "name": "AST Explorer",
+          "icon": "$(symbol-structure)"
         },
         {
           "id": "fracture.diagnosticsView",
-          "name": "Diagnostics"
+          "name": "Diagnostics",
+          "icon": "$(error)"
         },
         {
           "id": "fracture.projectView",
-          "name": "Project"
+          "name": "Project",
+          "icon": "$(project)"
         }
       ]
     },
@@ -193,6 +195,13 @@
         "key": "ctrl+shift+a",
         "mac": "cmd+shift+a",
         "when": "resourceExtname == .frac"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "fracture",
+        "scopeName": "source.fracture",
+        "path": "./syntaxes/fracture.tmLanguage.json"
       }
     ]
   },

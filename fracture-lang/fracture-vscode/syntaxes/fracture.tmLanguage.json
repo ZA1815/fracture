@@ -1,0 +1,48 @@
+{
+    "scopeName": "source.fracture",
+    "patterns": [
+        {
+            "include": "#comments"
+        },
+        {
+            "include": "#strings"
+        },
+        {
+            "include": "#numbers"
+        }
+    ],
+    "repository": {
+        "comments": {
+            "patterns": [
+                {
+                    "name": "comment.line.double-slash.fracture",
+                    "match": "//.*$"
+                },
+                {
+                    "name": "comment.line.number-sign.fracture",
+                    "match": "#.*$"
+                },
+                {
+                    "name": "comment.block.fracture",
+                    "begin": "/\\*",
+                    "end": "\\*/"
+                }
+            ]
+        },
+        "strings": {
+            "name": "string.quoted.double.fracture",
+            "begin": "\"",
+            "end": "\"",
+            "patterns": [
+                {
+                    "name": "constant.character.escape.fracture",
+                    "match": "\\\\."
+                }
+            ]
+        },
+        "numbers": {
+            "name": "constant.numeric.fracture",
+            "match": "\\b\\d+(\\.\\d+)?\\b"
+        }
+    }
+}

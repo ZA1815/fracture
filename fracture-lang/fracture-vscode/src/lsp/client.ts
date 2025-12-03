@@ -18,7 +18,9 @@ import {
     FormatParams,
     FormatResult,
     HoverParams,
-    HoverResult
+    HoverResult,
+    SemanticTokensParams,
+    SemanticTokensResult
 } from './protocol';
 
 export class FractureLspClient {
@@ -70,7 +72,7 @@ export class FractureLspClient {
             
         }
         catch (e) {
-            this.outputChannel.appendLine(`Compiler not found, using mock LSP: ${e}`);
+            this.outputChannel.appendLine(`Compiler not found/failed, using mock LSP: ${e}`);
             this.useMock = true;
             
             vscode.window.showInformationMessage(
@@ -198,6 +200,23 @@ export class FractureLspClient {
         };
         
         return await this.client.sendRequest<HoverResult>(Methods.HOVER, params);
+    }
+
+    async getSemanticTokens(source: string, syntaxStyle: string): Promise<number[]> {
+        if (this.useMock) {
+            return this.mock.getSemanticTokens(source, syntaxStyle);
+        }
+        
+        if (!this.client) return [];
+        
+        const params: SemanticTokensParams = { source, syntaxStyle };
+        const result = await this.client.sendRequest<SemanticTokensResult>(Methods.SEMANTIC_TOKENS, params);
+        
+        if (!result.success) {
+            console.error('[Fracture] Failed to get semantic tokens:', result.error);
+            return [];
+        }
+        return result.tokens;
     }
 }
 
@@ -568,5 +587,123 @@ class MockLspImplementation {
         }
         
         return null;
+    }
+
+    getSemanticTokens(source: string, syntaxStyle: string): number[] {
+        const tokens: number[] = [];
+        const lines = source.split('\n');
+        
+        const TOKEN_TYPES = {
+            keyword: 0,
+            variable: 1,
+            string: 2,
+            number: 3,
+            function: 4,
+            struct: 5,
+            type: 6,
+            operator: 7,
+            comment: 8,
+            parameter: 9,
+            property: 10,
+            enumMember: 11,
+            decorator: 12,
+            macro: 13
+        };
+
+        const KEYWORDS = new Set([
+            'fn', 'return', 'if', 'else', 'while', 'for', 'let', 'mut', 
+            'struct', 'mod', 'use', 'pub', 'as', 'self', 'super', 
+            'match', 'panic', 'break', 'continue'
+        ]);
+
+        const CONSTANTS = new Set([
+            'true', 'false', 'Some', 'None', 'Ok', 'Err'
+        ]);
+
+        let prevLine = 0;
+        let prevChar = 0;
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            let currentLine = i;
+            
+            if (currentLine !== prevLine) {
+                prevChar = 0;
+            }
+
+            const regex = /(\/\/.*)|(".*?")|(\b\d+(?:\.\d+)?\b)|(\b[a-zA-Z_][a-zA-Z0-9_]*\b)|(::|->|==|!=|<=|>=|\+=|-=|\*=|\/=|&&|\|\||[+\-*/=<>!&|?])/g;
+            
+            let match;
+            while ((match = regex.exec(line)) !== null) {
+                const start = match.index;
+                const length = match[0].length;
+                const text = match[0];
+                let type = -1;
+                let modifiers = 0;
+
+                if (match[1]) type = TOKEN_TYPES.comment;
+                else if (match[2]) type = TOKEN_TYPES.string;
+                else if (match[3]) type = TOKEN_TYPES.number;
+                else if (match[4]) {
+                    if (KEYWORDS.has(text)) {
+                        type = TOKEN_TYPES.keyword;
+                    }
+                    else if (CONSTANTS.has(text)) {
+                        type = TOKEN_TYPES.enumMember;
+                        modifiers = 1 << 2;
+                    }
+                    else if (/^[A-Z]/.test(text)) {
+                        type = TOKEN_TYPES.type;
+                    }
+                    else {
+                        const nextChar = line.substring(start + length).trim()[0];
+                        const prevToken = line.substring(0, start).trim().split(/\s+/).pop();
+                        
+                        if (nextChar === '(') {
+                            if (text === 'vec' || text === 'print' || text === 'println') {
+                                type = TOKEN_TYPES.macro;
+                            }
+                            else {
+                                type = TOKEN_TYPES.function;
+                            }
+                        }
+                        else if (prevToken === 'fn') {
+                            type = TOKEN_TYPES.function;
+                            modifiers = 1 << 0;
+                        }
+                        else if (prevToken === 'struct') {
+                            type = TOKEN_TYPES.struct;
+                            modifiers = 1 << 0;
+                        }
+                        else if (prevToken === 'let' || prevToken === 'mut') {
+                            type = TOKEN_TYPES.variable;
+                            modifiers = 1 << 0;
+                        }
+                        else if (prevToken && prevToken.endsWith(':')) {
+                            type = TOKEN_TYPES.type;
+                        }
+                        else if (line.trim().startsWith('#')) {
+                             type = TOKEN_TYPES.decorator;
+                        }
+                        else {
+                            type = TOKEN_TYPES.variable;
+                        }
+                    }
+                }
+                else if (match[5]) type = TOKEN_TYPES.operator;
+
+                if (type !== -1) {
+                    const deltaLine = currentLine - prevLine;
+                    const deltaStart = deltaLine === 0 ? start - prevChar : start;
+
+                    tokens.push(deltaLine, deltaStart, length, type, modifiers);
+
+                    prevLine = currentLine;
+                    prevChar = start;
+                }
+            }
+        }
+        
+        return tokens;
     }
 }

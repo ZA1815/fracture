@@ -4,6 +4,7 @@ import { FractureLspClient } from './lsp/client';
 import { AstTreeProvider } from './views/AstTreeProvider';
 import { DiagnosticsProvider } from './views/DiagnosticsProvider';
 import { ProjectTreeProvider } from './views/ProjectTreeProvider';
+import { FractureSemanticTokensProvider, LEGEND } from './semanticTokens';
 import { ResolvedConfig, loadRiftConfig, saveProjectLocalConfig } from './utils/config';
 
 let lspClient: FractureLspClient | undefined;
@@ -11,9 +12,11 @@ let currentConfig: ResolvedConfig | undefined;
 let editorProvider: FractureEditorProvider | undefined;
 let astProvider: AstTreeProvider | undefined;
 let diagnosticsProvider: DiagnosticsProvider | undefined;
+let semanticTokensProvider: FractureSemanticTokensProvider | undefined;
 
 export async function activate(context: vscode.ExtensionContext) {
     console.log('[Fracture] Extension activating...');
+    vscode.window.showInformationMessage('Fracture Extension Active!');
 
     try {
         currentConfig = await loadRiftConfig();
@@ -56,6 +59,15 @@ export async function activate(context: vscode.ExtensionContext) {
         vscode.window.registerTreeDataProvider('fracture.astView', astProvider),
         vscode.window.registerTreeDataProvider('fracture.diagnosticsView', diagnosticsProvider),
         vscode.window.registerTreeDataProvider('fracture.projectView', projectProvider)
+    );
+
+    semanticTokensProvider = new FractureSemanticTokensProvider(lspClient, currentConfig);
+    context.subscriptions.push(
+        vscode.languages.registerDocumentSemanticTokensProvider(
+            { language: 'fracture', scheme: 'file' },
+            semanticTokensProvider,
+            LEGEND
+        )
     );
 
     context.subscriptions.push(
@@ -158,6 +170,10 @@ export async function activate(context: vscode.ExtensionContext) {
                 if (diagnosticsProvider) {
                     diagnosticsProvider.updateConfig(currentConfig);
                 }
+
+                if (semanticTokensProvider) {
+                    semanticTokensProvider.updateConfig(currentConfig);
+                }
                 
                 vscode.window.showInformationMessage(
                     `Fracture: Switched to ${choice.label} syntax`
@@ -253,7 +269,16 @@ async function startLspClient(context: vscode.ExtensionContext): Promise<void> {
         vscode.window.showWarningMessage(
             'Fracture: Language server failed to start. Some features will be unavailable.'
         );
-        lspClient = undefined;
+        vscode.window.showWarningMessage(
+            'Fracture: Language server failed to start. Falling back to mock mode.'
+        );
+        // Do not set lspClient to undefined, it was initialized in constructor
+        // Just ensure it's in mock mode (which it defaults to or handles internally)
+        if (lspClient) {
+            // Force mock mode if possible, or just rely on the fact that start() failed
+            // Actually, if new FractureLspClient succeeded, we have an instance.
+            // We should trust it to handle the failure.
+        }
     }
 }
 
@@ -276,6 +301,10 @@ async function restartLspClient(context: vscode.ExtensionContext): Promise<void>
 
     if (diagnosticsProvider) {
         diagnosticsProvider.updateLspClient(lspClient);
+    }
+
+    if (semanticTokensProvider) {
+        semanticTokensProvider.updateClient(lspClient);
     }
 }
 

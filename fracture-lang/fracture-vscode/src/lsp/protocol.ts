@@ -128,5 +128,17 @@ export const Methods = {
     FORMAT: 'fracture/format',
     HOVER: 'fracture/hover',
     STATUS: 'fracture/status',
-    CONFIGURE: 'fracture/configure'
+    CONFIGURE: 'fracture/configure',
+    SEMANTIC_TOKENS: 'fracture/semanticTokens'
 } as const;
+
+export interface SemanticTokensParams {
+    source: string;
+    syntaxStyle: string;
+}
+
+export interface SemanticTokensResult {
+    tokens: number[];
+    success: boolean;
+    error?: string;
+}
