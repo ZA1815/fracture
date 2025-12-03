@@ -1,5 +1,5 @@
 use fracture_ir::{Program, Function, Inst, Value, Type, Reg};
-use std::{collections::HashMap, fmt::format, result};
+use std::collections::HashMap;
 
 pub fn check(program: &Program) -> Result<(), String> {
     for (name, func) in &program.functions {

@@ -1,8 +1,10 @@
 pub mod codegen_x86;
 pub mod passes;
+pub mod glyphs;
 
 pub use fracture_ir::Program;
 pub use codegen_x86::X86CodeGen;
+pub use glyphs::GlyphRegistry;
 
 use std::fs;
 use std::process::Command;
@@ -80,13 +82,28 @@ impl Compiler {
         passes::resolution_check::check(program)?;
         println!("  Resolution check passed.");
 
-        passes::type_check::check(program)?;
-        println!("  Type check passed.");
+        if program.active_glyphs.is_empty() {
+            println!("  No glyphs active - skipping optional safety checks");
+            println!("  Tip: Enable safety checks with: use glyph std::type_check;");
+            return Ok(());
+        }
 
-        passes::borrow_check::check(program)?;
-        println!("  Borrow check passed.");
+        let registry = glyphs::GlyphRegistry::new();
 
-        // Add logic check later (more complicated)
+        for glyph_name in &program.active_glyphs {
+            if let Some(pass_fn) = registry.get(glyph_name) {
+                println!("  Running glyph: {}", glyph_name);
+                pass_fn(program)?;
+                println!("  {} passed.", glyph_name);
+            } else {
+                let available = registry.list_glyphs();
+                return Err(format!(
+                    "Unknown glyph '{}'\nAvailable glyphs: {}",
+                    glyph_name,
+                    available.join(", ")
+                ));
+            }
+        }
 
         Ok(())
     }
@@ -97,7 +114,7 @@ impl Compiler {
 
         let asm_path = format!("{}.s", output_path);
         fs::write(&asm_path, asm).map_err(|e| format!("Failed to write assembly: {}", e))?;
-        println!("[compiler] Generated assembly: {}", asm_path);
+        println!("[Compiler] Generated assembly: {}", asm_path);
 
         let obj_path = format!("{}.o", output_path);
         // This command doesn't work on Windows, will have to change later
@@ -110,7 +127,7 @@ impl Compiler {
             return Err(format!("Assembler failed: {}", String::from_utf8_lossy(&output.stderr)));
         }
 
-        println!("[compiler] Assembled: {}", obj_path);
+        println!("[Compiler] Assembled: {}", obj_path);
 
         let output = Command::new("ld")
             .args(&[&obj_path, "-o", output_path])
@@ -121,7 +138,7 @@ impl Compiler {
             return Err(format!("Linker failed: {}", String::from_utf8_lossy(&output.stderr)));
         }
 
-        println!("[compiler] Linked: {}", output_path);
+        println!("[Compiler] Linked: {}", output_path);
 
         #[cfg(unix)]
         {

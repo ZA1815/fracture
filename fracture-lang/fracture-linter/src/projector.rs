@@ -294,15 +294,47 @@ impl SyntaxProjector {
             return Err(format!("{} error(s) found", self.diagnostics.error_count()));
         }
 
+        let mut active_glyphs: Vec<String> = Vec::new();
+        for use_stmt in &root_uses {
+            if use_stmt.import_type == ImportType::Glyph {
+                match &use_stmt.tree {
+                    UseTree::Simple { path, .. } => {
+                        if let Some(glyph_name) = path.leaf_name() {
+                            if !active_glyphs.contains(&glyph_name.to_string()) {
+                                active_glyphs.push(glyph_name.to_string());
+                                println!("[Parser] Activating glyph: {}", glyph_name);
+                            }
+                        }
+                    }
+                    UseTree::Nested { .. } => {
+                        let diag = Diagnostic::error(
+                            "Nested glyph imports are not yet supported",
+                            self.current.span
+                        ).with_help("Use individual glyph imports like: use glyph std::type_check;");
+                        self.diagnostics.emit(diag);
+                    }
+                    UseTree::Glob { .. } => {
+                        let diag = Diagnostic::error(
+                            "Glob glyph imports (use glyph std::*) are not yet supported",
+                            self.current.span
+                        ).with_help("Use individual glyph imports like: use glyph std::type_check;");
+                        self.diagnostics.emit(diag);
+                    }
+                }
+            }
+        }
+
         Ok(Program {
             functions: all_functions,
             structs: all_structs,
             entry: "main".to_string(),
             root_module: {
                 root_module.uses = root_uses.clone();
+                root_module.active_glyphs = active_glyphs.clone();
                 root_module
             },
             uses: root_uses,
+            active_glyphs,
         })
     }
 
@@ -314,7 +346,9 @@ impl SyntaxProjector {
             self.current_module_path.push(module_name.clone());
             
             let mut module = Module::new(&module_name);
-            module.visibility = visibility;
+            if let ModuleData::Shard(ref mut shard) = module.data {
+                shard.visibility = visibility;
+            }
             module.path = ModulePath {
                 segments: self.current_module_path.iter()
                     .map(|s| PathSegment::Ident(s.clone()))
@@ -348,13 +382,26 @@ impl SyntaxProjector {
     fn parse_use_statement(&mut self, visibility: Visibility) -> Result<UseStatement, ()> {
         self.expect(Token::Use)?;
 
+        let import_type = if self.current.token == Token::Glyph {
+            self.advance();
+            ImportType::Glyph
+        }
+        else if self.current.token == Token::Shard {
+            self.advance();
+            ImportType::Shard
+        }
+        else {
+            // Default to Shard for backward compatibility
+            ImportType::Shard
+        };
+
         let tree = self.parse_use_tree()?;
 
         if self.config.style.needs_semicolon {
             self.expect(Token::Semicolon)?;
         }
 
-        Ok(UseStatement { tree, visibility })
+        Ok(UseStatement { tree, visibility, import_type })
     }
 
     fn parse_use_tree(&mut self) -> Result<UseTree, ()> {
@@ -2303,6 +2350,8 @@ impl SyntaxProjector {
             Token::Match => "match".to_string(),
             Token::QuestionMark => "?".to_string(),
             Token::Panic => "panic".to_string(),
+            Token::Glyph => self.config.keywords.glyph_kw.clone(),
+            Token::Shard => self.config.keywords.shard_kw.clone(),
             _ => format!("{:?}", token),
         }
     }
@@ -2367,7 +2416,9 @@ impl SyntaxProjector {
         sub_projector.current_module_path = new_mod_path;
 
         let mut module = Module::new(mod_name);
-        module.visibility = visibility;
+        if let ModuleData::Shard(ref mut shard) = module.data {
+            shard.visibility = visibility;
+        }
         module.path = ModulePath {
             segments: sub_projector.current_module_path.iter()
                 .map(|s| PathSegment::Ident(s.clone()))
@@ -2490,24 +2541,54 @@ impl SyntaxProjector {
     }
 
     fn collect_module_functions(&self, module: &Module, all_functions: &mut HashMap<String, Function>) {
-        for func in module.functions.values() {
-            let qualified = func.qualified_name();
-            all_functions.insert(qualified, func.clone());
-        }
+        if let ModuleData::Shard(shard) = &module.data {
+            for func in shard.functions.values() {
+                let qualified = func.qualified_name();
+                all_functions.insert(qualified, func.clone());
+            }
 
-        for child in module.children.values() {
-            self.collect_module_functions(child, all_functions);
+            for (child_name, child_shard) in &shard.children {
+                // Create temporary Module wrapper
+                let child_module = Module {
+                    name: child_name.clone(),
+                    path: {
+                        let mut path = module.path.clone();
+                        path.segments.push(PathSegment::Ident(child_name.clone()));
+                        path
+                    },
+                    uses: vec![],
+                    external_mods: vec![],
+                    active_glyphs: vec![],
+                    data: ModuleData::Shard(child_shard.clone()),
+                };
+                self.collect_module_functions(&child_module, all_functions);
+            }
         }
     }
 
     fn collect_module_structs(&self, module: &Module, all_structs: &mut HashMap<String, StructDef>) {
-        for struct_def in module.structs.values() {
-            // Assuming structs are unique
-            all_structs.insert(struct_def.name.clone(), struct_def.clone());
-        }
+        if let ModuleData::Shard(shard) = &module.data {
+            for struct_def in shard.structs.values() {
+                // Assuming structs are unique
+                all_structs.insert(struct_def.name.clone(), struct_def.clone());
+            }
 
-        for child in module.children.values() {
-            self.collect_module_structs(child, all_structs);
+            for (child_name, child_shard) in &shard.children {
+                // Create temporary Module wrapper
+                let child_module = Module {
+                    name: child_name.clone(),
+                    path: {
+                        let mut path = module.path.clone();
+                        path.segments.push(PathSegment::Ident(child_name.clone()));
+                        path
+                    },
+                    uses: vec![],
+                    external_mods: vec![],
+                    active_glyphs: vec![],
+                    data: ModuleData::Shard(child_shard.clone()),
+                };
+                self.collect_module_structs(&child_module, all_structs);
+            }
         }
     }
 }

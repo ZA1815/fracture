@@ -1,5 +1,5 @@
 use fracture_ir::hsir::*;
-use std::{collections::HashMap, io::empty};
+use std::collections::HashMap;
 
 pub struct X86CodeGen {
     output: Vec<String>,

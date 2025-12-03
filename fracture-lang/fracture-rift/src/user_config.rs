@@ -47,6 +47,14 @@ pub struct Keywords {
     pub as_kw: String,
     pub self_kw: String,
     pub super_kw: String,
+    pub glyph_kw: String,
+    pub shard_kw: String,
+    pub some_kw: String,
+    pub none_kw: String,
+    pub ok_kw: String,
+    pub err_kw: String,
+    pub match_kw: String,
+    pub panic_kw: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -332,6 +340,14 @@ impl SetupWizard {
             as_kw: self.prompt("  As (casting)", "as")?,
             self_kw: self.prompt("  Self reference", "self")?,
             super_kw: self.prompt("  Parent module", "super")?,
+            glyph_kw: self.prompt("  Glyph import", "glyph")?,
+            shard_kw: self.prompt("  Shard import", "shard")?,
+            some_kw: self.prompt("  Some (option)", "Some")?,
+            none_kw: self.prompt("  None (option)", "None")?,
+            ok_kw: self.prompt("  Ok (result)", "Ok")?,
+            err_kw: self.prompt("  Err (result)", "Err")?,
+            match_kw: self.prompt("  Match", "match")?,
+            panic_kw: self.prompt("  Panic", "panic")?,
         };
         
         println!("\n── Operators & Tokens ──");
@@ -442,6 +458,14 @@ impl SetupWizard {
                 as_kw: "as".to_string(),
                 self_kw: "self".to_string(),
                 super_kw: "super".to_string(),
+                glyph_kw: "glyph".to_string(),
+                shard_kw: "shard".to_string(),
+                some_kw: "Some".to_string(),
+                none_kw: "None".to_string(),
+                ok_kw: "Ok".to_string(),
+                err_kw: "Err".to_string(),
+                match_kw: "match".to_string(),
+                panic_kw: "panic".to_string(),
             },
             tokens: TokenConfig {
                 arrow: "->".to_string(),
@@ -498,6 +522,14 @@ impl SetupWizard {
                 as_kw: "as".to_string(),
                 self_kw: "self".to_string(),
                 super_kw: "super".to_string(),
+                glyph_kw: "glyph".to_string(),
+                shard_kw: "shard".to_string(),
+                some_kw: "Some".to_string(),
+                none_kw: "None".to_string(),
+                ok_kw: "Ok".to_string(),
+                err_kw: "Err".to_string(),
+                match_kw: "match".to_string(),
+                panic_kw: "panic".to_string(),
             },
             tokens: TokenConfig {
                 arrow: "->".to_string(),

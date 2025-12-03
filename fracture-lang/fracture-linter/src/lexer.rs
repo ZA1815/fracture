@@ -64,6 +64,8 @@ pub enum Token {
     As,
     SelfKw,
     Super,
+    Glyph,
+    Shard,
 
     Some,
     None,
@@ -330,6 +332,12 @@ impl Lexer {
         }
         else if !self.config.keywords.super_kw.is_empty() && text == self.config.keywords.super_kw {
             Token::Super
+        }
+        else if !self.config.keywords.glyph_kw.is_empty() && text == self.config.keywords.glyph_kw {
+            Token::Glyph
+        }
+        else if !self.config.keywords.shard_kw.is_empty() && text == self.config.keywords.shard_kw {
+            Token::Shard
         }
         else if !self.config.keywords.some_kw.is_empty() && text == self.config.keywords.some_kw {
             Token::Some

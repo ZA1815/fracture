@@ -17,5 +17,10 @@ pub use hsir::{
     UseTree,
     Visibility,
     StructDef,
+    ImportType,
+    ModuleData,
+    Shard,
+    Glyph,
+    GlyphScope,
 };
 pub use syntax_config::SyntaxConfig;

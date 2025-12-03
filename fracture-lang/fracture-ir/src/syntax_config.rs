@@ -34,6 +34,8 @@ pub struct Keywords {
     pub as_kw: String,
     pub self_kw: String,
     pub super_kw: String,
+    pub glyph_kw: String,
+    pub shard_kw: String,
 
     pub some_kw: String,
     pub none_kw: String,
@@ -122,6 +124,8 @@ impl SyntaxConfig {
                 as_kw: "as".to_string(),
                 self_kw: ".".to_string(),
                 super_kw: "..".to_string(),
+                glyph_kw: "".to_string(),
+                shard_kw: "".to_string(),
                 some_kw: "".to_string(),
                 none_kw: "".to_string(),
                 ok_kw: "".to_string(),
@@ -187,6 +191,8 @@ impl SyntaxConfig {
                 as_kw: "as".to_string(),
                 self_kw: "self".to_string(),
                 super_kw: "super".to_string(),
+                glyph_kw: "".to_string(),
+                shard_kw: "".to_string(),
                 some_kw:"Some".to_string(),
                 none_kw: "None".to_string(),
                 ok_kw: "Ok".to_string(),
@@ -229,9 +235,72 @@ impl SyntaxConfig {
         }
     }
 
-    // pub fn fss() -> Self {
-        // Fracture Standard Syntax (add later)
-    //}
+    pub fn fss() -> Self {
+        Self {
+            name: "fss".to_string(),
+            keywords: Keywords {
+                function: "fn".to_string(),
+                return_kw: "return".to_string(),
+                if_kw: "if".to_string(),
+                else_if_kw: "else if".to_string(),
+                else_kw: "else".to_string(),
+                while_kw: "while".to_string(),
+                for_kw: "for".to_string(),
+                int_type: "i32".to_string(),
+                bool_type: "bool".to_string(),
+                string_type: "String".to_string(),
+                let_kw: "let".to_string(),
+                mut_kw: "mut".to_string(),
+                struct_kw: "struct".to_string(),
+                mod_kw: "mod".to_string(),
+                use_kw: "use".to_string(),
+                pub_kw: "pub".to_string(),
+                as_kw: "as".to_string(),
+                self_kw: "self".to_string(),
+                super_kw: "super".to_string(),
+                glyph_kw: "glyph".to_string(),
+                shard_kw: "shard".to_string(),
+                some_kw: "Some".to_string(),
+                none_kw: "None".to_string(),
+                ok_kw: "Ok".to_string(),
+                err_kw: "Err".to_string(),
+                match_kw: "match".to_string(),
+                panic_kw: "panic".to_string()
+            },
+            tokens: TokenConfig {
+                arrow: "->".to_string(),
+                double_equals: "==".to_string(),
+                not_equals: "!=".to_string(),
+                less_equals: "<=".to_string(),
+                greater_equals: ">=".to_string(),
+                immutable_ref: "&".to_string(),
+                mutable_ref: "&mut".to_string(),
+                assignment: "=".to_string(),
+                plus: "+".to_string(),
+                minus: "-".to_string(),
+                star: "*".to_string(),
+                slash: "/".to_string(),
+                less: "<".to_string(),
+                greater: ">".to_string(),
+                left_paren: "(".to_string(),
+                right_paren: ")".to_string(),
+                left_brace: "{".to_string(),
+                right_brace: "}".to_string(),
+                comma: ",".to_string(),
+                semicolon: ";".to_string(),
+                colon: ":".to_string()
+            },
+            style: SyntaxStyle {
+                block_style: BlockStyle::Braces,
+                needs_semicolon: true,
+                type_annotations: TypeAnnotationStyle::Colon
+            },
+            typing: TypingRules {
+                explicit_types: true,
+                type_inference: true
+            }
+        }
+    }
 
     pub fn validate(&self) -> Result<(), String> {
         let mut all_tokens = Vec::new();

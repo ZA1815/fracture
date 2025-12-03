@@ -3,7 +3,7 @@ use std::fs;
 use std::collections::HashMap;
 use colored::*;
 
-use crate::manifest::{Manifest, CompilerSection};
+use crate::manifest::Manifest;
 use crate::lockfile::Lockfile;
 use crate::user_config::{UserConfig, SyntaxPreference, SetupWizard};
 
@@ -50,7 +50,7 @@ impl InitCommand {
             println!("{} No global config found.", "→".blue());
             println!("  Run `rift setup` to configure your syntax preferences,");
             // Change based on popular demand
-            println!("  or continue with default 'Rust' style.\n");
+            println!("  or continue with default 'FSS (Fracture Standard Syntax)' style.\n");
         }
         
         let user_config = UserConfig::load(None);
@@ -131,9 +131,6 @@ version = "0.1.0"
 # Add dependencies here:
 # some-lib = "1.0"
 # another-lib = {{ git = "https://github.com/user/repo" }}
-
-[compiler]
-mode = "safe"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SYNTAX NOTE:
@@ -351,6 +348,7 @@ impl BuildCommand {
         match style {
             "rust" | "custom-rust" => Ok(fracture_ir::SyntaxConfig::rust()),
             "python" | "custom-python" => Ok(fracture_ir::SyntaxConfig::python()),
+            "fss" => Ok(fracture_ir::SyntaxConfig::fss()),
             other => Err(format!(
                 "Unknown syntax style: '{}'. Run `rift setup` to configure.",
                 other
@@ -544,6 +542,7 @@ impl CheckCommand {
                 return match style.as_str() {
                     "rust" | "custom-rust" => Ok(fracture_ir::SyntaxConfig::rust()),
                     "python" | "custom-python" => Ok(fracture_ir::SyntaxConfig::python()),
+                    "fss" => Ok(fracture_ir::SyntaxConfig::fss()),
                     other => Err(format!("Unknown style: {}", other)),
                 };
             }
@@ -555,6 +554,7 @@ impl CheckCommand {
             SyntaxPreference::Preset(style) => match style.as_str() {
                 "rust" => Ok(fracture_ir::SyntaxConfig::rust()),
                 "python" => Ok(fracture_ir::SyntaxConfig::python()),
+                "fss" => Ok(fracture_ir::SyntaxConfig::fss()),
                 other => Err(format!("Unknown style: {}", other)),
             },
             SyntaxPreference::Custom(custom) => {
@@ -893,6 +893,14 @@ impl SyntaxCustomizeCommand {
                 as_kw: "as".to_string(),
                 self_kw: "self".to_string(),
                 super_kw: "super".to_string(),
+                glyph_kw: "glyph".to_string(),
+                shard_kw: "shard".to_string(),
+                some_kw: "Some".to_string(),
+                none_kw: "None".to_string(),
+                ok_kw: "Ok".to_string(),
+                err_kw: "Err".to_string(),
+                match_kw: "match".to_string(),
+                panic_kw: "panic".to_string(),
             },
             tokens: crate::user_config::TokenConfig {
                 arrow: "->".to_string(),
@@ -949,6 +957,14 @@ impl SyntaxCustomizeCommand {
                 as_kw: "as".to_string(),
                 self_kw: "self".to_string(),
                 super_kw: "super".to_string(),
+                glyph_kw: "glyph".to_string(),
+                shard_kw: "shard".to_string(),
+                some_kw: "Some".to_string(),
+                none_kw: "None".to_string(),
+                ok_kw: "Ok".to_string(),
+                err_kw: "Err".to_string(),
+                match_kw: "match".to_string(),
+                panic_kw: "panic".to_string(),
             },
             tokens: crate::user_config::TokenConfig {
                 arrow: "->".to_string(),

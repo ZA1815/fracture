@@ -32,43 +32,70 @@ pub fn print_program(program: &crate::hsir::Program) -> String {
 pub fn print_module(module: &Module, indent: usize) -> String {
     let pad = "  ".repeat(indent);
     let mut output = String::new();
-    
-    output.push_str(&format!("{}mod {} ({:?}) {{\n", 
-        pad, 
-        module.name, 
-        module.visibility
-    ));
-    
-    for use_stmt in &module.uses {
-        output.push_str(&format!("{}  {:?};\n", pad, use_stmt));
+
+    match &module.data {
+        ModuleData::Shard(shard) => {
+            output.push_str(&format!("{}mod {} ({:?}) {{\n",
+                pad,
+                module.name,
+                shard.visibility
+            ));
+
+            for use_stmt in &module.uses {
+                output.push_str(&format!("{}  {:?};\n", pad, use_stmt));
+            }
+
+            if !module.uses.is_empty() {
+                output.push('\n');
+            }
+
+            for (name, func) in &shard.functions {
+                output.push_str(&format!("{}  {:?} fn {}(...)\n",
+                    pad,
+                    func.visibility,
+                    name
+                ));
+            }
+
+            for (name, s) in &shard.structs {
+                output.push_str(&format!("{}  {:?} struct {} {{ ... }}\n",
+                    pad,
+                    s.visibility,
+                    name
+                ));
+            }
+
+            for (child_name, child_shard) in &shard.children {
+                // Create temporary Module wrapper for printing
+                let mut child_path = module.path.clone();
+                child_path.segments.push(PathSegment::Ident(child_name.clone()));
+
+                let child_module = Module {
+                    name: child_name.clone(),
+                    path: child_path,
+                    uses: vec![],
+                    external_mods: vec![],
+                    active_glyphs: vec![],
+                    data: ModuleData::Shard(child_shard.clone()),
+                };
+                output.push_str(&print_module(&child_module, indent + 1));
+            }
+
+            output.push_str(&format!("{}}}\n", pad));
+        }
+        ModuleData::Glyph(glyph) => {
+            output.push_str(&format!("{}glyph {} (scope: {:?}) {{\n",
+                pad,
+                module.name,
+                glyph.scope
+            ));
+
+            output.push_str(&format!("{}  // Glyph data\n", pad));
+
+            output.push_str(&format!("{}}}\n", pad));
+        }
     }
-    
-    if !module.uses.is_empty() {
-        output.push('\n');
-    }
-    
-    for (name, func) in &module.functions {
-        output.push_str(&format!("{}  {:?} fn {}(...)\n", 
-            pad, 
-            func.visibility, 
-            name
-        ));
-    }
-    
-    for (name, s) in &module.structs {
-        output.push_str(&format!("{}  {:?} struct {} {{ ... }}\n", 
-            pad, 
-            s.visibility, 
-            name
-        ));
-    }
-    
-    for (_, child) in &module.children {
-        output.push_str(&print_module(child, indent + 1));
-    }
-    
-    output.push_str(&format!("{}}}\n", pad));
-    
+
     output
 }
 

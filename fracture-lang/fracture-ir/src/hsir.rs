@@ -2,6 +2,7 @@ use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
+use crate::SyntaxConfig;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Type {
@@ -174,21 +175,57 @@ pub enum UseTree {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ImportType {
+    Shard,
+    Glyph,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UseStatement {
     pub tree: UseTree,
-    pub visibility: Visibility
+    pub visibility: Visibility,
+    pub import_type: ImportType,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum GlyphScope {
+    Project,
+    Function,  // Future: Can be applied to specific functions
+    Snippet,   // Future: Can be applied to code blocks
+    Module,    // Future: Applies to a specific module
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Shard {
+    pub functions: HashMap<String, Function>,
+    pub structs: HashMap<String, StructDef>,
+    pub visibility: Visibility,
+    pub children: HashMap<String, Shard>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Glyph {
+    pub syntax_additions: Vec<SyntaxConfig>,
+    pub dependencies: Vec<String>,
+    pub scope: GlyphScope,
+    pub children: HashMap<String, Glyph>,
+    pub config: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ModuleData {
+    Shard(Shard),
+    Glyph(Glyph),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Module {
     pub name: String,
     pub path: ModulePath,
-    pub visibility: Visibility,
     pub uses: Vec<UseStatement>,
-    pub functions: HashMap<String, Function>,
-    pub structs: HashMap<String, StructDef>,
-    pub children: HashMap<String, Module>,
-    pub external_mods: Vec<String>
+    pub external_mods: Vec<String>,
+    pub active_glyphs: Vec<String>,
+    pub data: ModuleData,
 }
 
 impl Module {
@@ -196,12 +233,15 @@ impl Module {
         Self {
             name: name.to_string(),
             path: ModulePath::new(name),
-            visibility: Visibility::Private,
             uses: Vec::new(),
-            functions: HashMap::new(),
-            structs: HashMap::new(),
-            children: HashMap::new(),
             external_mods: Vec::new(),
+            active_glyphs: Vec::new(),
+            data: ModuleData::Shard(Shard {
+                visibility: Visibility::Private,
+                functions: HashMap::new(),
+                structs: HashMap::new(),
+                children: HashMap::new(),
+            }),
         }
     }
 
@@ -209,33 +249,49 @@ impl Module {
         Self {
             name: "shard".to_string(),
             path: ModulePath { segments: vec![PathSegment::Shard] },
-            visibility: Visibility::Public,
             uses: Vec::new(),
-            functions: HashMap::new(),
-            structs: HashMap::new(),
-            children: HashMap::new(),
-            external_mods: Vec::new()
+            external_mods: Vec::new(),
+            active_glyphs: Vec::new(),
+            data: ModuleData::Shard(Shard {
+                visibility: Visibility::Public,
+                functions: HashMap::new(),
+                structs: HashMap::new(),
+                children: HashMap::new(),
+            }),
         }
     }
 
     pub fn add_function(&mut self, func: Function) {
-        self.functions.insert(func.name.clone(), func);
+        if let ModuleData::Shard(shard) = &mut self.data {
+            shard.functions.insert(func.name.clone(), func);
+        }
     }
 
     pub fn add_struct(&mut self, s: StructDef) {
-        self.structs.insert(s.name.clone(), s);
+        if let ModuleData::Shard(shard) = &mut self.data {
+            shard.structs.insert(s.name.clone(), s);
+        }
     }
 
     pub fn add_child(&mut self, child: Module) {
-        self.children.insert(child.name.clone(), child);
+        if let ModuleData::Shard(shard) = &mut self.data {
+            if let ModuleData::Shard(child_shard) = child.data {
+                shard.children.insert(child.name.clone(), child_shard);
+            }
+        }
     }
 
     pub fn get_function(&self, name: &str) -> Option<&Function> {
-        self.functions.get(name)
+        if let ModuleData::Shard(shard) = &self.data {
+            shard.functions.get(name)
+        } else {
+            None
+        }
     }
 
     pub fn get_child(&self, name: &str) -> Option<&Module> {
-        self.children.get(name)
+        // This will need refactoring when we properly handle the Module/Shard relationship
+        None
     }
 }
 
@@ -428,7 +484,8 @@ pub struct Program {
     pub structs: HashMap<String, StructDef>,
     pub entry: String,
     pub root_module: Module,
-    pub uses: Vec<UseStatement>
+    pub uses: Vec<UseStatement>,
+    pub active_glyphs: Vec<String>,
 }
 
 impl Program {
@@ -532,9 +589,14 @@ impl Program {
     }
 
     pub fn resolve_in_module<'a>(&'a self, module: &'a Module, path: &ModulePath) -> Option<&'a Function> {
+        let shard = match &module.data {
+            ModuleData::Shard(s) => s,
+            ModuleData::Glyph(_) => return None,
+        };
+
         if path.segments.len() == 1 {
             if let PathSegment::Ident(name) = &path.segments[0] {
-                return module.functions.get(name);
+                return shard.functions.get(name);
             }
         }
 
@@ -545,24 +607,17 @@ impl Program {
             return self.resolve_in_module(module, &remaining);
         }
 
-        if let PathSegment::Ident(first) = &path.segments[0] {
-            if let Some(child) = module.children.get(first) {
-                let remaining = ModulePath {
-                    segments: path.segments[1..].to_vec()
-                };
-
-                return self.resolve_in_module(child, &remaining);
-            }
-        }
-
+        // This will need proper refactoring to handle Module hierarchy correctly
         None
     }
 }
 
 fn count_modules(module: &Module) -> usize {
-    1 + module.children.values()
-        .map(|child| count_modules(child))
-        .sum::<usize>()
+    // TODO: Properly count children when Module/Shard hierarchy is refactored
+    match &module.data {
+        ModuleData::Shard(shard) => 1 + shard.children.len(),
+        ModuleData::Glyph(glyph) => 1 + glyph.children.len(),
+    }
 }
 
 impl Function {
