@@ -344,31 +344,38 @@ async function showFssPanel(context: vscode.ExtensionContext, uri: vscode.Uri): 
                 fss = await lspClient.syntaxToFss(source, syntaxStyle);
             } catch (e) {
                 console.error('[Fracture] Failed to translate to FSS:', e);
-                fss = `; Error translating to FSS: ${e}\n; Source syntax style: ${currentConfig?.syntaxStyle}\n\n${source}`;
+                fss = `// Error translating to FSS: ${e}\n// Source syntax style: ${currentConfig?.syntaxStyle}\n\n${source}`;
             }
         } else {
-            fss = '; LSP not available, showing source\n\n' + source;
+            fss = '// LSP not available, showing source\n\n' + source;
         }
     }
     catch (e) {
-        fss = `; Error: Could not read file\n; ${e}`;
+        fss = `// Error: Could not read file\n// ${e}`;
     }
 
+    // Escape HTML first
     const escaped = fss
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
     
+    // Apply syntax highlighting for FSS
     const highlighted = escaped
-        .replace(/^(;.*)$/gm, '<span class="comment">$1</span>')
-        .replace(/\b(MODULE|END_MODULE|VERSION|SYNTAX_ORIGIN|IMPORT|STRUCT|IMPL|FUNC|END|BODY|PARAM|SELF|RET|LOCAL|FIELD)\b/g, 
+        // Comments
+        .replace(/^(\s*)(\/\/.*)$/gm, '$1<span class="comment">$2</span>')
+        // Keywords: fn, let, pub, etc.
+        .replace(/\b(fn|let|mut|pub|use|struct|impl|trait|mod|return|if|else|while|for|match|glyph|shard)\b/g, 
             '<span class="keyword">$1</span>')
-        .replace(/\b(LOAD|STORE|STORE_RET|ADD|SUB|MUL|DIV|CMP|CMP_GE|CMP_LE|CMP_EQ|JMP|JZ|JNZ|CALL|ARG|DROP|STRING_ALLOC|STRING_APPEND|STRUCT_INIT)\b/g,
-            '<span class="instruction">$1</span>')
-        .replace(/\b(r\d+|sp|bp|ip)\b/g, '<span class="register">$1</span>')
-        .replace(/(\.\w+:?)/g, '<span class="label">$1</span>')
-        .replace(/\b(\d+\.?\d*)\b/g, '<span class="number">$1</span>')
-        .replace(/("(?:[^"\\]|\\.)*")/g, '<span class="literal">$1</span>');
+        // Types
+        .replace(/\b(String|i32|i64|u32|u64|bool|void|f32|f64)\b/g,
+            '<span class="type">$1</span>')
+        // String literals
+        .replace(/"([^"\\]|\\.)*"/g, '<span class="string">$&</span>')
+        // Numbers
+        .replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="number">$1</span>')
+        // Function names after fn
+        .replace(/\b(fn)\s+(\w+)/g, '<span class="keyword">$1</span> <span class="function">$2</span>');
 
     panel.webview.html = `<!DOCTYPE html>
 <html>
@@ -379,22 +386,26 @@ async function showFssPanel(context: vscode.ExtensionContext, uri: vscode.Uri): 
             padding: 20px;
             background: var(--vscode-editor-background);
             color: var(--vscode-editor-foreground);
-            line-height: 1.5;
+            line-height: 1.6;
         }
-        pre { white-space: pre-wrap; margin: 0; }
-        .keyword { color: #c586c0; font-weight: bold; }
-        .instruction { color: #4ec9b0; }
-        .register { color: #9cdcfe; }
-        .literal { color: #ce9178; }
-        .number { color: #b5cea8; }
-        .comment { color: #6a9955; font-style: italic; }
-        .label { color: #dcdcaa; }
+        pre {
+            white-space: pre-wrap;
+            margin: 0;
+            font-size: 13px;
+        }
         .header {
             margin-bottom: 20px;
             padding: 10px;
             background: var(--vscode-textBlockQuote-background);
             border-left: 4px solid var(--vscode-textLink-foreground);
         }
+        /* FSS Syntax Colors */
+        .keyword { color: #c586c0; font-weight: bold; }
+        .type { color: #4ec9b0; }
+        .function { color: #dcdcaa; font-weight: bold; }
+        .string { color: #ce9178; }
+        .number { color: #b5cea8; }
+        .comment { color: #6a9955; font-style: italic; }
     </style>
 </head>
 <body>
