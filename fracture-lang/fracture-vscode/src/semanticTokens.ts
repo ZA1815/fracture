@@ -6,9 +6,12 @@ export const LEGEND = new vscode.SemanticTokensLegend(
     [
         'keyword', 'variable', 'string', 'number', 'function', 
         'struct', 'type', 'operator', 'comment', 'parameter',
-        'property', 'enumMember', 'decorator', 'macro'
+        'property', 'enumMember', 'decorator', 'macro',
+        'class', 'interface', 'namespace', 'method',
+        'typeParameter', 'label', 'regexp', 'event'
     ],
-    ['declaration', 'readonly', 'static', 'defaultLibrary']
+    ['declaration', 'readonly', 'static', 'defaultLibrary', 
+     'modification', 'async', 'documentation']
 );
 
 export class FractureSemanticTokensProvider implements vscode.DocumentSemanticTokensProvider {
@@ -34,7 +37,7 @@ export class FractureSemanticTokensProvider implements vscode.DocumentSemanticTo
         }
 
         try {
-            const syntaxStyle = this.config?.syntaxStyle || 'rust';
+            const syntaxStyle = this.config?.syntaxStyle || 'fss';
             const result = await this.client.getSemanticTokens(document.getText(), syntaxStyle);
             
             if (result && result.length > 0) {

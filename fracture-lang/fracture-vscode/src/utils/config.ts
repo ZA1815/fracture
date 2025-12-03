@@ -27,7 +27,7 @@ export interface PackageConfig {
 }
 
 export interface SyntaxConfig {
-    style: 'rust' | 'python' | 'custom';
+    style: 'fss' | 'python' | 'custom';
     custom?: CustomSyntaxConfig;
 }
 
@@ -36,7 +36,7 @@ export interface CustomSyntaxConfig {
     variable_keyword?: string;
     block_style?: 'braces' | 'indent';
     semicolons?: boolean;
-    type_annotation_style?: 'rust' | 'python' | 'typescript';
+    type_annotation_style?: 'fss' | 'python' | 'typescript';
 }
 
 export interface EditorConfig {
@@ -94,8 +94,14 @@ async function loadTomlFile<T>(uri: vscode.Uri): Promise<T | undefined> {
 export async function loadGlobalConfig(): Promise<UserConfig | undefined> {
     const homeDir = os.homedir();
     const globalConfigPath = vscode.Uri.file(path.join(homeDir, '.rift', 'config.toml'));
-    return loadTomlFile<UserConfig>(globalConfigPath);
+    console.log(`[Fracture] Looking for global config at: ${globalConfigPath.fsPath}`);
+    const config = await loadTomlFile<UserConfig>(globalConfigPath);
+    if (config) {
+        console.log('[Fracture] ✓ Loaded global config from ~/.rift/config.toml');
+    }
+    return config;
 }
+
 
 export async function loadProjectLocalConfig(): Promise<UserConfig | undefined> {
     const workspaceFolders = vscode.workspace.workspaceFolders;
@@ -108,7 +114,12 @@ export async function loadProjectLocalConfig(): Promise<UserConfig | undefined> 
         '.rift', 
         'config.toml'
     );
-    return loadTomlFile<UserConfig>(localConfigPath);
+    console.log(`[Fracture] Looking for project-local config at: ${localConfigPath.fsPath}`);
+    const config = await loadTomlFile<UserConfig>(localConfigPath);
+    if (config) {
+        console.log('[Fracture] ✓ Loaded project-local config from .rift/config.toml');
+    }
+    return config;
 }
 
 export async function loadProjectManifest(): Promise<RiftConfig | undefined> {
@@ -118,9 +129,14 @@ export async function loadProjectManifest(): Promise<RiftConfig | undefined> {
     }
     
     const riftPath = vscode.Uri.joinPath(workspaceFolders[0].uri, 'rift.toml');
+    console.log(`[Fracture] Looking for project manifest at: ${riftPath.fsPath}`);
     const config = await loadTomlFile<RiftConfig>(riftPath);
     
     if (config) {
+        console.log('[Fracture] ✓ Loaded project manifest from rift.toml');
+        if (config.syntax?.custom) {
+            console.log('[Fracture]   - Custom syntax config found:', config.syntax.custom);
+        }
         return normalizeProjectConfig(config);
     }
     return undefined;
@@ -172,9 +188,9 @@ export async function loadRiftConfig(): Promise<ResolvedConfig> {
         console.log(`[Fracture] Using syntax from ~/.rift/config.toml: ${syntaxStyle}`);
     }
     else {
-        syntaxStyle = 'rust';
+        syntaxStyle = 'fss';
         syntaxSource = 'default';
-        console.log('[Fracture] Using default syntax: rust');
+        console.log('[Fracture] Using default syntax: fss');
     }
     
     return {
@@ -191,12 +207,12 @@ export async function loadProjectConfig(): Promise<RiftConfig | undefined> {
 
 function normalizeProjectConfig(config: RiftConfig): RiftConfig {
     if (!config.syntax) {
-        config.syntax = { style: 'rust' };
+        config.syntax = { style: 'fss' };
     }
     
-    if (!['rust', 'python', 'custom'].includes(config.syntax.style)) {
-        console.warn(`[Fracture] Unknown syntax style: ${config.syntax.style}, defaulting to 'rust'`);
-        config.syntax.style = 'rust';
+    if (!['fss', 'python', 'custom'].includes(config.syntax.style)) {
+        console.warn(`[Fracture] Unknown syntax style: ${config.syntax.style}, defaulting to 'fss'`);
+        config.syntax.style = 'fss';
     }
     
     if (config.syntax.style === 'custom' && !config.syntax.custom) {
@@ -212,7 +228,7 @@ function normalizeProjectConfig(config: RiftConfig): RiftConfig {
 }
 
 export function getSyntaxStyle(config: ResolvedConfig | undefined): string {
-    return config?.syntaxStyle || 'rust';
+    return config?.syntaxStyle || 'fss';
 }
 
 export function isGitDependency(dep: DependencySpec): dep is GitDependency {
@@ -300,4 +316,105 @@ function serializeToml(config: UserConfig): string {
     }
     
     return lines.join('\n');
+}
+
+/**
+ * Get syntax-specific keywords based on configuration
+ * Reads from the already-loaded config (rift.toml, .rift/config.toml, or ~/.rift/config.toml)
+ */
+export function getSyntaxKeywords(config: ResolvedConfig | undefined): {
+    functionKeyword: string;
+    variableKeyword: string;
+    classKeyword: string;
+    controlFlow: string[];
+    modifiers: string[];
+} {
+    // If we have custom syntax configuration, use it directly
+    if (config?.project?.syntax?.custom) {
+        const custom = config.project.syntax.custom;
+        return {
+            functionKeyword: custom.function_keyword || 'fn',
+            variableKeyword: custom.variable_keyword || 'let',
+            classKeyword: 'struct', // TODO: Add to CustomSyntaxConfig if needed
+            controlFlow: ['if', 'else', 'while', 'for', 'return', 'match', 'break', 'continue'],
+            modifiers: ['pub', 'mut', 'async', 'await']
+        };
+    }
+    
+    // If we have user config with custom syntax, use that
+    if (config?.user?.syntax?.custom) {
+        const custom = config.user.syntax.custom;
+        return {
+            functionKeyword: custom.function_keyword || 'fn',
+            variableKeyword: custom.variable_keyword || 'let',
+            classKeyword: 'struct',
+            controlFlow: ['if', 'else', 'while', 'for', 'return', 'match', 'break', 'continue'],
+            modifiers: ['pub', 'mut', 'async', 'await']
+        };
+    }
+    
+    // Fallback defaults - minimal set, user should define their own
+    return {
+        functionKeyword: 'fn',
+        variableKeyword: 'let',
+        classKeyword: 'struct',
+        controlFlow: ['if', 'else', 'while', 'for', 'return', 'match', 'break', 'continue'],
+        modifiers: ['pub', 'mut', 'async', 'await']
+    };
+}
+
+
+/**
+ * Get syntax style configuration for grammar generation
+ * Reads from the already-loaded config (rift.toml, .rift/config.toml, or ~/.rift/config.toml)
+ */
+export function getSyntaxStyleInfo(config: ResolvedConfig | undefined): {
+    usesBraces: boolean;
+    usesIndentation: boolean;
+    usesSemicolons: boolean;
+    commentStyle: 'slash' | 'hash' | 'both';
+    typeAnnotationStyle: 'colon' | 'arrow' | 'both';
+} {
+    // Check project config for custom syntax first
+    if (config?.project?.syntax?.custom) {
+        const custom = config.project.syntax.custom;
+        return {
+            usesBraces: custom.block_style === 'braces',
+            usesIndentation: custom.block_style === 'indent',
+            usesSemicolons: custom.semicolons ?? true,
+            commentStyle: 'both', // Support both for flexibility
+            typeAnnotationStyle: custom.type_annotation_style === 'python' ? 'colon' : 
+                                 custom.type_annotation_style === 'typescript' ? 'colon' : 'both'
+        };
+    }
+    
+    // Check user config for custom syntax
+    if (config?.user?.syntax?.custom) {
+        const custom = config.user.syntax.custom;
+        return {
+            usesBraces: custom.block_style === 'braces',
+            usesIndentation: custom.block_style === 'indent',
+            usesSemicolons: custom.semicolons ?? true,
+            commentStyle: 'both',
+            typeAnnotationStyle: custom.type_annotation_style === 'python' ? 'colon' : 
+                                 custom.type_annotation_style === 'typescript' ? 'colon' : 'both'
+        };
+    }
+    
+    // Fallback defaults
+    return {
+        usesBraces: true,
+        usesIndentation: false,
+        usesSemicolons: true,
+        commentStyle: 'both', // Support both by default
+        typeAnnotationStyle: 'both'
+    };
+}
+
+
+/**
+ * Generate regex pattern for keywords
+ */
+export function getKeywordPattern(keywords: string[]): string {
+    return '\\b(' + keywords.join('|') + ')\\b';
 }

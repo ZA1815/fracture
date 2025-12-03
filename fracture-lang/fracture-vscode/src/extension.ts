@@ -27,7 +27,7 @@ export async function activate(context: vscode.ExtensionContext) {
         currentConfig = {
             project: undefined,
             user: {},
-            syntaxStyle: 'rust',
+            syntaxStyle: 'fss',
             syntaxSource: 'default'
         };
     }
@@ -117,7 +117,7 @@ export async function activate(context: vscode.ExtensionContext) {
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('fracture.showIr', async () => {
+        vscode.commands.registerCommand('fracture.showFss', async () => {
             const editor = vscode.window.activeTextEditor;
             if (editor && editor.document.uri.fsPath.endsWith('.frac')) {
                 await showFssPanel(context, editor.document.uri);
@@ -143,7 +143,7 @@ export async function activate(context: vscode.ExtensionContext) {
             // Update this when we add more choices
             const choice = await vscode.window.showQuickPick(
                 [
-                    { label: 'rust', description: 'Rust-like syntax (fn, let, {}, semicolons)' },
+                    { label: 'fss', description: 'Fracture Standard Syntax (fn, let, {}, semicolons)' },
                     { label: 'python', description: 'Python-like syntax (def, indentation)' },
                     { label: 'custom', description: 'Custom syntax from config' }
                 ],
@@ -152,7 +152,7 @@ export async function activate(context: vscode.ExtensionContext) {
             
             if (choice) {
                 await saveProjectLocalConfig({
-                    syntax: { style: choice.label as 'rust' | 'python' | 'custom' }
+                    syntax: { style: choice.label as 'fss' | 'python' | 'custom' }
                 });
                 
                 currentConfig = await loadRiftConfig();
@@ -335,10 +335,23 @@ async function showFssPanel(context: vscode.ExtensionContext, uri: vscode.Uri): 
     let fss = 'Loading...';
     try {
         const doc = await vscode.workspace.openTextDocument(uri);
-        fss = doc.getText();
+        const source = doc.getText();
+        
+        // Translate to FSS via LSP if available
+        if (lspClient && currentConfig) {
+            try {
+                const syntaxStyle = currentConfig.syntaxStyle;
+                fss = await lspClient.syntaxToFss(source, syntaxStyle);
+            } catch (e) {
+                console.error('[Fracture] Failed to translate to FSS:', e);
+                fss = `; Error translating to FSS: ${e}\n; Source syntax style: ${currentConfig?.syntaxStyle}\n\n${source}`;
+            }
+        } else {
+            fss = '; LSP not available, showing source\n\n' + source;
+        }
     }
-    catch {
-        fss = '; Error: Could not read file';
+    catch (e) {
+        fss = `; Error: Could not read file\n; ${e}`;
     }
 
     const escaped = fss
@@ -369,17 +382,26 @@ async function showFssPanel(context: vscode.ExtensionContext, uri: vscode.Uri): 
             line-height: 1.5;
         }
         pre { white-space: pre-wrap; margin: 0; }
-        .keyword { color: #c586c0; }
+        .keyword { color: #c586c0; font-weight: bold; }
         .instruction { color: #4ec9b0; }
         .register { color: #9cdcfe; }
         .literal { color: #ce9178; }
         .number { color: #b5cea8; }
         .comment { color: #6a9955; font-style: italic; }
         .label { color: #dcdcaa; }
+        .header {
+            margin-bottom: 20px;
+            padding: 10px;
+            background: var(--vscode-textBlockQuote-background);
+            border-left: 4px solid var(--vscode-textLink-foreground);
+        }
     </style>
 </head>
 <body>
-    <h3>FSS (Fracture Standard Syntax) - On-Disk Format</h3>
+    <div class="header">
+        <h3>FSS (Fracture Standard Syntax)</h3>
+        <p>Translation of <strong>${uri.fsPath.split('/').pop()}</strong> from <strong>${currentConfig?.syntaxStyle || 'unknown'}</strong> syntax</p>
+    </div>
     <pre>${highlighted}</pre>
 </body>
 </html>`;

@@ -260,7 +260,7 @@ class MockLspImplementation {
                     inFunction = true;
                 }
             }
-            else if (syntaxStyle === 'rust' && trimmed.startsWith('fn ')) {
+            else if (syntaxStyle === 'fss' && trimmed.startsWith('fn ')) {
                 const match = trimmed.match(/fn\s+(\w+)\s*\(([^)]*)\)(?:\s*->\s*(\w+))?/);
                 if (match) {
                     if (inFunction) lines.push('END');
@@ -438,7 +438,7 @@ class MockLspImplementation {
             }
             
             else if (trimmed === 'END') {
-                if (syntaxStyle === 'rust') {
+                if (syntaxStyle === 'fss') {
                     lines.push('}');
                 }
                 lines.push('');
@@ -456,7 +456,7 @@ class MockLspImplementation {
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i].trim();
             
-            if (syntaxStyle === 'rust' && line.startsWith('fn ')) {
+            if (syntaxStyle === 'fss' && line.startsWith('fn ')) {
                 const match = line.match(/fn\s+(\w+)/);
                 if (match) {
                     children.push({

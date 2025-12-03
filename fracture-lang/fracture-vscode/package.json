@@ -67,8 +67,8 @@
         "title": "Fracture: Show AST Panel"
       },
       {
-        "command": "fracture.showIr",
-        "title": "Fracture: Show HSIR Panel"
+        "command": "fracture.showFss",
+        "title": "Fracture: Show FSS Translation Panel"
       },
       {
         "command": "fracture.showRawFile",
@@ -161,7 +161,7 @@
           "group": "navigation"
         },
         {
-          "command": "fracture.showIr",
+          "command": "fracture.showFss",
           "when": "resourceExtname == .frac",
           "group": "navigation"
         }
