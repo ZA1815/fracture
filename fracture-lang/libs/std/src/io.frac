@@ -1,0 +1,4 @@
+pub fn println(s: String) {
+    sys_write(1, s, s.len());
+    sys_write(1, "\n", 1);
+}

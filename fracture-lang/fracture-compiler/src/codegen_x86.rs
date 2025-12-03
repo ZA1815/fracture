@@ -164,7 +164,8 @@ impl X86CodeGen {
     }
 
     fn compile_function(&mut self, name: &str, func: &Function) {
-        self.emit(&format!("{}:", name));
+        let safe_name = name.replace("::", "__");
+        self.emit(&format!("{}:", safe_name));
 
         self.emit("    push rbp");
         self.emit("    mov rbp, rsp");
@@ -696,7 +697,8 @@ impl X86CodeGen {
 
         match func {
             Value::Label(label) => {
-                self.emit(&format!("    call {}", label.0));
+                let safe_label = label.0.replace("::", "__");
+                self.emit(&format!("    call {}", safe_label));
             }
             _ => {
                 self.load_value_to_rax(func, ty);

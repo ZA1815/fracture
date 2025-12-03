@@ -30,11 +30,13 @@ pub struct SyntaxProjector {
 
     known_funcs: Vec<String>,
     func_signatures: HashMap<String, Type>,
-    known_vars: Vec<String>
+    known_vars: Vec<String>,
+
+    dependencies: HashMap<String, PathBuf>
 }
 
 impl SyntaxProjector {
-    pub fn new(input: &str, config: SyntaxConfig) -> Self {
+    pub fn new(input: &str, config: SyntaxConfig, dependencies: HashMap<String, PathBuf>) -> Self {
         let mut lexer = Lexer::new(input, config.clone());
         let current = lexer.next_token();
 
@@ -104,6 +106,7 @@ impl SyntaxProjector {
                 m
             },
             known_vars: Vec::new(),
+            dependencies
         }
     }
 
@@ -141,7 +144,8 @@ impl SyntaxProjector {
 
             if self.current.token == Token::Use {
                 if let Ok(use_statement) = self.parse_use_statement(Visibility::Private) {
-                    root_uses.push(use_statement);
+                    root_uses.push(use_statement.clone());
+                    self.pending_uses.push(use_statement);
                 }
                 continue;
             }
@@ -151,7 +155,8 @@ impl SyntaxProjector {
                 if peek == Token::Use {
                     self.advance();
                     if let Ok(use_statement) = self.parse_use_statement(Visibility::Public) {
-                        root_uses.push(use_statement);
+                        root_uses.push(use_statement.clone());
+                        self.pending_uses.push(use_statement);
                     }
                     continue;
                 }
@@ -159,14 +164,8 @@ impl SyntaxProjector {
 
             if self.current.token == Token::Mod {
                 if let Ok(module) = self.parse_module_declaration(Visibility::Private) {
-                    for (name, func) in &module.functions {
-                        let qualified = format!("{}::{}", module.name, name);
-                        all_functions.insert(qualified, func.clone());
-                    }
-                    for (name, s) in &module.structs {
-                        let qualified = format!("{}::{}", module.name, name);
-                        all_structs.insert(qualified, s.clone());
-                    }
+                    self.collect_module_functions(&module, &mut all_functions);
+                    self.collect_module_structs(&module, &mut all_structs);
                     root_module.add_child(module);
                 }
                 continue;
@@ -177,6 +176,8 @@ impl SyntaxProjector {
                 if peek == Token::Mod {
                     self.advance();
                     if let Ok(module) = self.parse_module_declaration(Visibility::Public) {
+                        self.collect_module_functions(&module, &mut all_functions);
+                        self.collect_module_structs(&module, &mut all_structs);
                         root_module.add_child(module);
                     }
                     continue;
@@ -266,6 +267,17 @@ impl SyntaxProjector {
             self.advance();
         }
 
+        for (name, path) in &self.dependencies {
+            let entry = path.join("src/lib.frac");
+            if entry.exists() {
+                if let Ok(module) = self.parse_file_module(&entry, name, Visibility::Public) {
+                    self.collect_module_functions(&module, &mut all_functions);
+                    self.collect_module_structs(&module, &mut all_structs);
+                    root_module.add_child(module);
+                }
+            }
+        }
+
         // Make this use the users syntax mapping instead of hardcoding
         if !all_functions.contains_key("main") {
             let diag = Diagnostic::error(
@@ -286,7 +298,10 @@ impl SyntaxProjector {
             functions: all_functions,
             structs: all_structs,
             entry: "main".to_string(),
-            root_module,
+            root_module: {
+                root_module.uses = root_uses.clone();
+                root_module
+            },
             uses: root_uses,
         })
     }
@@ -1680,12 +1695,21 @@ impl SyntaxProjector {
                 });
             }
             Token::Ident(name) => {
+                eprintln!("Parsing ident: {}", name);
                 let name = name.clone();
                 let ident_span = self.current.span;
                 self.advance();
 
+                eprintln!("After advance, current token: {:?}", self.current.token);
+
                 if self.current.token == Token::DoubleColon {
-                    let mut path_parts = vec![name.clone()];
+                    let mut path_parts = if let Some(resolved) = self.resolve_import(&name) {
+                        resolved
+                    }
+                    else {
+                        vec![name.clone()]
+                    };
+
                     while self.current.token == Token::DoubleColon {
                         self.advance();
                         let part = self.expect_ident()?;
@@ -1786,568 +1810,54 @@ impl SyntaxProjector {
                     }
                 }
 
-                if self.current.token == Token::LeftParentheses {
-                    if name == "print" {
-                        self.advance();
 
+
+                if self.current.token == Token::LeftParentheses {    
+                    self.advance();
+
+                    let mut args = Vec::new();
+                    while self.current.token != Token::RightParentheses {
                         let (arg_insts, arg_reg) = self.parse_expression()?;
                         instructions.extend(arg_insts);
+                        args.push(Value::Reg(arg_reg));
 
-                        self.expect(Token::RightParentheses)?;
-
-                        instructions.push(Inst::Print { value: arg_reg });
-
-                        // Change to void later as the backend doesn't suppor it yet
-                        instructions.push(Inst::Move {
-                            dst: result_reg.clone(),
-                            src: Value::Const(Const::I32(0)),
-                            ty: Type::I32
-                        });
-
-                        return Ok((instructions, result_reg));
-                    }
-                    else if name == "println" {
-                        self.advance();
-                        
-                        let (arg_insts, arg_reg) = self.parse_expression()?;
-                        instructions.extend(arg_insts);
-                        
-                        self.expect(Token::RightParentheses)?;
-                        
-                        instructions.push(Inst::Println { 
-                            value: arg_reg 
-                        });
-                        
-                        // Change to void later as the backend doesn't support it yet
-                        instructions.push(Inst::Move {
-                            dst: result_reg.clone(),
-                            src: Value::Const(Const::I32(0)),
-                            ty: Type::I32
-                        });
-                        
-                        return Ok((instructions, result_reg));
-                    }
-                    else if name == "eprint" {
-                        self.advance();
-                        
-                        let (arg_insts, arg_reg) = self.parse_expression()?;
-                        instructions.extend(arg_insts);
-                        
-                        self.expect(Token::RightParentheses)?;
-                        
-                        instructions.push(Inst::Eprint { value: arg_reg });
-                        
-                        // Change to void later as the backend doesn't suppor it yet
-                        instructions.push(Inst::Move {
-                            dst: result_reg.clone(),
-                            src: Value::Const(Const::I32(0)),
-                            ty: Type::I32
-                        });
-                        
-                        return Ok((instructions, result_reg));
-                    }
-                    else if name == "eprintln" {
-                        self.advance();
-                        
-                        let (arg_insts, arg_reg) = self.parse_expression()?;
-                        instructions.extend(arg_insts);
-                        
-                        self.expect(Token::RightParentheses)?;
-                        
-                        instructions.push(Inst::Eprintln { value: arg_reg });
-                        
-                        // Change to void later as the backend doesn't support it yet
-                        instructions.push(Inst::Move {
-                            dst: result_reg.clone(),
-                            src: Value::Const(Const::I32(0)),
-                            ty: Type::I32
-                        });
-                        
-                        return Ok((instructions, result_reg));
-                    }
-                    else if name == "read_line" {
-                        self.advance();
-                        self.expect(Token::RightParentheses)?;
-                        
-                        instructions.push(Inst::ReadLine { 
-                            dst: result_reg.clone() 
-                        });
-                        
-                        self.reg_types.insert(result_reg.clone(), Type::String);
-                        
-                        return Ok((instructions, result_reg));
-                    }
-                    else if name == "itoa" || name == "to_string" {
-                        self.advance();
-
-                        let (val_insts, val_reg) = self.parse_expression()?;
-                        instructions.extend(val_insts);
-
-                        self.expect(Token::RightParentheses)?;
-
-                        instructions.push(Inst::IntToString { dst: result_reg.clone(), value: Value::Reg(val_reg) });
-
-                        self.reg_types.insert(result_reg.clone(), Type::String);
-
-                        return Ok((instructions, result_reg));
-                    }
-                    else if name == "sys_write" {
-                        self.advance();
-
-                        let (fd_insts, fd_reg) = self.parse_expression()?;
-                        instructions.extend(fd_insts);
-                        self.expect(Token::Comma)?;
-
-                        let (buf_insts, buf_reg) = self.parse_expression()?;
-                        instructions.extend(buf_insts);
-                        self.expect(Token::Comma)?;
-
-                        let (len_insts, len_reg) = self.parse_expression()?;
-                        instructions.extend(len_insts);
-                        
-                        self.expect(Token::RightParentheses)?;
-
-                        instructions.push(Inst::SysWrite {
-                            fd: Value::Reg(fd_reg),
-                            buf: buf_reg,
-                            len: Value::Reg(len_reg),
-                            result_dst: result_reg.clone()
-                        });
-
-                        self.reg_types.insert(result_reg.clone(), Type::I64);
-
-                        return Ok((instructions, result_reg));
-                    }
-                    else if name == "sys_read" {
-                        self.advance();
-                        
-                        let (fd_insts, fd_reg) = self.parse_expression()?;
-                        instructions.extend(fd_insts);
-                        self.expect(Token::Comma)?;
-                        
-                        let (buf_insts, buf_reg) = self.parse_expression()?;
-                        instructions.extend(buf_insts);
-                        self.expect(Token::Comma)?;
-                        
-                        let (len_insts, len_reg) = self.parse_expression()?;
-                        instructions.extend(len_insts);
-                        
-                        self.expect(Token::RightParentheses)?;
-                        
-                        instructions.push(Inst::SysRead {
-                            fd: Value::Reg(fd_reg),
-                            buf: buf_reg,
-                            len: Value::Reg(len_reg),
-                            result_dst: result_reg.clone()
-                        });
-                        
-                        self.reg_types.insert(result_reg.clone(), Type::I64);
-                        
-                        return Ok((instructions, result_reg));
-                    }
-                    else if name == "sys_open" {
-                        self.advance();
-
-                        let (path_insts, path_reg) = self.parse_expression()?;
-                        instructions.extend(path_insts);
-                        self.expect(Token::Comma)?;
-
-                        let (flag_insts, flag_reg) = self.parse_expression()?;
-                        instructions.extend(flag_insts);
-                        self.expect(Token::Comma)?;
-
-                        let (mode_insts, mode_reg) = self.parse_expression()?;
-                        instructions.extend(mode_insts);
-                        
-                        self.expect(Token::RightParentheses)?;
-
-                        instructions.push(Inst::SysOpen {
-                            path: path_reg,
-                            flags: Value::Reg(flag_reg),
-                            mode: Value::Reg(mode_reg),
-                            result_dst: result_reg.clone()
-                        });
-
-                        self.reg_types.insert(result_reg.clone(), Type::I32);
-
-                        return Ok((instructions, result_reg));
-                    }
-                    else if name == "sys_close" {
-                        self.advance();
-
-                        let (fd_insts, fd_reg) = self.parse_expression()?;
-                        instructions.extend(fd_insts);
-
-                        self.expect(Token::RightParentheses)?;
-
-                        instructions.push(Inst::SysClose {
-                            fd: Value::Reg(fd_reg),
-                            result_dst: result_reg.clone()
-                        });
-
-                        self.reg_types.insert(result_reg.clone(), Type::I32);
-
-                        return Ok((instructions, result_reg))
-                    }
-                    else if name == "file_exists" || name == "path_exists" {
-                        self.advance();
-
-                        let (path_insts, path_reg) = self.parse_expression()?;
-                        instructions.extend(path_insts);
-
-                        self.expect(Token::RightParentheses)?;
-
-                        let access_result = self.alloc_reg();
-
-                        instructions.push(Inst::SysAccess {
-                            path: path_reg,
-                            mode: Value::Const(Const::I32(0)),
-                            result_dst: access_result.clone()
-                        });
-
-                        instructions.push(Inst::Eq {
-                            dst: result_reg.clone(),
-                            lhs: Value::Reg(access_result),
-                            rhs: Value::Const(Const::I64(0)),
-                            ty: Type::I64
-                        });
-
-                        self.reg_types.insert(result_reg.clone(), Type::Bool);
-
-                        return Ok((instructions, result_reg));
-                    }
-                    else if name == "is_readable" {
-                        self.advance();
-
-                        let (path_insts, path_reg) = self.parse_expression()?;
-                        instructions.extend(path_insts);
-
-                        self.expect(Token::RightParentheses)?;
-
-                        let access_result = self.alloc_reg();
-
-                        instructions.push(Inst::SysAccess {
-                            path: path_reg,
-                            mode: Value::Const(Const::I32(4)),
-                            result_dst: access_result.clone()
-                        });
-
-                        instructions.push(Inst::Eq {
-                            dst: result_reg.clone(),
-                            lhs: Value::Reg(access_result),
-                            rhs: Value::Const(Const::I64(0)),
-                            ty: Type::I64
-                        });
-
-                        self.reg_types.insert(result_reg.clone(), Type::Bool);
-
-                        return Ok((instructions, result_reg));
-                    }
-                    else if name == "is_writable" {
-                        self.advance();
-
-                        let (path_insts, path_reg) = self.parse_expression()?;
-                        instructions.extend(path_insts);
-
-                        self.expect(Token::RightParentheses)?;
-
-                        let access_result = self.alloc_reg();
-
-                        instructions.push(Inst::SysAccess {
-                            path: path_reg,
-                            mode: Value::Const(Const::I32(2)),
-                            result_dst: access_result.clone()
-                        });
-
-                        instructions.push(Inst::Eq {
-                            dst: result_reg.clone(),
-                            lhs: Value::Reg(access_result),
-                            rhs: Value::Const(Const::I64(0)),
-                            ty: Type::I64
-                        });
-
-                        self.reg_types.insert(result_reg.clone(), Type::Bool);
-
-                        return Ok((instructions, result_reg));
-                    }
-                    else if name == "read_file" || name == "fs_read" {
-                        self.advance();
-
-                        let (path_insts, path_reg) = self.parse_expression()?;
-                        instructions.extend(path_insts);
-
-                        self.expect(Token::RightParentheses)?;
-
-                        let error_reg = self.alloc_reg();
-
-                        instructions.push(Inst::FileReadToString {
-                            dst: result_reg.clone(),
-                            path: path_reg,
-                            result_dst: error_reg
-                        });
-
-                        self.reg_types.insert(result_reg.clone(), Type::String);
-
-                        return Ok((instructions, result_reg));
-                    }
-                    else if name == "write_file" || name == "fs_write" {
-                        self.advance();
-
-                        let (path_insts, path_reg) = self.parse_expression()?;
-                        instructions.extend(path_insts);
-
-                        self.expect(Token::Comma)?;
-
-                        let (content_insts, content_reg) = self.parse_expression()?;
-                        instructions.extend(content_insts);
-
-                        self.expect(Token::RightParentheses)?;
-
-                        instructions.push(Inst::FileWriteString {
-                            path: path_reg,
-                            content: content_reg,
-                            result_dst: result_reg.clone()
-                        });
-
-                        self.reg_types.insert(result_reg.clone(), Type::I64);
-
-                        return Ok((instructions, result_reg));
-                    }
-                    else if name == "append_file" || name == "fs_append" {
-                        self.advance();
-
-                        let (path_insts, path_reg) = self.parse_expression()?;
-                        instructions.extend(path_insts);
-
-                        self.expect(Token::Comma)?;
-
-                        let (content_insts, content_reg) = self.parse_expression()?;
-                        instructions.extend(content_insts);
-
-                        self.expect(Token::RightParentheses)?;
-
-                        instructions.push(Inst::FileAppendString {
-                            path: path_reg,
-                            content: content_reg,
-                            result_dst: result_reg.clone()
-                        });
-
-                        self.reg_types.insert(result_reg.clone(), Type::I64);
-
-                        return Ok((instructions, result_reg));
-                    }
-                    else if name == "mkdir" || name == "create_dir" {
-                        self.advance();
-
-                        let (path_insts, path_reg) = self.parse_expression()?;
-                        instructions.extend(path_insts);
-
-                        let mode = if self.current.token == Token::Comma {
+                        if self.current.token == Token::Comma {
                             self.advance();
-                            
-                            let (mode_insts, mode_reg) = self.parse_expression()?;
-                            instructions.extend(mode_insts);
-
-                            Value::Reg(mode_reg)
                         }
-                        else {
-                            Value::Const(Const::I32(493))
-                        };
-
-                        self.expect(Token::RightParentheses)?;
-
-                        instructions.push(Inst::SysMkdir {
-                            path: path_reg,
-                            mode,
-                            result_dst: result_reg.clone()
-                        });
-
-                        self.reg_types.insert(result_reg.clone(), Type::I64);
-
-                        return Ok((instructions, result_reg));
                     }
-                    else if name == "rmdir" || name == "remove_dir" {
-                        self.advance();
 
-                        let (path_insts, path_reg) = self.parse_expression()?;
-                        instructions.extend(path_insts);
+                    self.expect(Token::RightParentheses)?;
 
-                        self.expect(Token::RightParentheses)?;
+                    if name == "sys_write" {
+                        if args.len() != 3 {
+                             let diag = Diagnostic::error(
+                                format!("sys_write expects 3 arguments, found {}", args.len()),
+                                ident_span
+                            );
+                            self.diagnostics.emit(diag);
+                        } else {
+                            let fd = args[0].clone();
+                            let buf_val = args[1].clone();
+                            let len = args[2].clone();
 
-                        instructions.push(Inst::SysRmdir {
-                            path: path_reg,
-                            result_dst: result_reg.clone()
-                        });
-
-                        self.reg_types.insert(result_reg.clone(), Type::I64);
-
-                        return Ok((instructions, result_reg));
-                    }
-                    else if name == "unlink" || name == "remove_file" || name == "delete_file" {
-                        self.advance();
-
-                        let (path_insts, path_reg) = self.parse_expression()?;
-                        instructions.extend(path_insts);
-
-                        self.expect(Token::RightParentheses)?;
-
-                        instructions.push(Inst::SysUnlink {
-                            path: path_reg,
-                            result_dst: result_reg.clone()
-                        });
-
-                        self.reg_types.insert(result_reg.clone(), Type::I64);
-
-                        return Ok((instructions, result_reg));
-                    }
-                    else if name == "rename" || name == "mv" {
-                        self.advance();
-
-                        let (old_path_insts, old_path_reg) = self.parse_expression()?;
-                        instructions.extend(old_path_insts);
-
-                        self.expect(Token::Comma)?;
-
-                        let (new_path_insts, new_path_reg) = self.parse_expression()?;
-                        instructions.extend(new_path_insts);
-
-                        self.expect(Token::RightParentheses)?;
-
-                        instructions.push(Inst::SysRename {
-                            old_path: old_path_reg,
-                            new_path: new_path_reg,
-                            result_dst: result_reg.clone()
-                        });
-
-                        self.reg_types.insert(result_reg.clone(), Type::I64);
-
-                        return Ok((instructions, result_reg));
-                    }
-                    else if name == "getcwd" || name == "current_dir" || name == "pwd" {
-                        self.advance();
-
-                        self.expect(Token::RightParentheses)?;
-
-                        instructions.push(Inst::SysGetcwd {
-                            dst: result_reg.clone()
-                        });
-
-                        self.reg_types.insert(result_reg.clone(), Type::String);
-
-                        return Ok((instructions, result_reg));
-                    }
-                    else if name == "chdir" || name == "cd" || name == "set_current_dir" {
-                        self.advance();
-
-                        let (path_insts, path_reg) = self.parse_expression()?;
-                        instructions.extend(path_insts);
-
-                        self.expect(Token::RightParentheses)?;
-
-                        instructions.push(Inst::SysChdir {
-                            path: path_reg,
-                            result_dst: result_reg.clone()
-                        });
-
-                        self.reg_types.insert(result_reg.clone(), Type::I64);
-
-                        return Ok((instructions, result_reg));
-                    }
-                    else if name == "file_size" {
-                        self.advance();
-
-                        let (path_insts, path_reg) = self.parse_expression()?;
-                        instructions.extend(path_insts);
-
-                        self.expect(Token::RightParentheses)?;
-
-                        let stat_buf = self.alloc_reg();
-                        let stat_result = self.alloc_reg();
-
-                        instructions.push(Inst::SysStat {
-                            path: path_reg,
-                            stat_buf: stat_buf.clone(),
-                            result_dst: stat_result.clone()
-                        });
-
-                        instructions.push(Inst::Load {
-                            dst: result_reg.clone(),
-                            ptr: Value::Reg(stat_buf),
-                            ty: Type::I64
-                        });
-
-                        self.reg_types.insert(result_reg.clone(), Type::I64);
-
-                        return Ok((instructions, result_reg));
-                    }
-                    else if name == "sys_seek" || name == "lseek" {
-                        self.advance();
-
-                        let (fd_insts, fd_reg) = self.parse_expression()?;
-                        instructions.extend(fd_insts);
-
-                        self.expect(Token::Comma)?;
-
-                        let (offset_insts, offset_reg) = self.parse_expression()?;
-                        instructions.extend(offset_insts);
-
-                        self.expect(Token::Comma)?;
-
-                        let (whence_insts, whence_reg) = self.parse_expression()?;
-                        instructions.extend(whence_insts);
-
-                        self.expect(Token::RightParentheses)?;
-
-                        instructions.push(Inst::SysSeek {
-                            fd: Value::Reg(fd_reg),
-                            offset: Value::Reg(offset_reg),
-                            whence: Value::Reg(whence_reg),
-                            result_dst: result_reg.clone()
-                        });
-
-                        self.reg_types.insert(result_reg.clone(), Type::I64);
-
-                        return Ok((instructions, result_reg));
-                    }
-                    else if name == "sys_access" || name == "access" {
-                        self.advance();
-
-                        let (path_insts, path_reg) = self.parse_expression()?;
-                        instructions.extend(path_insts);
-
-                        self.expect(Token::Comma)?;
-
-                        let (mode_insts, mode_reg) = self.parse_expression()?;
-                        instructions.extend(mode_insts);
-
-                        self.expect(Token::RightParentheses)?;
-
-                        instructions.push(Inst::SysAccess {
-                            path: path_reg,
-                            mode: Value::Reg(mode_reg),
-                            result_dst: result_reg.clone()
-                        });
-
-                        self.reg_types.insert(result_reg.clone(), Type::I64);
-
-                        return Ok((instructions, result_reg));
-                    }                    
-                    else {
-                        self.advance();
-
-                        let mut args = Vec::new();
-                        while self.current.token != Token::RightParentheses {
-                            let (arg_insts, arg_reg) = self.parse_expression()?;
-                            instructions.extend(arg_insts);
-                            args.push(Value::Reg(arg_reg));
-
-                            if self.current.token == Token::Comma {
-                                self.advance();
+                            if let Value::Reg(buf_reg) = buf_val {
+                                instructions.push(Inst::SysWrite {
+                                    fd,
+                                    buf: buf_reg,
+                                    len,
+                                    result_dst: result_reg.clone()
+                                });
+                                self.reg_types.insert(result_reg.clone(), Type::I64);
+                            } else {
+                                 let diag = Diagnostic::error(
+                                    "sys_write buffer argument must be a variable/register".to_string(),
+                                    ident_span
+                                );
+                                self.diagnostics.emit(diag);
                             }
                         }
-
-                        self.expect(Token::RightParentheses)?;
-
+                    }
+                    else {
                         let call_ty = self.func_signatures.get(&name).cloned().unwrap_or(Type::Unknown);
                         self.reg_types.insert(result_reg.clone(), call_ty.clone());
 
@@ -2814,6 +2324,14 @@ impl SyntaxProjector {
     }
 
     fn resolve_module_path(&mut self, mod_name: &str) -> Result<PathBuf, ()> {
+        if let Some(root_path) = self.dependencies.get(mod_name) {
+            // Make this non-hardcoded later
+            let entry = root_path.join("src/lib.frac");
+            if entry.exists() {
+                return Ok(entry);
+            }
+        }
+
         let current_path = Path::new(&self.filename);
         let parent_dir = current_path.parent().unwrap_or(Path::new("."));
 
@@ -2841,7 +2359,7 @@ impl SyntaxProjector {
     fn parse_file_module(&self, path: &Path, mod_name: &str, visibility: Visibility) -> Result<Module, ()> {
         let source = fs::read_to_string(path).map_err(|_| { () })?;
 
-        let mut sub_projector = SyntaxProjector::new(&source, self.config.clone())
+        let mut sub_projector = SyntaxProjector::new(&source, self.config.clone(), self.dependencies.clone())
             .with_filename(path.to_str().unwrap());
 
         let mut new_mod_path = self.current_module_path.clone();
@@ -2875,14 +2393,16 @@ impl SyntaxProjector {
 
             if self.current.token == Token::Use {
                 let use_stmt = self.parse_use_statement(Visibility::Private)?;
-                module.uses.push(use_stmt);
+                module.uses.push(use_stmt.clone());
+                self.pending_uses.push(use_stmt);
                 continue;
             }
 
             if self.current.token == Token::Pub && self.peek().token == Token::Use {
                 self.advance();
                 let use_stmt = self.parse_use_statement(Visibility::Public)?;
-                module.uses.push(use_stmt);
+                module.uses.push(use_stmt.clone());
+                self.pending_uses.push(use_stmt);
                 continue;
             }
 
@@ -2934,5 +2454,60 @@ impl SyntaxProjector {
         }
 
         Ok(())
+    }
+
+    fn resolve_import(&self, name: &str) -> Option<Vec<String>> {
+        for use_stmt in &self.pending_uses {
+            match &use_stmt.tree {
+                UseTree::Simple { path, alias } => {
+                    let match_name = if let Some(alias) = alias {
+                        alias
+                    }
+                    else {
+                        if let Some(PathSegment::Ident(last)) = path.segments.last() {
+                            last
+                        }
+                        else {
+                            continue;
+                        }
+                    };
+
+                    if match_name == name {
+                        return Some(path.segments.iter().map(|s| {
+                            match s {
+                                PathSegment::Ident(i) => i.clone(),
+                                PathSegment::Shard => "shard".to_string(),
+                                PathSegment::SelfKw => "self".to_string(),
+                                PathSegment::Super => "super".to_string()
+                            }
+                        }).collect());
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn collect_module_functions(&self, module: &Module, all_functions: &mut HashMap<String, Function>) {
+        for func in module.functions.values() {
+            let qualified = func.qualified_name();
+            all_functions.insert(qualified, func.clone());
+        }
+
+        for child in module.children.values() {
+            self.collect_module_functions(child, all_functions);
+        }
+    }
+
+    fn collect_module_structs(&self, module: &Module, all_structs: &mut HashMap<String, StructDef>) {
+        for struct_def in module.structs.values() {
+            // Assuming structs are unique
+            all_structs.insert(struct_def.name.clone(), struct_def.clone());
+        }
+
+        for child in module.children.values() {
+            self.collect_module_structs(child, all_structs);
+        }
     }
 }

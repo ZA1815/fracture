@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::fs;
+use std::collections::HashMap;
 use colored::*;
 
 use crate::manifest::{Manifest, CompilerSection};
@@ -267,12 +268,26 @@ impl BuildCommand {
         let output_path = output_dir.join(&manifest.package.name);
         
         let syntax_config = self.load_syntax_config(&manifest, &project_root)?;
+
+        let mut dependencies = HashMap::new();
+
+        for (name, spec) in &manifest.dependencies {
+            if let crate::manifest::DependencySpec::Detailed(d) = spec {
+                if let Some(p) = &d.path {
+                    let dep_path = project_root.join(p).canonicalize()
+                        .map_err(|e| format!("Failed to resolve dependency path: {}", e))?;
+
+                    dependencies.insert(name.clone(), dep_path);
+                }
+            }
+        }
         
         self.compile(
             &entry_point,
             &output_path,
             compile_mode,
             syntax_config,
+            dependencies
         )?;
         
         println!(
@@ -349,6 +364,7 @@ impl BuildCommand {
         output: &Path,
         mode: &str,
         syntax_config: fracture_ir::SyntaxConfig,
+        dependencies: std::collections::HashMap<String, PathBuf>
     ) -> CommandResult<()> {
         use fracture_linter::{Linter, LinterOptions};
         use fracture_compiler::{Compiler, CompilerMode, CompilerOptions, Target};
@@ -357,6 +373,7 @@ impl BuildCommand {
             config: syntax_config,
             output_hsir: false,
             output_text: false,
+            dependencies
         });
         
         let input_str = input.to_str()
@@ -466,6 +483,19 @@ impl CheckCommand {
             .ok_or_else(|| "No entry point found".to_string())?;
         
         let syntax_config = self.load_syntax_config(&manifest, &project_root)?;
+
+        let mut dependencies = HashMap::new();
+
+        for (name, spec) in &manifest.dependencies {
+            if let crate::manifest::DependencySpec::Detailed(d) = spec {
+                if let Some(p) = &d.path {
+                    let dep_path = project_root.join(p).canonicalize()
+                        .map_err(|e| format!("Failed to resolve dependency path: {}", e))?;
+
+                    dependencies.insert(name.clone(), dep_path);
+                }
+            }
+        }
         
         use fracture_linter::{Linter, LinterOptions};
         
@@ -473,6 +503,7 @@ impl CheckCommand {
             config: syntax_config,
             output_hsir: false,
             output_text: false,
+            dependencies
         });
         
         let program = linter.lint_file(

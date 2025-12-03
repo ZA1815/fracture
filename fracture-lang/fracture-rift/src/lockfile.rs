@@ -71,7 +71,7 @@ impl Lockfile {
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        let contents = toml::to_string_pretty(path)
+        let contents = toml::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize rift.lock: {}", e))?;
 
         let with_header = format!(

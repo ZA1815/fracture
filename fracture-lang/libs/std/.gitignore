@@ -1,0 +1,18 @@
+# Fracture build artifacts
+/target/
+*.o
+*.s
+*.hsir
+
+# Rift local cache
+/.rift/
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS files
+.DS_Store
+Thumbs.db

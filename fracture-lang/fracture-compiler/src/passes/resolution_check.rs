@@ -5,7 +5,7 @@ type ImportMap = HashMap<String, ModulePath>;
 
 pub fn check(program: &Program) -> Result<(), String> {
     let resolver = Resolver::new(program);
-    resolver.check_module(&program.root_module, &ModulePath::new("shard"))?;
+    resolver.check_module(&program.root_module, &ModulePath { segments: vec![PathSegment::Shard] })?;
 
     Ok(())
 }
@@ -55,9 +55,15 @@ impl<'a> Resolver<'a> {
     fn expand_use_tree(&self, tree: &UseTree, current_mod_path: &ModulePath, imports: &mut ImportMap) -> Result<(), String> {
         match tree {
             UseTree::Simple { path, alias } => {
-                let target_func = self.resolve_absolute_path(path, current_mod_path)?;
-
-                self.check_visibility(target_func, current_mod_path)?;
+                if let Ok(target_func) = self.resolve_absolute_path(path, current_mod_path) {
+                    self.check_visibility(target_func, current_mod_path)?;
+                }
+                else if let Ok(_) = self.find_module(path, current_mod_path) {
+                    // It's a valid module, that's fine
+                }
+                else {
+                    return Err(format!("Could not resolve import: {}", path.to_string()));
+                }
 
                 let local_name = if let Some(a) = alias {
                     a.clone()
@@ -139,26 +145,14 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve_call_path(&self, path: &ModulePath, current_mod_path: &ModulePath, imports: &ImportMap) -> Result<&Function, String> {
-        if path.segments.len() == 1 {
-            if let PathSegment::Ident(name) = &path.segments[0] {
+        if let Some(first) = path.segments.first() {
+            if let PathSegment::Ident(name) = first {
                 if let Some(imported_path) = imports.get(name) {
-                    return self.resolve_absolute_path(imported_path, current_mod_path);
-                }
-
-                let mut local_full_segments = current_mod_path.segments.clone();
-                local_full_segments.push(PathSegment::Ident(name.clone()));
-                let local_path = ModulePath { segments: local_full_segments };
-
-                if let Ok(func) = self.resolve_absolute_path(&local_path, current_mod_path) {
-                    return Ok(func);
-                }
-
-                let root_path = ModulePath {
-                    segments: vec![PathSegment::Shard, PathSegment::Ident(name.clone())]
-                };
-
-                if let Ok(func) = self.resolve_absolute_path(&root_path, current_mod_path) {
-                    return Ok(func);
+                    let mut new_segments = imported_path.segments.clone();
+                    new_segments.extend_from_slice(&path.segments[1..]);
+                    
+                    let new_path = ModulePath { segments: new_segments };
+                    return self.resolve_absolute_path(&new_path, current_mod_path);
                 }
             }
         }

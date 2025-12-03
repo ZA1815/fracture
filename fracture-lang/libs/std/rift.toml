@@ -1,0 +1,28 @@
+# Fracture Project Manifest
+# See https://fracture-lang.org/docs/manifest for all options
+
+[package]
+name = "std"
+version = "0.1.0"
+# authors = ["Your Name <you@example.com>"]
+# description = "A short description of your project"
+# license = "MIT"
+
+[dependencies]
+# Add dependencies here:
+# some-lib = "1.0"
+# another-lib = { git = "https://github.com/user/repo" }
+
+[compiler]
+mode = "safe"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SYNTAX NOTE:
+# Your personal syntax preferences live in ~/.rift/config.toml (gitignored).
+# This keeps your style personal until you choose to share it.
+#
+# To share your syntax style with collaborators:
+#   rift syntax export
+#
+# This adds a [syntax] section here that others can use.
+# ─────────────────────────────────────────────────────────────────────────────

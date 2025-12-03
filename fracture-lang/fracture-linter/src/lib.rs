@@ -6,13 +6,15 @@ pub use fracture_ir::{Program, SyntaxConfig};
 pub use projector::SyntaxProjector;
 pub use lexer::Lexer;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct LinterOptions {
     pub config: SyntaxConfig,
     pub output_hsir: bool,
-    pub output_text: bool
+    pub output_text: bool,
+    pub dependencies: HashMap<String, PathBuf>
 }
 
 impl Default for LinterOptions {
@@ -21,7 +23,8 @@ impl Default for LinterOptions {
             // Change this to be the HSIR as users should be able to type in that if they wish
             config: SyntaxConfig::rust(),
             output_hsir: true,
-            output_text: false
+            output_text: false,
+            dependencies: HashMap::new()
         }
     }
 }
@@ -45,7 +48,13 @@ impl Linter {
     }
 
     pub fn lint_source(&self, source: &str, source_name: &str) -> Result<Program, String> {
-        let mut projector = SyntaxProjector::new(source, self.options.config.clone());
+        let mut projector = SyntaxProjector::new(
+            source,
+            self.options.config.clone(),
+            self.options.dependencies.clone()
+        );
+
+        projector = projector.with_filename(source_name);
 
         match projector.project_to_hsir() {
             Ok(program) => {
