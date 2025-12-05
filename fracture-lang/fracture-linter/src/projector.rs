@@ -2678,6 +2678,7 @@ impl SyntaxProjector {
         self.diagnostics.emit(diag);
     }
 
+    #[allow(dead_code)]
     fn error_undefined_function(&mut self, name: &str, span: Span) {
         let known: Vec<&str> = self.known_funcs.iter().map(|s| s.as_str()).collect();
 

@@ -1,4 +1,3 @@
-use fracture_ir::SyntaxConfig;
 use serde::{Serialize, Deserialize};
 use semver::{Version, VersionReq};
 use std::collections::HashMap;
