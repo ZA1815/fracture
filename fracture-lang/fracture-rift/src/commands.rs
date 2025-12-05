@@ -114,6 +114,12 @@ impl InitCommand {
     }
     
     fn generate_manifest_toml(&self, name: &str) -> CommandResult<String> {
+        let home_dir = dirs::home_dir()
+            .ok_or("Could not determine home directory")?;
+        let stdlib_path = home_dir.join(".fracture").join("stdlib");
+        let stdlib_path_str = stdlib_path.to_str()
+            .ok_or("Invalid stdlib path")?;
+
         let toml = format!(
             // Might decide to remove docs thing later if I don't have the website
             // Add later: # See https://fracture-lang.org/docs/manifest for all options
@@ -126,7 +132,7 @@ version = "0.1.0"
 # license = "MIT"
 
 [dependencies]
-std = {{ git = "https://github.com/fracture-lang/fracture-stdlib" }}
+std = {{ path = "{stdlib_path}" }}
 # some-lib = "1.0"
 # another-lib = {{ git = "https://github.com/user/repo" }}
 
@@ -142,8 +148,9 @@ std = {{ git = "https://github.com/fracture-lang/fracture-stdlib" }}
 # ─────────────────────────────────────────────────────────────────────────────
 "#,
             name = name,
+            stdlib_path = stdlib_path_str,
         );
-        
+
         Ok(toml)
     }
     
