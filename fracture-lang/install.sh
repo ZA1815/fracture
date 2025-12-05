@@ -14,6 +14,7 @@ REPO_URL="https://github.com/ZA1815/fracture"
 INSTALL_DIR="/usr/local/bin"
 TEMP_DIR=$(mktemp -d)
 FRACTURE_HOME="${HOME}/.fracture"
+RIFT_CONFIG_DIR="${HOME}/.rift"
 
 detect_platform() {
     local os=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -231,31 +232,27 @@ install_binaries() {
 setup_fracture_home() {
     echo -e "${BLUE}Setting up Fracture configuration...${NC}"
 
-    mkdir -p "$FRACTURE_HOME"
+    mkdir -p "$RIFT_CONFIG_DIR"
 
-    local config_file="$FRACTURE_HOME/config.toml"
+    local config_file="$RIFT_CONFIG_DIR/config.toml"
     if [ ! -f "$config_file" ]; then
         cat > "$config_file" << EOF
-# Fracture Configuration
+syntax = "fss"
 
-[global]
-default_syntax = "fss"
-
-[paths]
-stdlib_path = "${FRACTURE_HOME}/stdlib"
-
-[build]
-default_target = "x86_64-linux"
+[editor]
+show_type_hints = true
+show_borrow_hints = false
 EOF
-        echo -e "${GREEN}✓ Created default configuration${NC}"
+        echo -e "${GREEN}✓ Created default configuration at ~/.rift/config.toml${NC}"
     else
-        echo -e "${BLUE}✓ Configuration already exists${NC}"
+        echo -e "${BLUE}✓ Configuration already exists at ~/.rift/config.toml${NC}"
     fi
 
+    mkdir -p "$FRACTURE_HOME"
     if [ -d "$TEMP_DIR/fracture/fracture-lang/fracture-stdlib" ]; then
         rm -rf "$FRACTURE_HOME/stdlib" 2>/dev/null || true
         cp -r "$TEMP_DIR/fracture/fracture-lang/fracture-stdlib" "$FRACTURE_HOME/stdlib"
-        echo -e "${GREEN}✓ Installed standard library${NC}"
+        echo -e "${GREEN}✓ Installed standard library to ~/.fracture/stdlib${NC}"
     fi
 }
 

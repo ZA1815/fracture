@@ -141,10 +141,10 @@ std = {{ path = "{stdlib_path}" }}
 # Your personal syntax preferences live in ~/.rift/config.toml (gitignored).
 # This keeps your style personal until you choose to share it.
 #
-# To share your syntax style with collaborators:
+# To share your syntax style with collaborators, run:
 #   rift syntax export
 #
-# This adds a [syntax] section here that others can use.
+# This will add syntax configuration to this file that others can use.
 # ─────────────────────────────────────────────────────────────────────────────
 "#,
             name = name,
