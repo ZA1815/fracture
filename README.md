@@ -290,7 +290,7 @@ Fracture is experimental and evolving. Contributions, ideas, and feedback are we
 
 ## License
 
-MIT License. See `LICENSE` for details.
+MIT License. See [LICENSE](LICENSE) for details.
 
 ## Learn More
 
