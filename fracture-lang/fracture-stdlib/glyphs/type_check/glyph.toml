@@ -1,0 +1,23 @@
+# Type Check Glyph
+# Validates type safety across the program
+
+[glyph]
+name = "type_check"
+version = "0.1.0"
+scope = "Project"
+description = "Enforces type safety and validates type compatibility"
+
+# Type check is purely a validation glyph - no syntax additions
+[syntax.keywords]
+# No new keywords
+
+[dependencies]
+glyphs = []
+
+[validation]
+rules = [
+    "type_compatibility",
+    "arithmetic_type_safety",
+    "struct_field_types",
+    "function_signatures"
+]

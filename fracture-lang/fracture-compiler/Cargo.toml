@@ -1,0 +1,12 @@
+[package]
+name = "fracture-compiler"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+fracture-ir = { workspace = true }
+serde = { workspace = true }
+
+[lib]
+name = "fracture_compiler"
+path = "src/lib.rs"

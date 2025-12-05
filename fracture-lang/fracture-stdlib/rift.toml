@@ -1,0 +1,7 @@
+[package]
+name = "std"
+version = "0.1.0"
+description = "Fracture Standard Library"
+
+[syntax]
+source_style = "fss"

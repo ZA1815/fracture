@@ -1,0 +1,14 @@
+pub fn print(s: String) {
+    sys_write(1, s, s.len());
+}
+pub fn println(s: String) {
+    sys_write(1, s, s.len());
+    sys_write(1, "\n", 1);
+}
+pub fn eprint(s: String) {
+    sys_write(2, s, s.len());
+}
+pub fn eprintln(s: String) {
+    sys_write(2, s, s.len());
+    sys_write(2, "\n", 1);
+}

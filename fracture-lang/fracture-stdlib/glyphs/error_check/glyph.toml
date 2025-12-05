@@ -1,0 +1,37 @@
+# Error Check Glyph
+# Adds Result and Option types with safe error handling
+
+[glyph]
+name = "error_check"
+version = "0.1.0"
+scope = "Project"
+description = "Provides Result<T, E> and Option<T> types for safe error handling"
+
+# Syntax additions that this glyph provides
+[syntax.keywords]
+# Option type constructors
+option_some = "Some"
+option_none = "None"
+
+# Result type constructors
+result_ok = "Ok"
+result_err = "Err"
+
+# Match keyword for pattern matching (shared with other glyphs)
+match_kw = "match"
+
+[syntax.tokens]
+# Question mark operator for try/propagation
+question_mark = "?"
+
+[dependencies]
+# This glyph doesn't depend on other glyphs
+glyphs = []
+
+[validation]
+# Validation rules this glyph enforces
+rules = [
+    "no_unchecked_unwrap",
+    "safe_error_propagation",
+    "option_result_coverage"
+]

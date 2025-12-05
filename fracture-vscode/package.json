@@ -1,0 +1,230 @@
+{
+  "name": "fracture-lang",
+  "displayName": "Fracture Language",
+  "description": "Full IDE support for Fracture - syntax-agnostic programming with HSIR",
+  "version": "0.1.0",
+  "publisher": "fracture-lang",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fracture-lang/fracture-vscode"
+  },
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Formatters"
+  ],
+  "keywords": [
+    "fracture",
+    "hsir",
+    "syntax-agnostic",
+    "programming language"
+  ],
+  "activationEvents": [
+    "*"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "fracture",
+        "aliases": ["Fracture", "frac"],
+        "extensions": [".frac"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "customEditors": [
+      {
+        "viewType": "fracture.editor",
+        "displayName": "Fracture Editor",
+        "selector": [
+          {
+            "filenamePattern": "*.frac"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "commands": [
+      {
+        "command": "fracture.build",
+        "title": "Fracture: Build Project",
+        "icon": "$(play)"
+      },
+      {
+        "command": "fracture.run",
+        "title": "Fracture: Run Project",
+        "icon": "$(debug-start)"
+      },
+      {
+        "command": "fracture.check",
+        "title": "Fracture: Check (Lint + Type Check)"
+      },
+      {
+        "command": "fracture.showAst",
+        "title": "Fracture: Show AST Panel"
+      },
+      {
+        "command": "fracture.showFss",
+        "title": "Fracture: Show FSS Translation Panel"
+      },
+      {
+        "command": "fracture.showRawFile",
+        "title": "Fracture: Show Raw HSIR (On-Disk Format)"
+      },
+      {
+        "command": "fracture.switchSyntax",
+        "title": "Fracture: Switch Syntax Style"
+      },
+      {
+        "command": "fracture.restartLsp",
+        "title": "Fracture: Restart Language Server"
+      }
+    ],
+    "configuration": {
+      "title": "Fracture",
+      "properties": {
+        "fracture.compiler.path": {
+          "type": "string",
+          "default": "rift",
+          "description": "Path to the Fracture compiler executable (rift)"
+        },
+        "fracture.lsp.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the Language Server for real-time diagnostics"
+        },
+        "fracture.lsp.trace": {
+          "type": "string",
+          "default": "off",
+          "enum": ["off", "messages", "verbose"],
+          "description": "Trace LSP communication (for debugging)"
+        },
+        "fracture.editor.showAstPanel": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show AST panel by default when opening files"
+        },
+        "fracture.editor.showIrPanel": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show HSIR panel by default when opening files"
+        },
+        "fracture.editor.fontSize": {
+          "type": "number",
+          "default": 14,
+          "description": "Font size in the Fracture editor"
+        },
+        "fracture.editor.theme": {
+          "type": "string",
+          "default": "auto",
+          "enum": ["auto", "light", "dark"],
+          "description": "Editor theme (auto follows VSCode theme)"
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "fracture-explorer",
+          "title": "Fracture",
+          "icon": "$(symbol-misc)"
+        }
+      ]
+    },
+    "views": {
+      "fracture-explorer": [
+        {
+          "id": "fracture.astView",
+          "name": "AST Explorer",
+          "icon": "$(symbol-structure)"
+        },
+        {
+          "id": "fracture.diagnosticsView",
+          "name": "Diagnostics",
+          "icon": "$(error)"
+        },
+        {
+          "id": "fracture.projectView",
+          "name": "Project",
+          "icon": "$(project)"
+        }
+      ]
+    },
+    "menus": {
+      "editor/title": [
+        {
+          "command": "fracture.showAst",
+          "when": "resourceExtname == .frac",
+          "group": "navigation"
+        },
+        {
+          "command": "fracture.showFss",
+          "when": "resourceExtname == .frac",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "fracture.build",
+          "when": "workspaceContains:rift.toml"
+        },
+        {
+          "command": "fracture.run",
+          "when": "workspaceContains:rift.toml"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "fracture.build",
+        "key": "ctrl+shift+b",
+        "mac": "cmd+shift+b",
+        "when": "resourceExtname == .frac"
+      },
+      {
+        "command": "fracture.run",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r",
+        "when": "resourceExtname == .frac"
+      },
+      {
+        "command": "fracture.showAst",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a",
+        "when": "resourceExtname == .frac"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "fracture",
+        "scopeName": "source.fracture",
+        "path": "./syntaxes/fracture.tmLanguage.json"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js",
+    "package": "vsce package",
+    "publish": "vsce publish"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.74.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.0.0",
+    "typescript": "^5.0.0",
+    "@vscode/vsce": "^2.0.0"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.0",
+    "toml": "^3.0.0"
+  }
+}

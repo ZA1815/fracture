@@ -1,0 +1,45 @@
+# FFI Check Glyph
+# Adds Foreign Function Interface operations with safety checks
+
+[glyph]
+name = "ffi_check"
+version = "0.1.0"
+scope = "Project"
+description = "Provides FFI operations (system calls, file I/O) with safety validation"
+
+# FFI operations are function-based, not keyword-based
+# They're recognized by the parser as special function names
+[syntax.functions]
+# File operations
+file_read = "read_file"
+file_write = "write_file"
+file_append = "append_file"
+file_exists = "file_exists"
+file_delete = "delete_file"
+
+# System calls
+sys_open = "sys_open"
+sys_close = "sys_close"
+sys_read = "sys_read"
+sys_write = "sys_write"
+sys_seek = "sys_seek"
+
+# Directory operations
+mkdir = "mkdir"
+rmdir = "rmdir"
+getcwd = "getcwd"
+chdir = "chdir"
+
+[dependencies]
+# FFI often returns Results, so might want to require error_check
+# For v0, let's make it optional
+glyphs = []
+suggests = ["error_check"]
+
+[validation]
+rules = [
+    "check_fd_validity",
+    "validate_path_safety",
+    "buffer_bounds_check",
+    "return_code_handling"
+]
