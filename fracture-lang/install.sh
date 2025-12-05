@@ -4,20 +4,17 @@
 
 set -e
 
-# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Configuration
-REPO_URL="https://github.com/YOUR_USERNAME/fracture"
+REPO_URL="https://github.com/ZA1815/fracture"
 INSTALL_DIR="/usr/local/bin"
 TEMP_DIR=$(mktemp -d)
 FRACTURE_HOME="${HOME}/.fracture"
 
-# Detect OS and architecture
 detect_platform() {
     local os=$(uname -s | tr '[:upper:]' '[:lower:]')
     local arch=$(uname -m)
@@ -67,7 +64,6 @@ detect_platform() {
     echo -e "${GREEN}✓ Platform: ${PLATFORM}${NC}"
 }
 
-# Check if running with sudo when needed
 check_permissions() {
     if [ ! -w "$INSTALL_DIR" ]; then
         if [ "$EUID" -ne 0 ]; then
@@ -86,13 +82,11 @@ check_permissions() {
     fi
 }
 
-# Check dependencies
 check_dependencies() {
     echo -e "${BLUE}Checking dependencies...${NC}"
 
     local missing_deps=()
 
-    # Check for Rust
     if ! command -v cargo &> /dev/null; then
         echo -e "${YELLOW}Rust not found. Fracture requires Rust nightly to build.${NC}"
         missing_deps+=("rust")
@@ -100,7 +94,6 @@ check_dependencies() {
         local rust_version=$(rustc --version | awk '{print $2}')
         echo -e "${GREEN}✓ Rust ${rust_version}${NC}"
 
-        # Check if we're on nightly
         if ! rustc --version | grep -q "nightly"; then
             echo -e "${YELLOW}  Note: Fracture requires Rust nightly${NC}"
             if command -v rustup &> /dev/null; then
@@ -109,7 +102,6 @@ check_dependencies() {
         fi
     fi
 
-    # Check for NASM
     if ! command -v nasm &> /dev/null; then
         echo -e "${YELLOW}NASM not found. Fracture requires NASM for assembly.${NC}"
         missing_deps+=("nasm")
@@ -118,7 +110,6 @@ check_dependencies() {
         echo -e "${GREEN}✓ ${nasm_version}${NC}"
     fi
 
-    # Check for git
     if ! command -v git &> /dev/null; then
         echo -e "${YELLOW}Git not found.${NC}"
         missing_deps+=("git")
@@ -127,7 +118,6 @@ check_dependencies() {
         echo -e "${GREEN}✓ ${git_version}${NC}"
     fi
 
-    # Check for ld (linker)
     if ! command -v ld &> /dev/null; then
         echo -e "${YELLOW}ld (linker) not found. Fracture requires GNU binutils.${NC}"
         missing_deps+=("binutils")
@@ -174,7 +164,6 @@ check_dependencies() {
     fi
 }
 
-# Clone or download the repository
 download_fracture() {
     echo -e "${BLUE}Downloading Fracture...${NC}"
 
@@ -189,7 +178,6 @@ download_fracture() {
     fi
 }
 
-# Build Fracture
 build_fracture() {
     echo -e "${BLUE}Building Fracture toolchain...${NC}"
     echo "This may take a few minutes on the first run..."
@@ -197,13 +185,11 @@ build_fracture() {
 
     cd "$TEMP_DIR/fracture"
 
-    # Ensure we're using nightly Rust
     if command -v rustup &> /dev/null; then
         echo -e "${BLUE}Switching to Rust nightly...${NC}"
         rustup default nightly 2>&1 | head -3
     fi
 
-    # Build the rift binary
     echo -e "${BLUE}Compiling...${NC}"
     if cargo build --release -p fracture-rift 2>&1 | grep -E "(Compiling|Finished|error|warning:)"; then
         echo
@@ -219,7 +205,6 @@ build_fracture() {
     fi
 }
 
-# Install binaries
 install_binaries() {
     echo -e "${BLUE}Installing binaries to ${INSTALL_DIR}...${NC}"
 
@@ -230,10 +215,8 @@ install_binaries() {
         exit 1
     fi
 
-    # Create install directory if it doesn't exist
     mkdir -p "$INSTALL_DIR"
 
-    # Copy binary
     if cp "$binary_path" "$INSTALL_DIR/rift"; then
         chmod +x "$INSTALL_DIR/rift"
         echo -e "${GREEN}✓ Installed rift to $INSTALL_DIR/rift${NC}"
@@ -245,20 +228,18 @@ install_binaries() {
     fi
 }
 
-# Setup Fracture home directory
 setup_fracture_home() {
     echo -e "${BLUE}Setting up Fracture configuration...${NC}"
 
     mkdir -p "$FRACTURE_HOME"
 
-    # Create default config if it doesn't exist
     local config_file="$FRACTURE_HOME/config.toml"
     if [ ! -f "$config_file" ]; then
         cat > "$config_file" << EOF
 # Fracture Configuration
 
 [global]
-default_syntax = "rust"
+default_syntax = "fss"
 
 [paths]
 stdlib_path = "${FRACTURE_HOME}/stdlib"
@@ -271,7 +252,6 @@ EOF
         echo -e "${BLUE}✓ Configuration already exists${NC}"
     fi
 
-    # Copy standard library
     if [ -d "$TEMP_DIR/fracture/fracture-lang/fracture-stdlib" ]; then
         rm -rf "$FRACTURE_HOME/stdlib" 2>/dev/null || true
         cp -r "$TEMP_DIR/fracture/fracture-lang/fracture-stdlib" "$FRACTURE_HOME/stdlib"
@@ -279,15 +259,12 @@ EOF
     fi
 }
 
-# Add to PATH if needed
 setup_path() {
-    # Check if INSTALL_DIR is in PATH
     if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
         echo
         echo -e "${YELLOW}Note: $INSTALL_DIR is not in your PATH${NC}"
         echo
 
-        # Try to detect shell and suggest config file
         local shell_config=""
         if [ -n "$BASH_VERSION" ]; then
             shell_config="$HOME/.bashrc"
@@ -330,19 +307,16 @@ setup_path() {
     fi
 }
 
-# Cleanup
 cleanup() {
     if [ -d "$TEMP_DIR" ]; then
         rm -rf "$TEMP_DIR"
     fi
 }
 
-# Verify installation
 verify_installation() {
     echo
     echo -e "${BLUE}Verifying installation...${NC}"
 
-    # Force PATH update for verification
     export PATH="$INSTALL_DIR:$PATH"
 
     if command -v rift &> /dev/null; then
@@ -363,7 +337,6 @@ verify_installation() {
     fi
 }
 
-# Main installation flow
 main() {
     echo
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -394,8 +367,6 @@ main() {
     echo
 }
 
-# Trap EXIT to cleanup
 trap cleanup EXIT
 
-# Run main function
 main "$@"
