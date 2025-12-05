@@ -309,6 +309,15 @@ impl X86CodeGen {
             Inst::Ne { dst, lhs, rhs, ty } => {
                 self.compile_cmp_set(dst, lhs, rhs, ty, "setne");
             }
+            Inst::And { dst, lhs, rhs, ty } => {
+                self.compile_and(dst, lhs, rhs, ty);
+            }
+            Inst::Or { dst, lhs, rhs, ty } => {
+                self.compile_or(dst, lhs, rhs, ty);
+            }
+            Inst::Not { dst, src, ty } => {
+                self.compile_not(dst, src, ty);
+            }
             Inst::Jump { target } => {
                 self.compile_jump(target);
             }
@@ -2505,6 +2514,12 @@ impl X86CodeGen {
                     Const::I64(i) => {
                         self.emit(&format!("    mov rax, {}", i));
                     }
+                    Const::Bool(b) => {
+                        self.emit("    xor rax, rax");
+                        if *b {
+                            self.emit("    mov rax, 1");
+                        }
+                    }
                     _ => {
                         self.emit("    xor rax, rax")
                     }
@@ -2544,6 +2559,40 @@ impl X86CodeGen {
         self.emit("    cmp rcx, rax");
         self.emit(&format!("    {} al", set_cc));
         self.emit("    movzx rax, al");
+        let offset = self.get_or_alloc_reg_offset(dst);
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", offset));
+    }
+
+    fn compile_and(&mut self, dst: &Reg, lhs: &Value, rhs: &Value, ty: &Type) {
+        self.load_value_to_rax(lhs, ty);
+        self.emit("    mov rcx, rax");
+        self.load_value_to_rax(rhs, ty);
+        self.emit("    and rax, rcx");
+        let offset = self.get_or_alloc_reg_offset(dst);
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", offset));
+    }
+
+    fn compile_or(&mut self, dst: &Reg, lhs: &Value, rhs: &Value, ty: &Type) {
+        self.load_value_to_rax(lhs, ty);
+        self.emit("    mov rcx, rax");
+        self.load_value_to_rax(rhs, ty);
+        self.emit("    or rax, rcx");
+        let offset = self.get_or_alloc_reg_offset(dst);
+        self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", offset));
+    }
+
+    fn compile_not(&mut self, dst: &Reg, src: &Value, ty: &Type) {
+        self.load_value_to_rax(src, ty);
+
+        match ty {
+            Type::Bool => {
+                self.emit("    xor rax, 1");
+            },
+            _ => {
+                self.emit("    not rax");
+            }
+        }
+
         let offset = self.get_or_alloc_reg_offset(dst);
         self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", offset));
     }

@@ -1,7 +1,7 @@
 use fracture_ir::hsir::*;
-use fracture_ir::{SyntaxConfig, syntax_config::BlockStyle};
+use fracture_ir::{SyntaxConfig, syntax_config::BlockStyle, DynamicKeywords, GlyphManifest, load_glyph};
 use crate::lexer::*;
-use crate::errors::{Span, Position, Diagnostic, DiagnosticCollector, find_similar};
+use crate::errors::{Span, Diagnostic, DiagnosticCollector};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::fs;
@@ -32,7 +32,10 @@ pub struct SyntaxProjector {
     func_signatures: HashMap<String, Type>,
     known_vars: Vec<String>,
 
-    dependencies: HashMap<String, PathBuf>
+    dependencies: HashMap<String, PathBuf>,
+    active_glyphs: Vec<String>,
+    loaded_glyph_manifests: Vec<GlyphManifest>,
+    glyph_keywords: DynamicKeywords
 }
 
 impl SyntaxProjector {
@@ -60,8 +63,6 @@ impl SyntaxProjector {
             known_funcs: vec![
                 "print".to_string(), "println".to_string(),
                 "read_line".to_string(), "itoa".to_string(), "to_string".to_string(),
-                "read_file".to_string(), "write_file".to_string(),
-                "mkdir".to_string(), "rmdir".to_string(), "getcwd".to_string(),
             ],
             func_signatures: {
                 let mut m = HashMap::new();
@@ -106,7 +107,10 @@ impl SyntaxProjector {
                 m
             },
             known_vars: Vec::new(),
-            dependencies
+            dependencies,
+            active_glyphs: Vec::new(),
+            loaded_glyph_manifests: Vec::new(),
+            glyph_keywords: DynamicKeywords::new()
         }
     }
 
@@ -115,6 +119,24 @@ impl SyntaxProjector {
         self.diagnostics = DiagnosticCollector::new(self.source.clone(), filename.to_string());
 
         self
+    }
+
+    fn load_and_activate_glyph(&mut self, glyph_path: &str) -> Result<(), String> {
+        let stdlib_path = self.dependencies.get("std")
+            .ok_or_else(|| format!("stdlib dependency not found"))?;
+
+        let manifest = load_glyph(glyph_path, stdlib_path)
+            .map_err(|e| format!("Failed to load glyph '{}': {}", glyph_path, e))?;
+
+        println!("[Glyph] Loaded '{}' v{}", manifest.glyph.name, manifest.glyph.version);
+
+        self.glyph_keywords.add_from_glyph(&manifest);
+
+        self.loaded_glyph_manifests.push(manifest);
+
+        self.lexer.set_glyph_keywords(self.glyph_keywords.clone());
+
+        Ok(())
     }
 
     pub fn peek(&mut self) -> SpannedToken {
@@ -145,7 +167,24 @@ impl SyntaxProjector {
             if self.current.token == Token::Use {
                 if let Ok(use_statement) = self.parse_use_statement(Visibility::Private) {
                     root_uses.push(use_statement.clone());
-                    self.pending_uses.push(use_statement);
+                    self.pending_uses.push(use_statement.clone());
+
+                    if use_statement.import_type == ImportType::Glyph {
+                        if let UseTree::Simple { path, .. } = &use_statement.tree {
+                            let glyph_path = path.to_string();
+                            if !self.active_glyphs.contains(&glyph_path) {
+                                if let Err(e) = self.load_and_activate_glyph(&glyph_path) {
+                                    let diag = Diagnostic::error(
+                                        &format!("Failed to load glyph: {}", e),
+                                        self.current.span
+                                    );
+                                    self.diagnostics.emit(diag);
+                                    continue;
+                                }
+                                self.active_glyphs.push(glyph_path);
+                            }
+                        }
+                    }
                 }
                 continue;
             }
@@ -156,7 +195,24 @@ impl SyntaxProjector {
                     self.advance();
                     if let Ok(use_statement) = self.parse_use_statement(Visibility::Public) {
                         root_uses.push(use_statement.clone());
-                        self.pending_uses.push(use_statement);
+                        self.pending_uses.push(use_statement.clone());
+
+                        if use_statement.import_type == ImportType::Glyph {
+                            if let UseTree::Simple { path, .. } = &use_statement.tree {
+                                let glyph_path = path.to_string();
+                                if !self.active_glyphs.contains(&glyph_path) {
+                                    if let Err(e) = self.load_and_activate_glyph(&glyph_path) {
+                                        let diag = Diagnostic::error(
+                                            &format!("Failed to load glyph: {}", e),
+                                            self.current.span
+                                        );
+                                        self.diagnostics.emit(diag);
+                                        continue;
+                                    }
+                                    self.active_glyphs.push(glyph_path);
+                                }
+                            }
+                        }
                     }
                     continue;
                 }
@@ -268,12 +324,27 @@ impl SyntaxProjector {
         }
 
         for (name, path) in &self.dependencies {
-            let entry = path.join("src/lib.frac");
-            if entry.exists() {
-                if let Ok(module) = self.parse_file_module(&entry, name, Visibility::Public) {
-                    self.collect_module_functions(&module, &mut all_functions);
-                    self.collect_module_structs(&module, &mut all_structs);
-                    root_module.add_child(module);
+            let entry_v1 = path.join("src/lib.frac");
+            let entry_v2 = path.join("shards/src/lib.frac");
+
+            let entry = if entry_v1.exists() {
+                Some(entry_v1)
+            } else if entry_v2.exists() {
+                Some(entry_v2)
+            } else {
+                None
+            };
+
+            if let Some(entry_path) = entry {
+                match self.parse_file_module(&entry_path, name, Visibility::Public) {
+                    Ok(module) => {
+                        self.collect_module_functions(&module, &mut all_functions);
+                        self.collect_module_structs(&module, &mut all_structs);
+                        root_module.add_child(module);
+                    }
+                    Err(_e) => {
+                        // Dependency failed to parse
+                    }
                 }
             }
         }
@@ -615,12 +686,16 @@ impl SyntaxProjector {
 
         match self.config.style.block_style {
             BlockStyle::Braces => {
+                self.skip_newlines();
                 self.expect(Token::LeftBrace)?;
+
+                self.skip_newlines();
 
                 while self.current.token != Token::RightBrace && self.current.token != Token::Eof {
                     let (stmt_insts, stmt_reg) = self.parse_statement()?;
                     instructions.extend(stmt_insts);
                     last_reg = stmt_reg;
+                    self.skip_newlines();
                 }
 
                 self.expect(Token::RightBrace)?;
@@ -652,6 +727,8 @@ impl SyntaxProjector {
     }
 
     fn parse_statement(&mut self) -> Result<(Vec<Inst>, Option<Reg>), ()> {
+        self.skip_newlines();
+
         let mut instructions = Vec::new();
         let mut result_reg = None;
 
@@ -718,6 +795,11 @@ impl SyntaxProjector {
                 instructions.extend(self.parse_while_statement()?);
                 requires_semicolon = false;
             }
+            Token::For => {
+                self.advance();
+                instructions.extend(self.parse_for_statement()?);
+                requires_semicolon = false;
+            }
             Token::Ident(name) => {
                 let peek_token = self.peek().token;
                 if peek_token == Token::Assignment || peek_token == Token::Colon {
@@ -758,7 +840,8 @@ impl SyntaxProjector {
         if self.config.style.needs_semicolon && requires_semicolon {
             if self.current.token == Token::RightBrace && result_reg.is_some() {
                 // Implicit return
-            } else {
+            }
+            else {
                 self.expect(Token::Semicolon)?;
                 result_reg = None;
             }
@@ -776,7 +859,6 @@ impl SyntaxProjector {
         let else_label = self.alloc_label();
         let end_label = self.alloc_label();
 
-        // Need to add comparison ops
         instructions.push(Inst::JumpIfFalse { cond: Value::Reg(cond_reg), target: else_label.clone() });
 
         let (if_body, _) = self.parse_block()?;
@@ -802,7 +884,6 @@ impl SyntaxProjector {
         Ok(instructions)
     }
 
-    // This is missing critical logic to actually exit the loop (break and continue)
     fn parse_while_statement(&mut self) -> Result<Vec<Inst>, ()> {
         let mut instructions = Vec::new();
 
@@ -826,8 +907,145 @@ impl SyntaxProjector {
         Ok(instructions)
     }
 
+    fn parse_for_statement(&mut self) -> Result<Vec<Inst>, ()> {
+        let mut instructions = Vec::new();
+
+        let var_name = self.expect_ident()?;
+
+        self.expect(Token::In)?;
+
+        let (start_insts, start_reg) = self.parse_comparison()?;
+        instructions.extend(start_insts);
+
+        let is_inclusive = if self.current.token == Token::RangeInclusive {
+            self.advance();
+            true
+        }
+        else if self.current.token == Token::Range {
+            self.advance();
+            false
+        }
+        else {
+            eprintln!("Expected range operator (..) or (..=) in for loop");
+            return Err(());
+        };
+
+        let (end_insts, end_reg) = self.parse_comparison()?;
+        instructions.extend(end_insts);
+
+        let loop_var = self.get_or_create_var(&var_name, &Type::I32);
+        instructions.push(Inst::Move {
+            dst: loop_var.clone(),
+            src: Value::Reg(start_reg),
+            ty: Type::I32
+        });
+
+        let loop_start = self.alloc_label();
+        let loop_end = self.alloc_label();
+
+        instructions.push(Inst::Label { target: loop_start.clone() });
+
+        let cond_reg = self.alloc_reg();
+        if is_inclusive {
+            instructions.push(Inst::Gt {
+                dst: cond_reg.clone(),
+                lhs: Value::Reg(loop_var.clone()),
+                rhs: Value::Reg(end_reg.clone()),
+                ty: Type::I32
+            });
+        }
+        else {
+            instructions.push(Inst::Ge {
+                dst: cond_reg.clone(),
+                lhs: Value::Reg(loop_var.clone()),
+                rhs: Value::Reg(end_reg.clone()),
+                ty: Type::I32
+            });
+        }
+        self.reg_types.insert(cond_reg.clone(), Type::Bool);
+
+        instructions.push(Inst::JumpIf { cond: Value::Reg(cond_reg), target: loop_end.clone() });
+
+        let (body, _) = self.parse_block()?;
+        instructions.extend(body);
+
+        let one_reg = self.alloc_reg();
+        instructions.push(Inst::Move {
+            dst: one_reg.clone(),
+            src: Value::Const(Const::I32(1)),
+            ty: Type::I32
+        });
+
+        let next_val_reg = self.alloc_reg();
+        instructions.push(Inst::Add {
+            dst: next_val_reg.clone(),
+            lhs: Value::Reg(loop_var.clone()),
+            rhs: Value::Reg(one_reg),
+            ty: Type::I32
+        });
+        self.reg_types.insert(next_val_reg.clone(), Type::I32);
+
+        instructions.push(Inst::Move {
+            dst: loop_var,
+            src: Value::Reg(next_val_reg),
+            ty: Type::I32
+        });
+
+        instructions.push(Inst::Jump { target: loop_start });
+
+        instructions.push(Inst::Label { target: loop_end });
+
+        Ok(instructions)
+    }
+
     fn parse_expression(&mut self) -> Result<(Vec<Inst>, Reg), ()> {
-        self.parse_comparison()
+        self.parse_logical_or()
+    }
+
+    fn parse_logical_or(&mut self) -> Result<(Vec<Inst>, Reg), ()> {
+        let (mut instructions, mut left_reg) = self.parse_logical_and()?;
+
+        while self.current.token == Token::LogicalOr {
+            self.advance();
+            let (right_insts, right_reg) = self.parse_logical_and()?;
+            instructions.extend(right_insts);
+
+            let result_reg = self.alloc_reg();
+            instructions.push(Inst::Or {
+                dst: result_reg.clone(),
+                lhs: Value::Reg(left_reg),
+                rhs: Value::Reg(right_reg),
+                ty: Type::Bool
+            });
+
+            self.reg_types.insert(result_reg.clone(), Type::Bool);
+            left_reg = result_reg;
+        }
+
+        Ok((instructions, left_reg))
+    }
+
+    fn parse_logical_and(&mut self) -> Result<(Vec<Inst>, Reg), ()> {
+        let (mut instructions, mut left_reg) = self.parse_comparison()?;
+
+        while self.current.token == Token::LogicalAnd {
+            self.advance();
+            let (right_insts, right_reg) = self.parse_comparison()?;
+            instructions.extend(right_insts);
+
+            let result_reg = self.alloc_reg();
+            instructions.push(Inst::And {
+                dst: result_reg.clone(),
+                lhs: Value::Reg(left_reg),
+                rhs: Value::Reg(right_reg),
+                ty: Type::Bool
+            });
+
+            self.reg_types.insert(result_reg.clone(), Type::Bool);
+            left_reg = result_reg;
+        }
+
+        Ok((instructions, left_reg))
     }
 
     fn parse_comparison(&mut self) -> Result<(Vec<Inst>, Reg), ()> {
@@ -1402,7 +1620,6 @@ impl SyntaxProjector {
                                     );
                                     self.diagnostics.emit(diag);
                                     
-                                    // Skip to closing paren
                                     while self.current.token != Token::RightParentheses && self.current.token != Token::Eof {
                                         self.advance();
                                     }
@@ -1446,7 +1663,7 @@ impl SyntaxProjector {
                 let (first_insts, first_reg) = self.parse_expression()?;
                 instructions.extend(first_insts);
 
-                if self.current.token == Token::SliceDot {
+                if self.current.token == Token::Range {
                     self.advance();
 
                     let (end_insts, end_reg) = self.parse_expression()?;
@@ -1643,78 +1860,90 @@ impl SyntaxProjector {
                 });
                 self.advance();
             }
-            Token::Some => {
-                self.advance();
-                self.expect(Token::LeftParentheses)?;
+            Token::GlyphKeyword(keyword, semantic_type) => {
+                match semantic_type.as_str() {
+                    "option_some" => {
+                        self.advance();
+                        self.expect(Token::LeftParentheses)?;
 
-                let (val_insts, val_reg) = self.parse_expression()?;
-                instructions.extend(val_insts);
+                        let (val_insts, val_reg) = self.parse_expression()?;
+                        instructions.extend(val_insts);
 
-                self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses)?;
 
-                let inner_ty = self.reg_types.get(&val_reg).cloned().unwrap_or(Type::Unknown);
+                        let inner_ty = self.reg_types.get(&val_reg).cloned().unwrap_or(Type::Unknown);
 
-                instructions.push(Inst::OptionSome {
-                    dst: result_reg.clone(),
-                    value: Value::Reg(val_reg),
-                    inner_ty: inner_ty.clone()
-                });
+                        instructions.push(Inst::OptionSome {
+                            dst: result_reg.clone(),
+                            value: Value::Reg(val_reg),
+                            inner_ty: inner_ty.clone()
+                        });
 
-                self.reg_types.insert(result_reg.clone(), Type::Option(Box::new(inner_ty)));
-            }
-            Token::None => {
-                self.advance();
+                        self.reg_types.insert(result_reg.clone(), Type::Option(Box::new(inner_ty)));
+                    }
+                    "option_none" => {
+                        self.advance();
 
-                let inner_ty = Type::Unknown;
+                        let inner_ty = Type::Unknown;
 
-                instructions.push(Inst::OptionNone {
-                    dst: result_reg.clone(),
-                    inner_ty: inner_ty.clone()
-                });
+                        instructions.push(Inst::OptionNone {
+                            dst: result_reg.clone(),
+                            inner_ty: inner_ty.clone()
+                        });
 
-                self.reg_types.insert(result_reg.clone(), Type::Option(Box::new(inner_ty)));
-            }
-            Token::Ok => {
-                self.advance();
-                self.expect(Token::LeftParentheses)?;
+                        self.reg_types.insert(result_reg.clone(), Type::Option(Box::new(inner_ty)));
+                    }
+                    "result_ok" => {
+                        self.advance();
+                        self.expect(Token::LeftParentheses)?;
 
-                let (val_insts, val_reg) = self.parse_expression()?;
-                instructions.extend(val_insts);
+                        let (val_insts, val_reg) = self.parse_expression()?;
+                        instructions.extend(val_insts);
 
-                self.expect(Token::RightParentheses)?;
+                        self.expect(Token::RightParentheses)?;
 
-                let ok_ty = self.reg_types.get(&val_reg).cloned().unwrap_or(Type::Unknown);
-                let err_ty = Type::Unknown;
+                        let ok_ty = self.reg_types.get(&val_reg).cloned().unwrap_or(Type::Unknown);
+                        let err_ty = Type::Unknown;
 
-                instructions.push(Inst::ResultOk {
-                    dst: result_reg.clone(),
-                    value: Value::Reg(val_reg),
-                    ok_ty: ok_ty.clone(),
-                    err_ty: err_ty.clone()
-                });
+                        instructions.push(Inst::ResultOk {
+                            dst: result_reg.clone(),
+                            value: Value::Reg(val_reg),
+                            ok_ty: ok_ty.clone(),
+                            err_ty: err_ty.clone()
+                        });
 
-                self.reg_types.insert(result_reg.clone(), Type::Result(Box::new(ok_ty), Box::new(err_ty)));
-            }
-            Token::Err => {
-                self.advance();
-                self.expect(Token::LeftParentheses)?;
-                
-                let (err_insts, err_reg) = self.parse_expression()?;
-                instructions.extend(err_insts);
-                
-                self.expect(Token::RightParentheses)?;
-                
-                let ok_ty = Type::Unknown;
-                let err_ty = self.reg_types.get(&err_reg).cloned().unwrap_or(Type::Unknown);
-                
-                instructions.push(Inst::ResultErr {
-                    dst: result_reg.clone(),
-                    error: Value::Reg(err_reg),
-                    ok_ty: ok_ty.clone(),
-                    err_ty: err_ty.clone(),
-                });
-                
-                self.reg_types.insert(result_reg.clone(), Type::Result(Box::new(ok_ty), Box::new(err_ty)));
+                        self.reg_types.insert(result_reg.clone(), Type::Result(Box::new(ok_ty), Box::new(err_ty)));
+                    }
+                    "result_err" => {
+                        self.advance();
+                        self.expect(Token::LeftParentheses)?;
+
+                        let (err_insts, err_reg) = self.parse_expression()?;
+                        instructions.extend(err_insts);
+
+                        self.expect(Token::RightParentheses)?;
+
+                        let ok_ty = Type::Unknown;
+                        let err_ty = self.reg_types.get(&err_reg).cloned().unwrap_or(Type::Unknown);
+
+                        instructions.push(Inst::ResultErr {
+                            dst: result_reg.clone(),
+                            error: Value::Reg(err_reg),
+                            ok_ty: ok_ty.clone(),
+                            err_ty: err_ty.clone(),
+                        });
+
+                        self.reg_types.insert(result_reg.clone(), Type::Result(Box::new(ok_ty), Box::new(err_ty)));
+                    }
+                    _ => {
+                        let diag = Diagnostic::error(
+                            &format!("Unexpected glyph keyword '{}' in expression", keyword),
+                            self.current.span
+                        ).with_help("Glyph keywords can only be used in specific contexts");
+                        self.diagnostics.emit(diag);
+                        return Err(());
+                    }
+                }
             }
             Token::Panic => {
                 self.advance();
@@ -1742,12 +1971,9 @@ impl SyntaxProjector {
                 });
             }
             Token::Ident(name) => {
-                eprintln!("Parsing ident: {}", name);
                 let name = name.clone();
                 let ident_span = self.current.span;
                 self.advance();
-
-                eprintln!("After advance, current token: {:?}", self.current.token);
 
                 if self.current.token == Token::DoubleColon {
                     let mut path_parts = if let Some(resolved) = self.resolve_import(&name) {
@@ -1916,8 +2142,9 @@ impl SyntaxProjector {
                         });
                     }
                 }
-                else if self.current.token == Token::LeftBrace {
+                else if self.current.token == Token::LeftBrace && self.struct_defs.contains_key(&name) {
                     self.advance();
+                    self.skip_newlines();
 
                     let struct_reg = self.alloc_reg();
                     instructions.push(Inst::StructAlloc {
@@ -1942,6 +2169,8 @@ impl SyntaxProjector {
                         if self.current.token == Token::Comma {
                             self.advance();
                         }
+
+                        self.skip_newlines();
                     }
 
                     self.advance();
@@ -2109,12 +2338,102 @@ impl SyntaxProjector {
                     rhs: Value::Reg(term_reg),
                     ty: Type::I32
                 });
-                
+
+                self.reg_types.insert(result_reg.clone(), Type::I32);
+            }
+            Token::Not => {
+                self.advance();
+                let (term_insts, term_reg) = self.parse_term()?;
+                instructions.extend(term_insts);
+
+                instructions.push(Inst::Not {
+                    dst: result_reg.clone(),
+                    src: Value::Reg(term_reg),
+                    ty: Type::Bool
+                });
+
+                self.reg_types.insert(result_reg.clone(), Type::Bool);
+            }
+            Token::If => {
+                self.advance();
+
+                let (cond_insts, cond_reg) = self.parse_expression()?;
+                instructions.extend(cond_insts);
+
+                let else_label = self.alloc_label();
+                let end_label = self.alloc_label();
+
+                instructions.push(Inst::JumpIfFalse {
+                    cond: Value::Reg(cond_reg),
+                    target: else_label.clone()
+                });
+
+                self.skip_newlines();
+                self.expect(Token::LeftBrace)?;
+                self.skip_newlines();
+                let then_value_reg = if self.current.token != Token::RightBrace {
+                    let (block_insts, block_reg) = self.parse_expression()?;
+                    instructions.extend(block_insts);
+                    self.skip_newlines();
+                    block_reg
+                }
+                else {
+                    let unit_reg = self.alloc_reg();
+                    instructions.push(Inst::Move {
+                        dst: unit_reg.clone(),
+                        src: Value::Const(Const::I32(0)),
+                        ty: Type::I32
+                    });
+                    unit_reg
+                };
+                self.expect(Token::RightBrace)?;
+
+                instructions.push(Inst::Move {
+                    dst: result_reg.clone(),
+                    src: Value::Reg(then_value_reg),
+                    ty: Type::I32
+                });
+
+                instructions.push(Inst::Jump { target: end_label.clone() });
+
+                instructions.push(Inst::Label { target: else_label });
+
+                self.skip_newlines();
+                self.expect(Token::Else)?;
+                self.skip_newlines();
+                self.expect(Token::LeftBrace)?;
+                self.skip_newlines();
+
+                let else_value_reg = if self.current.token != Token::RightBrace {
+                    let (block_insts, block_reg) = self.parse_expression()?;
+                    instructions.extend(block_insts);
+                    self.skip_newlines();
+                    block_reg
+                }
+                else {
+                    let unit_reg = self.alloc_reg();
+                    instructions.push(Inst::Move {
+                        dst: unit_reg.clone(),
+                        src: Value::Const(Const::I32(0)),
+                        ty: Type::I32
+                    });
+                    unit_reg
+                };
+                self.expect(Token::RightBrace)?;
+
+                instructions.push(Inst::Move {
+                    dst: result_reg.clone(),
+                    src: Value::Reg(else_value_reg),
+                    ty: Type::I32
+                });
+
+                instructions.push(Inst::Label { target: end_label });
+
                 self.reg_types.insert(result_reg.clone(), Type::I32);
             }
             _ => {
                 let diag = Diagnostic::error(
-                    format!("Unexpected token `{}` in expression", 
+                    format!("Unexpected token `{}` in expression",
                         self.token_to_string(&self.current.token)),
                     self.current.span
                 );
@@ -2247,14 +2566,12 @@ impl SyntaxProjector {
             self.current = self.lexer.next_token();
         }
 
-        if !matches!(self.config.style.block_style, BlockStyle::Indentation) {
-            while self.current.token == Token::Newline {
-                if let Some(token) = self.peek_buffer.take() {
-                    self.current = token;
-                }
-                else {
-                    self.current = self.lexer.next_token();
-                }
+        while matches!(self.current.token, Token::Comment(_)) {
+            if let Some(token) = self.peek_buffer.take() {
+                self.current = token;
+            }
+            else {
+                self.current = self.lexer.next_token();
             }
         }
     }
@@ -2309,7 +2626,7 @@ impl SyntaxProjector {
 
     fn token_to_string(&self, token: &Token) -> String {
         match token {
-            Token::Function => self.config.keywords.function.clone(),
+            Token::Function => self.config.keywords.function_kw.clone(),
             Token::Return => self.config.keywords.return_kw.clone(),
             Token::If => self.config.keywords.if_kw.clone(),
             Token::Else => self.config.keywords.else_kw.clone(),
@@ -2343,10 +2660,7 @@ impl SyntaxProjector {
             Token::Dot => ".".to_string(),
             Token::Eof => "end of file".to_string(),
             Token::Newline => "newline".to_string(),
-            Token::Some => "Some".to_string(),
-            Token::None => "None".to_string(),
-            Token::Ok => "Ok".to_string(),
-            Token::Err => "Err".to_string(),
+            Token::GlyphKeyword(keyword, _) => keyword.clone(),
             Token::Match => "match".to_string(),
             Token::QuestionMark => "?".to_string(),
             Token::Panic => "panic".to_string(),
@@ -2374,10 +2688,14 @@ impl SyntaxProjector {
 
     fn resolve_module_path(&mut self, mod_name: &str) -> Result<PathBuf, ()> {
         if let Some(root_path) = self.dependencies.get(mod_name) {
-            // Make this non-hardcoded later
-            let entry = root_path.join("src/lib.frac");
-            if entry.exists() {
-                return Ok(entry);
+            // Try both src/lib.frac and shards/src/lib.frac
+            let entry_v1 = root_path.join("src/lib.frac");
+            if entry_v1.exists() {
+                return Ok(entry_v1);
+            }
+            let entry_v2 = root_path.join("shards/src/lib.frac");
+            if entry_v2.exists() {
+                return Ok(entry_v2);
             }
         }
 
@@ -2426,7 +2744,7 @@ impl SyntaxProjector {
         };
 
         sub_projector.parse_module_items(&mut module, Token::Eof)?;
-        
+
         if sub_projector.diagnostics.has_errors() {
             sub_projector.diagnostics.emit_all();
             return Err(());

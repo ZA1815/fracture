@@ -11,7 +11,7 @@ pub struct SyntaxConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Keywords {
-    pub function: String,
+    pub function_kw: String,
     pub return_kw: String,
     pub if_kw: String,
     pub else_if_kw: String,
@@ -105,7 +105,7 @@ impl SyntaxConfig {
         Self {
             name: "python".to_string(),
             keywords: Keywords {
-                function: "def".to_string(),
+                function_kw: "def".to_string(),
                 return_kw: "return".to_string(),
                 if_kw: "if".to_string(),
                 else_if_kw: "elif".to_string(),
@@ -124,8 +124,8 @@ impl SyntaxConfig {
                 as_kw: "as".to_string(),
                 self_kw: ".".to_string(),
                 super_kw: "..".to_string(),
-                glyph_kw: "".to_string(),
-                shard_kw: "".to_string(),
+                glyph_kw: "glyph".to_string(),
+                shard_kw: "shard".to_string(),
                 some_kw: "".to_string(),
                 none_kw: "".to_string(),
                 ok_kw: "".to_string(),
@@ -154,7 +154,7 @@ impl SyntaxConfig {
                 right_brace: "}".to_string(),
                 comma: ",".to_string(),
                 semicolon: ";".to_string(),
-                colon: ":".to_string(),
+                colon: ":".to_string()
             },
             style: SyntaxStyle {
                 block_style: BlockStyle::Indentation,
@@ -172,7 +172,7 @@ impl SyntaxConfig {
         Self {
             name: "rust".to_string(),
             keywords: Keywords {
-                function: "fn".to_string(),
+                function_kw: "fn".to_string(),
                 return_kw: "return".to_string(),
                 if_kw: "if".to_string(),
                 else_if_kw: "else if".to_string(),
@@ -191,8 +191,8 @@ impl SyntaxConfig {
                 as_kw: "as".to_string(),
                 self_kw: "self".to_string(),
                 super_kw: "super".to_string(),
-                glyph_kw: "".to_string(),
-                shard_kw: "".to_string(),
+                glyph_kw: "glyph".to_string(),
+                shard_kw: "shard".to_string(),
                 some_kw:"Some".to_string(),
                 none_kw: "None".to_string(),
                 ok_kw: "Ok".to_string(),
@@ -239,7 +239,7 @@ impl SyntaxConfig {
         Self {
             name: "fss".to_string(),
             keywords: Keywords {
-                function: "fn".to_string(),
+                function_kw: "fn".to_string(),
                 return_kw: "return".to_string(),
                 if_kw: "if".to_string(),
                 else_if_kw: "else if".to_string(),
@@ -339,6 +339,48 @@ impl SyntaxConfig {
                     "Token '{}' contains whitespace: '{}'",
                     name, token
                 ));
+            }
+        }
+        
+        let mut all_keywords = Vec::new();
+        let kw = &self.keywords;
+
+        if !kw.function_kw.is_empty() { all_keywords.push(("function", &kw.function_kw)); }
+        if !kw.return_kw.is_empty() { all_keywords.push(("return", &kw.return_kw)); }
+        if !kw.if_kw.is_empty() { all_keywords.push(("if", &kw.if_kw)); }
+        if !kw.else_if_kw.is_empty() { all_keywords.push(("else_if", &kw.else_if_kw)); }
+        if !kw.else_kw.is_empty() { all_keywords.push(("else", &kw.else_kw)); }
+        if !kw.while_kw.is_empty() { all_keywords.push(("while", &kw.while_kw)); }
+        if !kw.for_kw.is_empty() { all_keywords.push(("for", &kw.for_kw)); }
+        if !kw.int_type.is_empty() { all_keywords.push(("int_type", &kw.int_type)); }
+        if !kw.bool_type.is_empty() { all_keywords.push(("bool_type", &kw.bool_type)); }
+        if !kw.string_type.is_empty() { all_keywords.push(("string_type", &kw.string_type)); }
+        if !kw.let_kw.is_empty() { all_keywords.push(("let", &kw.let_kw)); }
+        if !kw.mut_kw.is_empty() { all_keywords.push(("mut", &kw.mut_kw)); }
+        if !kw.struct_kw.is_empty() { all_keywords.push(("struct", &kw.struct_kw)); }
+        if !kw.mod_kw.is_empty() { all_keywords.push(("mod", &kw.mod_kw)); }
+        if !kw.use_kw.is_empty() { all_keywords.push(("use", &kw.use_kw)); }
+        if !kw.pub_kw.is_empty() { all_keywords.push(("pub", &kw.pub_kw)); }
+        if !kw.as_kw.is_empty() { all_keywords.push(("as", &kw.as_kw)); }
+        if !kw.self_kw.is_empty() { all_keywords.push(("self", &kw.self_kw)); }
+        if !kw.super_kw.is_empty() { all_keywords.push(("super", &kw.super_kw)); }
+        if !kw.glyph_kw.is_empty() { all_keywords.push(("glyph", &kw.glyph_kw)); }
+        if !kw.shard_kw.is_empty() { all_keywords.push(("shard", &kw.shard_kw)); }
+        if !kw.some_kw.is_empty() { all_keywords.push(("some", &kw.some_kw)); }
+        if !kw.none_kw.is_empty() { all_keywords.push(("none", &kw.none_kw)); }
+        if !kw.ok_kw.is_empty() { all_keywords.push(("ok", &kw.ok_kw)); }
+        if !kw.err_kw.is_empty() { all_keywords.push(("err", &kw.err_kw)); }
+        if !kw.match_kw.is_empty() { all_keywords.push(("match", &kw.match_kw)); }
+        if !kw.panic_kw.is_empty() { all_keywords.push(("panic", &kw.panic_kw)); }
+
+        for i in 0..all_keywords.len() {
+            for j in (i + 1)..all_keywords.len() {
+                if all_keywords[i].1 == all_keywords[j].1 {
+                    return Err(format!(
+                        "Keyword conflict: '{}' and '{}' both map to '{}'",
+                        all_keywords[i].0, all_keywords[j].0, all_keywords[i].1
+                    ))
+                }
             }
         }
 

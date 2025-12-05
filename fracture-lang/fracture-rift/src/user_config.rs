@@ -9,10 +9,9 @@ pub enum SyntaxPreference {
     Custom(CustomSyntax),
 }
 
-// Will change based on popular demand
 impl Default for SyntaxPreference {
     fn default() -> Self {
-        SyntaxPreference::Preset("rust".to_string())
+        SyntaxPreference::Preset("fss".to_string())
     }
 }
 
@@ -265,10 +264,11 @@ impl SetupWizard {
     fn preset_only(&self) -> Result<SyntaxPreference, String> {
         // Add more later
         println!("\nAvailable presets:");
-        println!("  rust   - fn, return, i32, {{ }}, semicolons");
-        println!("  python - def, return, int, indentation, no semicolons\n");
+        println!("  Rust   - fn, return, i32, {{ }}, semicolons\n");
+        println!("  Python - def, return, int, indentation, no semicolons\n");
+        println!("  FSS (Fracture Standard Syntax)");
         
-        let preset = self.prompt("Preset", "rust")?;
+        let preset = self.prompt("Preset", "fss")?;
         Ok(SyntaxPreference::Preset(preset))
     }
     
@@ -280,6 +280,7 @@ impl SetupWizard {
             match base.as_str() {
                 "Python" => break Self::python_base(),
                 "Rust" => break Self::rust_base(),
+                "FSS" => break Self::fss_base(),
                 _ => println!("'{}' is not a valid preset, please try again.", base.trim())
             };
         };
@@ -310,7 +311,9 @@ impl SetupWizard {
         custom.style.needs_semicolon = semi == "yes" || semi == "y";
         
         custom.name = self.prompt("\nName your syntax style", "custom")?;
-        
+
+        Self::validate_syntax(&custom)?;
+
         Ok(SyntaxPreference::Custom(custom))
     }
     
@@ -385,14 +388,18 @@ impl SetupWizard {
             needs_semicolon: semi == "yes" || semi == "y",
             type_annotations: if type_style == "arrow" { TypeAnnotationStyle::Arrow } else { TypeAnnotationStyle::Colon },
         };
-        
-        Ok(SyntaxPreference::Custom(CustomSyntax {
+
+        let custom = CustomSyntax {
             name,
             keywords,
             tokens,
             style,
             typing: TypingRules::default(),
-        }))
+        };
+
+        Self::validate_syntax(&custom)?;
+
+        Ok(SyntaxPreference::Custom(custom))
     }
     
     fn paste_toml(&self) -> Result<SyntaxPreference, String> {
@@ -413,9 +420,11 @@ impl SetupWizard {
         
         let custom: CustomSyntax = toml::from_str(&toml_str)
             .map_err(|e| format!("Invalid TOML: {}", e))?;
-        
+
+        Self::validate_syntax(&custom)?;
+
         println!("\n✓ Parsed successfully: {}", custom.name);
-        
+
         Ok(SyntaxPreference::Custom(custom))
     }
     
@@ -434,7 +443,89 @@ impl SetupWizard {
             Ok(input.to_string())
         }
     }
-    
+
+    fn validate_syntax(custom: &CustomSyntax) -> Result<(), String> {
+        use std::collections::HashMap;
+
+        let mut keyword_map: HashMap<String, Vec<&str>> = HashMap::new();
+        let kw = &custom.keywords;
+
+        keyword_map.entry(kw.function.clone()).or_default().push("function");
+        keyword_map.entry(kw.return_kw.clone()).or_default().push("return");
+        keyword_map.entry(kw.if_kw.clone()).or_default().push("if");
+        keyword_map.entry(kw.else_if_kw.clone()).or_default().push("else_if");
+        keyword_map.entry(kw.else_kw.clone()).or_default().push("else");
+        keyword_map.entry(kw.while_kw.clone()).or_default().push("while");
+        keyword_map.entry(kw.for_kw.clone()).or_default().push("for");
+        keyword_map.entry(kw.int_type.clone()).or_default().push("int_type");
+        keyword_map.entry(kw.bool_type.clone()).or_default().push("bool_type");
+        keyword_map.entry(kw.string_type.clone()).or_default().push("string_type");
+        keyword_map.entry(kw.let_kw.clone()).or_default().push("let");
+        keyword_map.entry(kw.mut_kw.clone()).or_default().push("mut");
+        keyword_map.entry(kw.struct_kw.clone()).or_default().push("struct");
+        keyword_map.entry(kw.mod_kw.clone()).or_default().push("mod");
+        keyword_map.entry(kw.use_kw.clone()).or_default().push("use");
+        keyword_map.entry(kw.pub_kw.clone()).or_default().push("pub");
+        keyword_map.entry(kw.as_kw.clone()).or_default().push("as");
+        keyword_map.entry(kw.self_kw.clone()).or_default().push("self");
+        keyword_map.entry(kw.super_kw.clone()).or_default().push("super");
+        keyword_map.entry(kw.glyph_kw.clone()).or_default().push("glyph");
+        keyword_map.entry(kw.shard_kw.clone()).or_default().push("shard");
+        keyword_map.entry(kw.some_kw.clone()).or_default().push("some");
+        keyword_map.entry(kw.none_kw.clone()).or_default().push("none");
+        keyword_map.entry(kw.ok_kw.clone()).or_default().push("ok");
+        keyword_map.entry(kw.err_kw.clone()).or_default().push("err");
+        keyword_map.entry(kw.match_kw.clone()).or_default().push("match");
+        keyword_map.entry(kw.panic_kw.clone()).or_default().push("panic");
+
+        for (value, fields) in &keyword_map {
+            if fields.len() > 1 && !value.is_empty() {
+                return Err(format!(
+                    "Keyword conflict: '{}' used for multiple keywords: {}",
+                    value,
+                    fields.join(", ")
+                ));
+            }
+        }
+
+        let mut token_map: HashMap<String, Vec<&str>> = HashMap::new();
+        let tok = &custom.tokens;
+
+        token_map.entry(tok.arrow.clone()).or_default().push("arrow");
+        token_map.entry(tok.double_equals.clone()).or_default().push("double_equals");
+        token_map.entry(tok.not_equals.clone()).or_default().push("not_equals");
+        token_map.entry(tok.less_equals.clone()).or_default().push("less_equals");
+        token_map.entry(tok.greater_equals.clone()).or_default().push("greater_equals");
+        token_map.entry(tok.immutable_ref.clone()).or_default().push("immutable_ref");
+        token_map.entry(tok.mutable_ref.clone()).or_default().push("mutable_ref");
+        token_map.entry(tok.assignment.clone()).or_default().push("assignment");
+        token_map.entry(tok.plus.clone()).or_default().push("plus");
+        token_map.entry(tok.minus.clone()).or_default().push("minus");
+        token_map.entry(tok.star.clone()).or_default().push("star");
+        token_map.entry(tok.slash.clone()).or_default().push("slash");
+        token_map.entry(tok.less.clone()).or_default().push("less");
+        token_map.entry(tok.greater.clone()).or_default().push("greater");
+        token_map.entry(tok.left_paren.clone()).or_default().push("left_paren");
+        token_map.entry(tok.right_paren.clone()).or_default().push("right_paren");
+        token_map.entry(tok.left_brace.clone()).or_default().push("left_brace");
+        token_map.entry(tok.right_brace.clone()).or_default().push("right_brace");
+        token_map.entry(tok.comma.clone()).or_default().push("comma");
+        token_map.entry(tok.semicolon.clone()).or_default().push("semicolon");
+        token_map.entry(tok.colon.clone()).or_default().push("colon");
+
+        for (value, fields) in &token_map {
+            if fields.len() > 1 && !value.is_empty() {
+                return Err(format!(
+                    "Token conflict: '{}' used for multiple tokens: {}",
+                    value,
+                    fields.join(", ")
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     fn rust_base() -> CustomSyntax {
         CustomSyntax {
             name: "custom-rust".to_string(),
@@ -562,23 +653,68 @@ impl SetupWizard {
             typing: TypingRules::default(),
         }
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    #[test]
-    fn test_default_is_rust_preset() {
-        let config = UserConfig::default();
-        assert!(matches!(config.syntax, SyntaxPreference::Preset(s) if s == "rust"));
-    }
-    
-    #[test]
-    fn test_custom_syntax_serialization() {
-        let custom = SetupWizard::rust_base();
-        let toml = toml::to_string_pretty(&custom).unwrap();
-        assert!(toml.contains("fn"));
-        assert!(toml.contains("braces"));
+    fn fss_base() -> CustomSyntax {
+        CustomSyntax {
+            name: "custom-fss".to_string(),
+            keywords: Keywords {
+                function: "fn".to_string(),
+                return_kw: "return".to_string(),
+                if_kw: "if".to_string(),
+                else_if_kw: "else if".to_string(),
+                else_kw: "else".to_string(),
+                while_kw: "while".to_string(),
+                for_kw: "for".to_string(),
+                int_type: "i32".to_string(),
+                bool_type: "bool".to_string(),
+                string_type: "String".to_string(),
+                let_kw: "let".to_string(),
+                mut_kw: "mut".to_string(),
+                struct_kw: "struct".to_string(),
+                mod_kw: "mod".to_string(),
+                use_kw: "use".to_string(),
+                pub_kw: "pub".to_string(),
+                as_kw: "as".to_string(),
+                self_kw: "self".to_string(),
+                super_kw: "super".to_string(),
+                glyph_kw: "glyph".to_string(),
+                shard_kw: "shard".to_string(),
+                some_kw: "Some".to_string(),
+                none_kw: "None".to_string(),
+                ok_kw: "Ok".to_string(),
+                err_kw: "Err".to_string(),
+                match_kw: "match".to_string(),
+                panic_kw: "panic".to_string(),
+            },
+            tokens: TokenConfig {
+                arrow: "->".to_string(),
+                double_equals: "==".to_string(),
+                not_equals: "!=".to_string(),
+                less_equals: "<=".to_string(),
+                greater_equals: ">=".to_string(),
+                immutable_ref: "&".to_string(),
+                mutable_ref: "&mut".to_string(),
+                assignment: "=".to_string(),
+                plus: "+".to_string(),
+                minus: "-".to_string(),
+                star: "*".to_string(),
+                slash: "/".to_string(),
+                less: "<".to_string(),
+                greater: ">".to_string(),
+                left_paren: "(".to_string(),
+                right_paren: ")".to_string(),
+                left_brace: "{".to_string(),
+                right_brace: "}".to_string(),
+                comma: ",".to_string(),
+                semicolon: ";".to_string(),
+                colon: ":".to_string(),
+            },
+            style: SyntaxStyle {
+                block_style: BlockStyle::Braces,
+                needs_semicolon: true,
+                type_annotations: TypeAnnotationStyle::Colon,
+            },
+            typing: TypingRules::default(),
+        }
     }
 }

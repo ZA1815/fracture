@@ -49,7 +49,6 @@ impl InitCommand {
         if !UserConfig::global_exists() {
             println!("{} No global config found.", "→".blue());
             println!("  Run `rift setup` to configure your syntax preferences,");
-            // Change based on popular demand
             println!("  or continue with default 'FSS (Fracture Standard Syntax)' style.\n");
         }
         
@@ -117,9 +116,8 @@ impl InitCommand {
     fn generate_manifest_toml(&self, name: &str) -> CommandResult<String> {
         let toml = format!(
             // Might decide to remove docs thing later if I don't have the website
+            // Add later: # See https://fracture-lang.org/docs/manifest for all options
 r#"# Fracture Project Manifest
-# See https://fracture-lang.org/docs/manifest for all options
-
 [package]
 name = "{name}"
 version = "0.1.0"
@@ -128,7 +126,7 @@ version = "0.1.0"
 # license = "MIT"
 
 [dependencies]
-# Add dependencies here:
+std = {{ git = "https://github.com/fracture-lang/fracture-stdlib" }}
 # some-lib = "1.0"
 # another-lib = {{ git = "https://github.com/user/repo" }}
 
@@ -153,18 +151,20 @@ version = "0.1.0"
     fn generate_main_file(&self, style: &str) -> String {
         match style {
             "python" => {
-                r#"
+                r#"import shard std::io
+
 def main() -> int:
-    let message = "Hello, Fracture!"
-    println(message)
+    message = "Hello, Fracture!"
+    io::println(message)
     return 0
 "#.to_string()
             }
             "rust" | _ => {
-                r#"
+                r#"use shard std::io;
+
 fn main() -> i32 {
     let message = "Hello, Fracture!";
-    println(message);
+    io::println(message);
     return 0;
 }
 "#.to_string()
@@ -338,10 +338,86 @@ impl BuildCommand {
         match &user_config.syntax {
             SyntaxPreference::Preset(style) => self.style_to_config(style),
             SyntaxPreference::Custom(custom) => {
-                // TODO: Full conversion when fracture_ir supports conversion from CustomSyntax to fracture_ir::SyntaxConfig
-                self.style_to_config(&custom.name)
+                Self::custom_to_syntax_config(custom)
             }
         }
+    }
+
+    fn custom_to_syntax_config(custom: &crate::user_config::CustomSyntax) -> CommandResult<fracture_ir::SyntaxConfig> {
+        let config = fracture_ir::SyntaxConfig {
+            name: custom.name.clone(),
+            keywords: fracture_ir::syntax_config::Keywords {
+                function_kw: custom.keywords.function.clone(),
+                return_kw: custom.keywords.return_kw.clone(),
+                if_kw: custom.keywords.if_kw.clone(),
+                else_if_kw: custom.keywords.else_if_kw.clone(),
+                else_kw: custom.keywords.else_kw.clone(),
+                while_kw: custom.keywords.while_kw.clone(),
+                for_kw: custom.keywords.for_kw.clone(),
+                int_type: custom.keywords.int_type.clone(),
+                bool_type: custom.keywords.bool_type.clone(),
+                string_type: custom.keywords.string_type.clone(),
+                let_kw: custom.keywords.let_kw.clone(),
+                mut_kw: custom.keywords.mut_kw.clone(),
+                struct_kw: custom.keywords.struct_kw.clone(),
+                mod_kw: custom.keywords.mod_kw.clone(),
+                use_kw: custom.keywords.use_kw.clone(),
+                pub_kw: custom.keywords.pub_kw.clone(),
+                as_kw: custom.keywords.as_kw.clone(),
+                self_kw: custom.keywords.self_kw.clone(),
+                super_kw: custom.keywords.super_kw.clone(),
+                glyph_kw: custom.keywords.glyph_kw.clone(),
+                shard_kw: custom.keywords.shard_kw.clone(),
+                some_kw: custom.keywords.some_kw.clone(),
+                none_kw: custom.keywords.none_kw.clone(),
+                ok_kw: custom.keywords.ok_kw.clone(),
+                err_kw: custom.keywords.err_kw.clone(),
+                match_kw: custom.keywords.match_kw.clone(),
+                panic_kw: custom.keywords.panic_kw.clone(),
+            },
+            tokens: fracture_ir::syntax_config::TokenConfig {
+                arrow: custom.tokens.arrow.clone(),
+                double_equals: custom.tokens.double_equals.clone(),
+                not_equals: custom.tokens.not_equals.clone(),
+                less_equals: custom.tokens.less_equals.clone(),
+                greater_equals: custom.tokens.greater_equals.clone(),
+                immutable_ref: custom.tokens.immutable_ref.clone(),
+                mutable_ref: custom.tokens.mutable_ref.clone(),
+                assignment: custom.tokens.assignment.clone(),
+                plus: custom.tokens.plus.clone(),
+                minus: custom.tokens.minus.clone(),
+                star: custom.tokens.star.clone(),
+                slash: custom.tokens.slash.clone(),
+                less: custom.tokens.less.clone(),
+                greater: custom.tokens.greater.clone(),
+                left_paren: custom.tokens.left_paren.clone(),
+                right_paren: custom.tokens.right_paren.clone(),
+                left_brace: custom.tokens.left_brace.clone(),
+                right_brace: custom.tokens.right_brace.clone(),
+                comma: custom.tokens.comma.clone(),
+                semicolon: custom.tokens.semicolon.clone(),
+                colon: custom.tokens.colon.clone(),
+            },
+            style: fracture_ir::syntax_config::SyntaxStyle {
+                block_style: match custom.style.block_style {
+                    crate::user_config::BlockStyle::Braces => fracture_ir::syntax_config::BlockStyle::Braces,
+                    crate::user_config::BlockStyle::Indentation => fracture_ir::syntax_config::BlockStyle::Indentation,
+                },
+                needs_semicolon: custom.style.needs_semicolon,
+                type_annotations: match custom.style.type_annotations {
+                    crate::user_config::TypeAnnotationStyle::Colon => fracture_ir::syntax_config::TypeAnnotationStyle::Colon,
+                    crate::user_config::TypeAnnotationStyle::Arrow => fracture_ir::syntax_config::TypeAnnotationStyle::CStyle,
+                },
+            },
+            typing: fracture_ir::syntax_config::TypingRules {
+                explicit_types: custom.typing.explicit_types,
+                type_inference: custom.typing.type_inference,
+            },
+        };
+
+        config.validate().map_err(|e| e)?;
+
+        Ok(config)
     }
     
     fn style_to_config(&self, style: &str) -> CommandResult<fracture_ir::SyntaxConfig> {
@@ -558,11 +634,7 @@ impl CheckCommand {
                 other => Err(format!("Unknown style: {}", other)),
             },
             SyntaxPreference::Custom(custom) => {
-                // Use name as preset lookup for now
-                match custom.name.as_str() {
-                    n if n.contains("python") => Ok(fracture_ir::SyntaxConfig::python()),
-                    _ => Ok(fracture_ir::SyntaxConfig::rust()),
-                }
+                BuildCommand::custom_to_syntax_config(custom)
             }
         }
     }

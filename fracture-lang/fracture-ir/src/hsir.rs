@@ -311,6 +311,10 @@ pub enum Inst {
     Ge { dst: Reg, lhs: Value, rhs: Value, ty: Type },
     Ne { dst: Reg, lhs: Value, rhs: Value, ty: Type },
 
+    And { dst: Reg, lhs: Value, rhs: Value, ty: Type },
+    Or { dst: Reg, lhs: Value, rhs: Value, ty: Type },
+    Not { dst: Reg, src: Value, ty: Type },
+
     Alloc { dst: Reg, size: Value, ty: Type },
     Load { dst: Reg, ptr: Value, ty: Type },
     Store { ptr: Value, src: Value, ty: Type },

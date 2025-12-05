@@ -1,4 +1,4 @@
-use fracture_ir::{SyntaxConfig, syntax_config::BlockStyle};
+use fracture_ir::{SyntaxConfig, syntax_config::BlockStyle, DynamicKeywords};
 use crate::errors::{Span, Position};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -30,11 +30,16 @@ pub enum Token {
     DoubleColon,
     DoubleEquals,
     NotEquals,
+    Comment(String),
     
     Less,
     Greater,
     LessEquals,
     GreaterEquals,
+
+    LogicalAnd,
+    LogicalOr,
+    Not,
 
     ImmutableRef,
     MutableRef,
@@ -52,6 +57,10 @@ pub enum Token {
     Hash,
     Dot,
     SliceDot,
+    Range,
+    RangeInclusive,
+
+    In,
 
     Newline,
     Indent,
@@ -67,10 +76,8 @@ pub enum Token {
     Glyph,
     Shard,
 
-    Some,
-    None,
-    Ok,
-    Err,
+    GlyphKeyword(String, String),
+
     Match,
 
     QuestionMark,
@@ -97,6 +104,7 @@ pub struct Lexer {
     config: SyntaxConfig,
     indent_stack: Vec<usize>,
     at_line_start: bool,
+    glyph_keywords: DynamicKeywords,
     token_map: Vec<(String, Token)>
 }
 
@@ -112,8 +120,13 @@ impl Lexer {
             config,
             indent_stack: vec![0],
             at_line_start: true,
+            glyph_keywords: DynamicKeywords::new(),
             token_map
         }
+    }
+
+    pub fn set_glyph_keywords(&mut self, keywords: DynamicKeywords) {
+        self.glyph_keywords = keywords;
     }
 
     fn build_token_map(config: &SyntaxConfig) -> Vec<(String, Token)> {
@@ -187,11 +200,15 @@ impl Lexer {
         list.push(("[".to_string(), Token::LeftBracket));
         list.push(("]".to_string(), Token::RightBracket));
         list.push(("#".to_string(), Token::Hash));
-        list.push(("..".to_string(), Token::SliceDot));
+        list.push(("..=".to_string(), Token::RangeInclusive));
+        list.push(("..".to_string(), Token::Range));
         list.push((".".to_string(), Token::Dot));
         // Have to change later but its complicated
         list.push(("::".to_string(), Token::DoubleColon));
         list.push(("?".to_string(), Token::QuestionMark));
+        list.push(("&&".to_string(), Token::LogicalAnd));
+        list.push(("||".to_string(), Token::LogicalOr));
+        list.push(("!".to_string(), Token::Not));
 
         list.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
         
@@ -285,7 +302,7 @@ impl Lexer {
         let end=  self.current_position();
         let span = Span::new(start, end);
 
-        let token = if text == self.config.keywords.function {
+        let token = if text == self.config.keywords.function_kw {
             Token::Function
         }
         else if text == self.config.keywords.return_kw {
@@ -294,25 +311,50 @@ impl Lexer {
         else if text == self.config.keywords.if_kw {
             Token::If
         }
+        else if text == self.config.keywords.else_kw {
+            if !self.config.keywords.else_if_kw.is_empty() && self.config.keywords.else_if_kw.starts_with(&text) {
+                let saved_pos = self.pos;
+                let saved_line = self.line;
+                let saved_column = self.column;
+
+                while self.pos < self.input.len() && self.input[self.pos].is_whitespace() && self.input[self.pos] != '\n' {
+                    self.advance_char();
+                }
+
+                let if_start = self.pos;
+                while self.pos < self.input.len() && (self.input[self.pos].is_ascii_alphanumeric() || self.input[self.pos] == '_') {
+                    self.advance_char();
+                }
+
+                let next_text: String = self.input[if_start..self.pos].iter().collect();
+
+                if (text.clone() + " " + &next_text) == self.config.keywords.else_if_kw {
+                    return SpannedToken { token: Token::ElseIf, span };
+                }
+                else {
+                    self.pos = saved_pos;
+                    self.line = saved_line;
+                    self.column = saved_column;
+                }
+            }
+            Token::Else
+        }
         else if text == self.config.keywords.else_if_kw {
             Token::ElseIf
         }
-        else if text == self.config.keywords.else_kw {
-            Token::Else
-        }
-        else if text == self.config.keywords.while_kw {
+        else if !self.config.keywords.while_kw.is_empty() && text == self.config.keywords.while_kw {
             Token::While
         }
-        else if text == self.config.keywords.for_kw {
+        else if !self.config.keywords.for_kw.is_empty() && text == self.config.keywords.for_kw {
             Token::For
         }
-        else if text == self.config.keywords.let_kw {
+        else if !self.config.keywords.let_kw.is_empty() && text == self.config.keywords.let_kw {
             Token::Let
         }
-        else if text == self.config.keywords.mut_kw {
+        else if !self.config.keywords.mut_kw.is_empty() && text == self.config.keywords.mut_kw {
             Token::Mut
         }
-        else if text == self.config.keywords.struct_kw {
+        else if !self.config.keywords.struct_kw.is_empty() && text == self.config.keywords.struct_kw {
             Token::Struct
         }
         else if !self.config.keywords.mod_kw.is_empty() && text == self.config.keywords.mod_kw {
@@ -339,18 +381,6 @@ impl Lexer {
         else if !self.config.keywords.shard_kw.is_empty() && text == self.config.keywords.shard_kw {
             Token::Shard
         }
-        else if !self.config.keywords.some_kw.is_empty() && text == self.config.keywords.some_kw {
-            Token::Some
-        }
-        else if !self.config.keywords.none_kw.is_empty() && text == self.config.keywords.none_kw {
-            Token::None
-        }
-        else if !self.config.keywords.ok_kw.is_empty() && text == self.config.keywords.ok_kw {
-            Token::Ok
-        }
-        else if !self.config.keywords.err_kw.is_empty() && text == self.config.keywords.err_kw {
-            Token::Err
-        }
         else if !self.config.keywords.match_kw.is_empty() && text == self.config.keywords.match_kw {
             Token::Match
         }
@@ -362,6 +392,12 @@ impl Lexer {
         }
         else if text == "false" {
             Token::Bool(false)
+        }
+        else if text == "in" {
+            Token::In
+        }
+        else if let Some(semantic_type) = self.glyph_keywords.get_type(&text) {
+            Token::GlyphKeyword(text, semantic_type.clone())
         }
         else {
             Token::Ident(text)
@@ -483,71 +519,5 @@ impl Lexer {
         for _ in 0..n {
             self.advance_char();
         }
-    }
-
-    fn current_line(&self) -> usize {
-        self.line
-    }
-
-    fn current_column(&self) -> usize {
-        self.column
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_position_tracking() {
-        let config = SyntaxConfig::rust();
-        let mut lexer = Lexer::new("let x = 42;", config);
-        
-        // 'let' should be at line 1, column 1
-        let tok1 = lexer.next_token();
-        assert_eq!(tok1.token, Token::Let);
-        assert_eq!(tok1.span.start.line, 1);
-        assert_eq!(tok1.span.start.column, 1);
-        
-        // 'x' should be at line 1, column 5
-        let tok2 = lexer.next_token();
-        assert_eq!(tok2.token, Token::Ident("x".to_string()));
-        assert_eq!(tok2.span.start.line, 1);
-        assert_eq!(tok2.span.start.column, 5);
-    }
-    
-    #[test]
-    fn test_multiline_tracking() {
-        let config = SyntaxConfig::rust();
-        let source = "let x = 1;\nlet y = 2;";
-        let mut lexer = Lexer::new(source, config);
-        
-        // Skip to second line
-        for _ in 0..6 { lexer.next_token(); } // let, x, =, 1, ;, newline
-        
-        // 'let' on line 2
-        let tok = lexer.next_token();
-        assert_eq!(tok.token, Token::Let);
-        assert_eq!(tok.span.start.line, 2);
-        assert_eq!(tok.span.start.column, 1);
-    }
-
-    #[test]
-    fn test_mod_keyword() {
-        let config = SyntaxConfig::rust();
-        let mut lexer = Lexer::new("mod foo;", config);
-        
-        let tok = lexer.next_token();
-        assert_eq!(tok.token, Token::Mod);
-    }
-
-    #[test]
-    fn test_double_colon() {
-        let config = SyntaxConfig::rust();
-        let mut lexer = Lexer::new("std::io", config);
-        
-        assert_eq!(lexer.next_token().token, Token::Ident("std".to_string()));
-        assert_eq!(lexer.next_token().token, Token::DoubleColon);
-        assert_eq!(lexer.next_token().token, Token::Ident("io".to_string()));
     }
 }

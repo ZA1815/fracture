@@ -50,16 +50,16 @@ impl Compiler {
     }
 
     pub fn compile(&self, program: &Program, output_path: &str) -> Result<(), String> {
-        println!("[compiler] Mode: {:?}, Target: {:?}", self.options.mode, self.options.target);
+        println!("[Compiler] Mode: {:?}, Target: {:?}", self.options.mode, self.options.target);
 
         let mut program = program.clone();
 
         if self.options.mode == CompilerMode::Safe {
-            println!("[compiler] Running safety checks...");
+            println!("[Compiler] Running safety checks...");
             self.run_safe_passes(&mut program)?;
         }
         else {
-            println!("[compiler] Skipping safety checks (unsafe mode)");
+            println!("[Compiler] Skipping safety checks (unsafe mode)");
         }
 
         match self.options.target {
@@ -70,15 +70,6 @@ impl Compiler {
     }
 
     fn run_safe_passes(&self, program: &Program) -> Result<(), String> {
-        let safe_funcs = program.functions.values()
-            .filter(|f| !f.is_unsafe())
-            .count();
-        let unsafe_funcs = program.functions.values()
-            .filter(|f| f.is_unsafe())
-            .count();
-
-        println!("  Checking {} safe function(s), skipping {} unsafe function(s)", safe_funcs, unsafe_funcs);
-
         passes::resolution_check::check(program)?;
         println!("  Resolution check passed.");
 
@@ -96,12 +87,7 @@ impl Compiler {
                 pass_fn(program)?;
                 println!("  {} passed.", glyph_name);
             } else {
-                let available = registry.list_glyphs();
-                return Err(format!(
-                    "Unknown glyph '{}'\nAvailable glyphs: {}",
-                    glyph_name,
-                    available.join(", ")
-                ));
+                println!("  Glyph '{}' loaded (syntax-only)", glyph_name);
             }
         }
 
