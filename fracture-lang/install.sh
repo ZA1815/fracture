@@ -69,7 +69,7 @@ check_permissions() {
         if [ "$EUID" -ne 0 ]; then
             echo -e "${YELLOW}Warning: $INSTALL_DIR is not writable${NC}"
             echo "You may need to run this script with sudo, or install to ~/.local/bin"
-            read -p "Install to ~/.local/bin instead? (y/n) " -n 1 -r
+            read -p "Install to ~/.local/bin instead? (y/n) " -n 1 -r < /dev/tty
             echo
             if [[ $REPLY =~ ^[Yy]$ ]]; then
                 INSTALL_DIR="${HOME}/.local/bin"
@@ -223,7 +223,7 @@ install_binaries() {
     else
         echo -e "${RED}Error: Failed to install binary${NC}"
         echo "You may need to run this script with sudo:"
-        echo "  curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/fracture/main/fracture-lang/install.sh | sudo bash"
+        echo "  curl -fsSL https://raw.githubusercontent.com/ZA1815/fracture/main/fracture-lang/install.sh | sudo bash"
         exit 1
     fi
 }
@@ -287,7 +287,7 @@ setup_path() {
                 echo -e "${GREEN}  export PATH=\"$INSTALL_DIR:\$PATH\"${NC}"
             fi
             echo
-            read -p "Would you like me to add it automatically? (y/n) " -n 1 -r
+            read -p "Would you like me to add it automatically? (y/n) " -n 1 -r < /dev/tty
             echo
             if [[ $REPLY =~ ^[Yy]$ ]]; then
                 echo "" >> "$shell_config"
@@ -361,9 +361,9 @@ main() {
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo
     echo "Learn more:"
-    echo "  Repository: https://github.com/YOUR_USERNAME/fracture"
-    echo "  Documentation: https://github.com/YOUR_USERNAME/fracture/tree/main/fracture-lang"
-    echo "  Report issues: https://github.com/YOUR_USERNAME/fracture/issues"
+    echo "  Repository: https://github.com/ZA1815/fracture"
+    echo "  Documentation: https://github.com/ZA1815/fracture/tree/main/fracture-lang"
+    echo "  Report issues: https://github.com/ZA1815/fracture/issues"
     echo
 }
 
