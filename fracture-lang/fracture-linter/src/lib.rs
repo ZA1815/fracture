@@ -58,7 +58,7 @@ impl Linter {
 
         match projector.project_to_hsir() {
             Ok(program) => {
-                println!("[lint] {} -> HSIR ({} functions)", source_name, program.functions.len());
+                println!("[Lint] {} -> HSIR ({} functions)", source_name, program.functions.len());
 
                 Ok(program)
             }
@@ -72,7 +72,7 @@ impl Linter {
         if self.options.output_hsir {
             let hsir_path = format!("{}.hsir", output_path);
             program.to_file(&hsir_path)?;
-            println!("[lint] Wrote {}", hsir_path);
+            println!("[Lint] Wrote {}", hsir_path);
         }
 
         if self.options.output_text {
@@ -80,7 +80,7 @@ impl Linter {
             let text = program.to_text();
             std::fs::write(&text_path, text)
                 .map_err(|e| format!("Failed to write text: {}", e))?;
-            println!("[lint] Wrote {}", text_path);
+            println!("[Lint] Wrote {}", text_path);
         }
 
         Ok(program)
@@ -101,7 +101,7 @@ impl Linter {
                     SyntaxConfig::from_file("fracture.toml")
                 }
                 else {
-                    println!("[lint] No config found, using Rust defaults");
+                    println!("[Lint] No config found, using Rust defaults");
                     Ok(SyntaxConfig::rust())
                 }
             }

@@ -50,12 +50,12 @@ impl Compiler {
     }
 
     pub fn compile(&self, program: &Program, output_path: &str) -> Result<(), String> {
-        println!("[Compiler] Mode: {:?}, Target: {:?}", self.options.mode, self.options.target);
+        println!("[Compiler] Target: {:?}", self.options.target);
 
         let mut program = program.clone();
 
         if self.options.mode == CompilerMode::Safe {
-            println!("[Compiler] Running safety checks...");
+            println!("[Compiler] Running checks...");
             self.run_safe_passes(&mut program)?;
         }
         else {
