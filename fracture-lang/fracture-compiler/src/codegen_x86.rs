@@ -10,6 +10,7 @@ pub struct X86CodeGen {
     struct_layouts: HashMap<String, Vec<(String, usize, Type)>>,
     vec_layouts: HashMap<Reg, (i32, i32, i32)>,
     label_counter: usize,
+    #[allow(dead_code)]
     alloc_sizes: HashMap<Reg, i32>,
     data_section: Vec<String>,
     data_label_counter: usize
@@ -196,6 +197,7 @@ impl X86CodeGen {
         self.emit("");
     }
 
+    #[allow(dead_code)]
     fn emit_mmap_alloc(&mut self, dst: &Reg, size_val: &Value) {
         self.load_value_to_rax(size_val, &Type::I64);
         self.emit("    mov rsi, rax");
@@ -210,6 +212,7 @@ impl X86CodeGen {
         self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
     }
 
+    #[allow(dead_code)]
     fn emit_munmap_free(&mut self, ptr_reg: &Reg, size: usize) {
         let ptr_offset = self.get_or_alloc_reg_offset(ptr_reg);
         self.emit(&format!("    mov rdi, QWORD PTR [rbp-{}]", ptr_offset));
@@ -218,6 +221,7 @@ impl X86CodeGen {
         self.emit("    syscall");
     }
 
+    #[allow(dead_code)]
     fn emit_vec_drop(&mut self, reg: &Reg) {
         let vec_offset = self.get_or_alloc_reg_offset(reg);
         self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", vec_offset));
@@ -236,6 +240,7 @@ impl X86CodeGen {
         self.emit(&format!("{}:", skip_label));
     }
 
+    #[allow(dead_code)]
     fn emit_string_drop(&mut self, reg: &Reg) {
         let string_offset = self.get_or_alloc_reg_offset(reg);
         self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", string_offset));
@@ -252,6 +257,7 @@ impl X86CodeGen {
         self.emit(&format!("{}:", skip_label));
     }
 
+    #[allow(dead_code)]
     fn emit_hashmap_drop(&mut self, reg: &Reg) {
         let map_offset = self.get_or_alloc_reg_offset(reg);
         self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", map_offset));
@@ -270,7 +276,8 @@ impl X86CodeGen {
         self.emit(&format!("{}:", skip_label));
     }
 
-    fn emit_struct_drop(&mut self, reg: &Reg, struct_name: &str) {
+    #[allow(dead_code)]
+    fn emit_struct_drop(&mut self, _reg: &Reg, _struct_name: &str) {
         // Placeholder as structs are currently on stack
     }
 
@@ -336,7 +343,7 @@ impl X86CodeGen {
             Inst::Return { val } => {
                 self.compile_return(val);
             }
-            Inst::Alloc { dst, size, ty } => {
+            Inst::Alloc { dst, size, ty: _ } => {
                 self.compile_alloc(dst, size);
             }
             Inst::HeapAlloc { dst, size } => {
@@ -346,7 +353,7 @@ impl X86CodeGen {
             Inst::HeapRealloc { dst, ptr, old_size, new_size } => {
                 self.compile_heap_realloc(dst, ptr, old_size, new_size);
             }
-            Inst::HeapFree { ptr } => {
+            Inst::HeapFree { ptr: _ } => {
                 // Placeholder
             }
             Inst::Store { ptr, src, .. } => {
@@ -401,7 +408,7 @@ impl X86CodeGen {
             Inst::StringConcat { dst, left, right } => {
                 self.compile_string_concat(dst, left, right);
             }
-            Inst::StringPush { string, value } => {
+            Inst::StringPush { string: _, value: _ } => {
                 // Placeholder
             }
             Inst::StringIndex { dst, string, index } => {
@@ -540,10 +547,10 @@ impl X86CodeGen {
             Inst::OptionUnwrapOr { dst, option, default, inner_ty } => {
                 self.compile_option_unwrap_or(dst, option, default, inner_ty);
             }
-            Inst::OptionUnwrapOrElse { dst, option, default_fn, inner_ty } => {
+            Inst::OptionUnwrapOrElse { dst: _, option: _, default_fn: _, inner_ty: _ } => {
                 // Placeholder
             }
-            Inst::OptionMap { dst, option, map_fn, input_ty, output_ty } => {
+            Inst::OptionMap { dst: _, option: _, map_fn: _, input_ty: _, output_ty: _ } => {
                 // Placeholder
             }
             Inst::OptionMatch { option, value_dst, some_label, none_label, inner_ty } => {
@@ -596,7 +603,7 @@ impl X86CodeGen {
             Inst::Unreachable => {
                 self.emit("    ud2");
             }
-            Inst::SimPoint { id, metadata } => {
+            Inst::SimPoint { id, metadata: _ } => {
                 self.emit(&format!("    # SimPoint: {}", id));
             }
             _ => {
@@ -823,12 +830,12 @@ impl X86CodeGen {
         self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
     }
 
-    fn compile_field_store(&mut self, struct_reg: &Reg, field_name: &str, value: &Value, ty: &Type) {
+    fn compile_field_store(&mut self, struct_reg: &Reg, field_name: &str, value: &Value, _ty: &Type) {
         let struct_offset = self.get_or_alloc_reg_offset(struct_reg);
         self.emit(&format!("    mov rcx, QWORD PTR [rbp-{}]", struct_offset));
 
         if let Value::Reg(reg) = value {
-            if let Some(ty) = self.reg_offsets.get(reg) {
+            if let Some(_ty) = self.reg_offsets.get(reg) {
                 // Simplification, need type tracking
                 if let Some(field_offset) = self.get_field_offset_without_struct(field_name) {
                     self.load_value_to_rax(value, &Type::I64);
@@ -838,7 +845,7 @@ impl X86CodeGen {
         }
     }
 
-    fn compile_field_load(&mut self, dst: &Reg, struct_reg: &Reg, field_name: &str, ty: &Type) {
+    fn compile_field_load(&mut self, dst: &Reg, struct_reg: &Reg, field_name: &str, _ty: &Type) {
         let struct_offset = self.get_or_alloc_reg_offset(struct_reg);
         self.emit(&format!("    mov rcx, QWORD PTR [rbp-{}]", struct_offset));
 
@@ -1718,7 +1725,7 @@ impl X86CodeGen {
 
     fn compile_int_to_string(&mut self, dst: &Reg, value: &Value) {
         let id = self.next_label_id();
-        let negative_label = format!("itoa_negative_{}", id);
+        let _negative_label = format!("itoa_negative_{}", id);
         let convert_loop = format!("itoa_loop_{}", id);
         let build_loop = format!("itoa_build_{}", id);
         let done_label = format!("itoa_done_{}", id);
@@ -2160,7 +2167,7 @@ impl X86CodeGen {
         self.emit("    mov rax, 60");
         self.emit("    syscall");
         self.emit(&format!("{}:", ok_label));
-        let inner_size = self.type_size(inner_ty);;
+        let inner_size = self.type_size(inner_ty);
         match inner_size {
             1 => self.emit("    movzx rax, BYTE PTR [r12+8]"),
             2 => self.emit("    movzx  rax, WORD PTR [r12+8]"),
@@ -2404,7 +2411,7 @@ impl X86CodeGen {
         self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", dst_offset));
     }
 
-    fn compile_result_match(&mut self, result: &Reg, ok_dst: &Option<Reg>, err_dst: &Option<Reg>, ok_label: &Label, err_label: &Label, ok_ty: &Type, err_ty: &Type) {
+    fn compile_result_match(&mut self, result: &Reg, ok_dst: &Option<Reg>, _err_dst: &Option<Reg>, ok_label: &Label, err_label: &Label, ok_ty: &Type, _err_ty: &Type) {
         let result_offset = self.get_or_alloc_reg_offset(result);
         self.emit(&format!("    mov r12, QWORD PTR [rbp-{}]", result_offset));
         self.emit("    mov rax, QWORD PTR [r12]");
@@ -2500,7 +2507,7 @@ impl X86CodeGen {
         None
     }
 
-    fn load_value_to_rax(&mut self, val: &Value, ty: &Type) {
+    fn load_value_to_rax(&mut self, val: &Value, _ty: &Type) {
         match val {
             Value::Const(c) => {
                 match c {
@@ -2597,10 +2604,12 @@ impl X86CodeGen {
         self.emit(&format!("    mov QWORD PTR [rbp-{}], rax", offset));
     }
 
+    #[allow(dead_code)]
     fn option_size(&self, inner_ty: &Type) -> usize {
         self.type_size(inner_ty) + 8
     }
 
+    #[allow(dead_code)]
     fn result_size(&self, ok_ty: &Type, err_ty: &Type) -> usize {
         let ok_size = self.type_size(ok_ty);
         let err_size = self.type_size(err_ty);

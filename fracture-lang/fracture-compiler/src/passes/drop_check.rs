@@ -1,10 +1,11 @@
 use fracture_ir::{Program, Function, Inst, Value, Type, Reg};
-use std::{collections::{HashMap, HashSet}, usize};
+use std::{collections::HashMap, usize};
 
 #[derive(Debug, Clone)]
-struct DropEntry {
+pub struct DropEntry {
     reg: Reg,
     ty: Type,
+    #[allow(dead_code)]
     scope_id: u32,
     needs_drop: bool,
     is_moved: bool,
@@ -86,6 +87,7 @@ impl DropState {
         }
     }
 
+    #[allow(dead_code)]
     fn unregister(&mut self, reg: &Reg) {
         self.entries.remove(reg);
     }
@@ -107,7 +109,7 @@ pub fn analyze(program: &Program) -> Result<ProgramDropInfo, String> {
     Ok(info)
 }
 
-fn analyze_function(name: &str, func: &Function) -> Result<FunctionDropInfo, String> {
+fn analyze_function(_name: &str, func: &Function) -> Result<FunctionDropInfo, String> {
     let mut state = DropState::new();
     let mut drops: HashMap<usize, Vec<DropEntry>> = HashMap::new();
 
@@ -129,16 +131,16 @@ fn analyze_function(name: &str, func: &Function) -> Result<FunctionDropInfo, Str
     })
 }
 
-fn analyze_instruction(inst: &Inst, state: &mut DropState, drops: &mut HashMap<usize, Vec<DropEntry>>, idx: usize) -> Result<(), String> {
+fn analyze_instruction(inst: &Inst, state: &mut DropState, _drops: &mut HashMap<usize, Vec<DropEntry>>, _idx: usize) -> Result<(), String> {
     match inst {
-        Inst::VecAlloc { dst, element_ty, initial_cap } => {
+        Inst::VecAlloc { dst, element_ty, initial_cap: _ } => {
             let ty = Type::Vec(Box::new(element_ty.clone()));
             state.register(dst.clone(), ty);
         }
-        Inst::StringAlloc { dst, data } => {
+        Inst::StringAlloc { dst, data: _ } => {
             state.register(dst.clone(), Type::String);
         }
-        Inst::HashMapAlloc { dst, key_ty, value_ty, initial_cap } => {
+        Inst::HashMapAlloc { dst, key_ty, value_ty, initial_cap: _ } => {
             let ty = Type::HashMap(Box::new(key_ty.clone()), Box::new(value_ty.clone()));
 
             state.register(dst.clone(), ty);
@@ -157,7 +159,7 @@ fn analyze_instruction(inst: &Inst, state: &mut DropState, drops: &mut HashMap<u
         Inst::TupleAlloc { dst, element_types } => {
             state.register(dst.clone(), Type::Tuple(element_types.clone()));
         }
-        Inst::HeapAlloc { dst, size } => {
+        Inst::HeapAlloc { dst, size: _ } => {
             state.register(dst.clone(), Type::Ptr(Box::new(Type::Unknown)));
         }
         Inst::Move { dst, src, ty } => {
@@ -172,7 +174,7 @@ fn analyze_instruction(inst: &Inst, state: &mut DropState, drops: &mut HashMap<u
             }
         }
         // Requires knowing func signature, improve later
-        Inst::Call { dst, func, args, ty } => {
+        Inst::Call { dst, func: _, args, ty } => {
             for arg in args {
                 if let Value::Reg(reg) = arg {
                     state.mark_moved(reg);

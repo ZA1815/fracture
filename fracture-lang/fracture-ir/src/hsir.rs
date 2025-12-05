@@ -289,7 +289,7 @@ impl Module {
         }
     }
 
-    pub fn get_child(&self, name: &str) -> Option<&Module> {
+    pub fn get_child(&self, _name: &str) -> Option<&Module> {
         // This will need refactoring when we properly handle the Module/Shard relationship
         None
     }

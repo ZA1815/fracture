@@ -815,7 +815,7 @@ impl SyntaxCustomizeCommand {
                 }
             };
             
-            let (category, name, current) = &items[choice - 1];
+            let (_category, name, current) = &items[choice - 1];
             
             print!("New value for {} [{}]: ", name, current);
             std::io::stdout().flush().ok();

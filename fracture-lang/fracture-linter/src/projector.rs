@@ -1555,27 +1555,27 @@ impl SyntaxProjector {
                                     }
                                 }
                                 "is_ok" => {
-                                    self.expect(Token::RightParentheses);
-                                    
+                                    let _ = self.expect(Token::RightParentheses);
+
                                     instructions.push(Inst::ResultIsOk {
                                         dst: result_reg.clone(),
                                         result: reg,
                                     });
-                                    
+
                                     self.reg_types.insert(result_reg.clone(), Type::Bool);
                                 }
                                 "is_err" => {
-                                    self.expect(Token::RightParentheses);
-                                    
+                                    let _ = self.expect(Token::RightParentheses);
+
                                     instructions.push(Inst::ResultIsErr {
                                         dst: result_reg.clone(),
                                         result: reg,
                                     });
-                                    
+
                                     self.reg_types.insert(result_reg.clone(), Type::Bool);
                                 }
                                 "unwrap_err" => {
-                                    self.expect(Token::RightParentheses);
+                                    let _ = self.expect(Token::RightParentheses);
                                     
                                     let err_ty = if let Some(Type::Result(_, err)) = &reg_type {
                                         (**err).clone()
@@ -1743,7 +1743,7 @@ impl SyntaxProjector {
                 let reg_type = self.reg_types.get(&reg).cloned();
 
                 if let Some(Type::Result(ok_ty, err_ty)) = reg_type {
-                    let error_label = self.alloc_label();
+                    let _error_label = self.alloc_label();
                     let continue_label = self.alloc_label();
 
                     let is_err_reg = self.alloc_reg();
@@ -1789,7 +1789,7 @@ impl SyntaxProjector {
                     continue;
                 }
                 else if let Some(Type::Option(inner_ty)) = reg_type {
-                    let none_label = self.alloc_label();
+                    let _none_label = self.alloc_label();
                     let continue_label = self.alloc_label();
 
                     let is_none_reg = self.alloc_reg();
@@ -1991,7 +1991,7 @@ impl SyntaxProjector {
                     
                     let full_path = path_parts.join("::");
                     let last = path_parts.last().unwrap().as_str();
-                    let prefix = &path_parts[..path_parts.len() - 1].join("::");
+                    let _prefix = &path_parts[..path_parts.len() - 1].join("::");
 
                     if name == "Vec" && last == "new" {
                         self.expect(Token::LeftParentheses)?;
@@ -2724,7 +2724,7 @@ impl SyntaxProjector {
     }
 
     fn get_syntax_config_for_file(&self, file_path: &Path) -> SyntaxConfig {
-        for (dep_name, dep_path) in &self.dependencies {
+        for (_dep_name, dep_path) in &self.dependencies {
             if file_path.starts_with(dep_path) {
                 let dep_manifest_path = dep_path.join("rift.toml");
                 if dep_manifest_path.exists() {

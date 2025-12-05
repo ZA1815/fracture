@@ -1,4 +1,5 @@
 [workspace]
+resolver = "3"
 default-members = ["fracture", "fracture-macros"]
 members = [
     "fracture",

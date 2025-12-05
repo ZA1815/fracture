@@ -84,12 +84,12 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
-        Inst::Eq { dst, lhs, rhs, ty } |
-        Inst::Lt { dst, lhs, rhs, ty } |
-        Inst::Gt { dst, lhs, rhs, ty } |
-        Inst::Le { dst, lhs, rhs, ty } |
-        Inst::Ge { dst, lhs, rhs, ty } |
-        Inst::Ne { dst, lhs, rhs, ty } => {
+        Inst::Eq { dst, lhs, rhs, ty: _ } |
+        Inst::Lt { dst, lhs, rhs, ty: _ } |
+        Inst::Gt { dst, lhs, rhs, ty: _ } |
+        Inst::Le { dst, lhs, rhs, ty: _ } |
+        Inst::Ge { dst, lhs, rhs, ty: _ } |
+        Inst::Ne { dst, lhs, rhs, ty: _ } => {
             let lhs_ty = infer_value_type(lhs, env)?;
             let rhs_ty = infer_value_type(rhs, env)?;
 
@@ -104,7 +104,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
-        Inst::Call { dst, func, args, ty } => {
+        Inst::Call { dst, func: _, args, ty } => {
             for arg in args {
                 infer_value_type(arg, env)?;
             }
@@ -130,7 +130,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
-        Inst::FieldStore { struct_reg, field_name, value, ty } => {
+        Inst::FieldStore { struct_reg, field_name, value, ty: _ } => {
             let struct_ty = env.get(struct_reg)
                 .ok_or_else(|| format!("Register r{} not found for field access", struct_reg.0))?;
 
@@ -151,7 +151,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
-        Inst::FieldLoad { dst, struct_reg, field_name, ty } => {
+        Inst::FieldLoad { dst, struct_reg, field_name, ty: _ } => {
             let struct_ty = env.get(struct_reg)
                 .ok_or_else(|| format!("Register r{} not found for field access", struct_reg.0))?;
 
@@ -253,7 +253,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
-        Inst::TupleLoad { dst, tuple_reg, index, ty } => {
+        Inst::TupleLoad { dst, tuple_reg, index, ty: _ } => {
             let tuple_ty = env.get(tuple_reg)
                 .ok_or_else(|| format!("Register r{} not found for tuple load", tuple_reg.0))?;
 
@@ -270,7 +270,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
-        Inst::TupleStore { tuple_reg, index, value, ty } => {
+        Inst::TupleStore { tuple_reg, index, value, ty: _ } => {
             let tuple_ty = env.get(tuple_reg)
                 .ok_or_else(|| format!("Register r{} not found ofr tuple store", tuple_reg.0))?;
 
@@ -295,12 +295,12 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
-        Inst::StringAlloc { dst, data } => {
+        Inst::StringAlloc { dst, data: _ } => {
             env.insert(dst.clone(), Type::String);
 
             Ok(())
         }
-        Inst::StringLen { dst, string } => {
+        Inst::StringLen { dst, string: _ } => {
             env.insert(dst.clone(), Type::I32);
 
             Ok(())
@@ -329,7 +329,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
-        Inst::VecPush { vec, value, element_ty } => {
+        Inst::VecPush { vec, value, element_ty: _ } => {
             let vec_ty = env.get(vec)
                 .ok_or_else(|| format!("Vec register r{} not found", vec.0))?;
 
@@ -348,7 +348,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
-        Inst::VecPop { dst, vec, element_ty } => {
+        Inst::VecPop { dst, vec, element_ty: _ } => {
             let vec_ty = env.get(vec)
                 .ok_or_else(|| format!("Vec register r{} not found", vec.0))?;
 
@@ -361,7 +361,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
-        Inst::VecGet { dst, vec, index, element_ty } => {
+        Inst::VecGet { dst, vec, index, element_ty: _ } => {
             let vec_ty = env.get(vec)
                 .ok_or_else(|| format!("Vec register r{} not found", vec.0))?;
 
@@ -379,7 +379,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
-        Inst::VecSet { vec, index, value, element_ty } => {
+        Inst::VecSet { vec, index, value, element_ty: _ } => {
             let vec_ty = env.get(vec)
                 .ok_or_else(|| format!("Vec register r{} not found", vec.0))?;
 
@@ -436,7 +436,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
-        Inst::HashMapInsert { map, key, value, key_ty, value_ty } => {
+        Inst::HashMapInsert { map, key, value, key_ty: _, value_ty: _ } => {
             let map_ty = env.get(map)
                 .ok_or_else(|| format!("HashMap register r{} not found", map.0))?;
 
@@ -457,7 +457,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
-        Inst::HashMapGet { dst, found_dst, map, key, key_ty, value_ty } => {
+        Inst::HashMapGet { dst, found_dst, map, key, key_ty: _, value_ty: _ } => {
             let map_ty = env.get(map)
                 .ok_or_else(|| format!("HashMap register r{} not found", map.0))?;
 
@@ -479,7 +479,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
-        Inst::HashMapRemove { success_dst, map, key, key_ty, value_ty } => {
+        Inst::HashMapRemove { success_dst, map, key, key_ty: _, value_ty: _ } => {
             let map_ty = env.get(map)
                 .ok_or_else(|| format!("HashMap register r{} not found", map.0))?;
 
@@ -497,7 +497,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
 
             Ok(())
         }
-        Inst::HashMapContains { dst, map, key, key_ty, value_ty } => {
+        Inst::HashMapContains { dst, map, key, key_ty: _, value_ty: _ } => {
             let map_ty = env.get(map)
                 .ok_or_else(|| format!("HashMap register r{} not found", map.0))?;
 
@@ -1040,7 +1040,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
             env.insert(dst.clone(), Type::Bool);
             Ok(())
         }
-        Inst::OptionUnwrap { dst, option, inner_ty } => {
+        Inst::OptionUnwrap { dst, option, inner_ty: _ } => {
             let opt_ty = env.get(option)
                 .ok_or_else(|| format!("Option register r{} not found in {}", option.0, func_name))?;
             
@@ -1055,7 +1055,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
             
             Ok(())
         }
-        Inst::OptionUnwrapOr { dst, option, default, inner_ty } => {
+        Inst::OptionUnwrapOr { dst, option, default, inner_ty: _ } => {
             let opt_ty = env.get(option)
                 .ok_or_else(|| format!("Option register r{} not found in {}", option.0, func_name))?;
             let default_ty = infer_value_type(default, env)?;
@@ -1077,7 +1077,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
             
             Ok(())
         }
-        Inst::OptionUnwrapOrElse { dst, option, default_fn, inner_ty } => {
+        Inst::OptionUnwrapOrElse { dst, option, default_fn: _, inner_ty: _ } => {
             let opt_ty = env.get(option)
                 .ok_or_else(|| format!("Option register r{} not found in {}", option.0, func_name))?;
             
@@ -1092,7 +1092,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
             
             Ok(())
         }
-        Inst::OptionMap { dst, option, map_fn, input_ty, output_ty } => {
+        Inst::OptionMap { dst, option, map_fn: _, input_ty: _, output_ty } => {
             let opt_ty = env.get(option)
                 .ok_or_else(|| format!("Option register r{} not found in {}", option.0, func_name))?;
             
@@ -1106,7 +1106,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
             env.insert(dst.clone(), Type::Option(Box::new(output_ty.clone())));
             Ok(())
         }
-        Inst::OptionMatch { option, value_dst, some_label, none_label, inner_ty } => {
+        Inst::OptionMatch { option, value_dst, some_label: _, none_label: _, inner_ty: _ } => {
             let opt_ty = env.get(option)
                 .ok_or_else(|| format!("Option register r{} not found in {}", option.0, func_name))?;
             
@@ -1181,7 +1181,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
             env.insert(dst.clone(), Type::Bool);
             Ok(())
         }
-        Inst::ResultUnwrap { dst, result, ok_ty } => {
+        Inst::ResultUnwrap { dst, result, ok_ty: _ } => {
             let res_ty = env.get(result)
                 .ok_or_else(|| format!("Result register r{} not found in {}", result.0, func_name))?;
             
@@ -1196,7 +1196,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
             
             Ok(())
         }
-        Inst::ResultUnwrapErr { dst, result, err_ty } => {
+        Inst::ResultUnwrapErr { dst, result, err_ty: _ } => {
             let res_ty = env.get(result)
                 .ok_or_else(|| format!("Result register r{} not found in {}", result.0, func_name))?;
             
@@ -1211,7 +1211,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
             
             Ok(())
         }
-        Inst::ResultUnwrapOr { dst, result, default, ok_ty } => {
+        Inst::ResultUnwrapOr { dst, result, default, ok_ty: _ } => {
             let res_ty = env.get(result)
                 .ok_or_else(|| format!("Result register r{} not found in {}", result.0, func_name))?;
             let default_ty = infer_value_type(default, env)?;
@@ -1233,7 +1233,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
             
             Ok(())
         }
-        Inst::ResultExpect { dst, result, message, ok_ty } => {
+        Inst::ResultExpect { dst, result, message: _, ok_ty: _ } => {
             let res_ty = env.get(result)
                 .ok_or_else(|| format!("Result register r{} not found in {}", result.0, func_name))?;
             
@@ -1248,7 +1248,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
             
             Ok(())
         }
-        Inst::ResultMap { dst, result, map_fn, input_ty, output_ty, err_ty } => {
+        Inst::ResultMap { dst, result, map_fn: _, input_ty: _, output_ty, err_ty } => {
             let res_ty = env.get(result)
                 .ok_or_else(|| format!("Result register r{} not found in {}", result.0, func_name))?;
             
@@ -1262,7 +1262,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
             env.insert(dst.clone(), Type::Result(Box::new(output_ty.clone()), Box::new(err_ty.clone())));
             Ok(())
         }
-        Inst::ResultMapErr { dst, result, map_fn, ok_ty, input_err_ty, output_err_ty } => {
+        Inst::ResultMapErr { dst, result, map_fn: _, ok_ty, input_err_ty: _, output_err_ty } => {
             let res_ty = env.get(result)
                 .ok_or_else(|| format!("Result register r{} not found in {}", result.0, func_name))?;
             
@@ -1276,7 +1276,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
             env.insert(dst.clone(), Type::Result(Box::new(ok_ty.clone()), Box::new(output_err_ty.clone())));
             Ok(())
         }
-        Inst::ResultMatch { result, ok_dst, err_dst, ok_label, err_label, ok_ty, err_ty } => {
+        Inst::ResultMatch { result, ok_dst, err_dst, ok_label: _, err_label: _, ok_ty: _, err_ty: _ } => {
             let (ok_type, err_type) = {
                 let res_ty = env.get(result)
                     .ok_or_else(|| format!("Result register r{} not found in {}", result.0, func_name))?;
@@ -1301,7 +1301,7 @@ fn check_instruction(inst: &Inst, env: &mut HashMap<Reg, Type>, func_name: &str,
             
             Ok(())
         }
-        Inst::ResultTry { dst, result, ok_ty, err_ty, error_return_label } => {
+        Inst::ResultTry { dst, result, ok_ty: _, err_ty: _, error_return_label: _ } => {
             let res_ty = env.get(result)
                 .ok_or_else(|| format!("Result register r{} not found in {}", result.0, func_name))?;
             

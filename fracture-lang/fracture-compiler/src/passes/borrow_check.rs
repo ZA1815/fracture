@@ -15,6 +15,7 @@ impl BorrowState {
         }
     }
 
+    #[allow(dead_code)]
     fn begin_borrow(&mut self, reg: &Reg, borrower: &Reg, is_mut: bool) -> Result<(), String> {
         if is_mut {
             if let Some(borrows) = self.immutable_borrows.get(reg) {
@@ -68,12 +69,12 @@ pub fn check(program: &Program) -> Result<(), String> {
     Ok(())
 }
 
-fn check_function(name: &str, func: &Function) -> Result<(), String> {
+fn check_function(_name: &str, func: &Function) -> Result<(), String> {
     let mut state = BorrowState::new();
 
     for inst in &func.body {
         match inst {
-            Inst::BeginBorrow { reg, is_mut } => {
+            Inst::BeginBorrow { reg: _, is_mut: _ } => {
                 // Complicated logic, implement later
             }
             Inst::EndBorrow { reg } => {

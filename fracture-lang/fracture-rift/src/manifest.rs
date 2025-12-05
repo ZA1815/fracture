@@ -191,6 +191,7 @@ impl Manifest {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn to_toml_string(&self) -> Result<String, String> {
         toml::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize manifest: {}", e))
