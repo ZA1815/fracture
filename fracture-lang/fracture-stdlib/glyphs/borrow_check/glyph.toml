@@ -1,0 +1,22 @@
+# Borrow Check Glyph
+# Validates memory safety through borrow checking
+
+[glyph]
+name = "borrow_check"
+version = "0.1.0"
+scope = "Project"
+description = "Enforces borrow checking rules for memory safety"
+
+# Borrow check is purely a validation glyph - no syntax additions
+[syntax.keywords]
+# No new keywords (borrows use existing & and &mut syntax)
+
+[dependencies]
+glyphs = []
+
+[validation]
+rules = [
+    "no_simultaneous_mutable_borrows",
+    "no_mutable_with_immutable_borrows",
+    "borrow_lifetime_validity"
+]

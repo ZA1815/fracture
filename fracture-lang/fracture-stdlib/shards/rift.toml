@@ -13,9 +13,6 @@ version = "0.1.0"
 # some-lib = "1.0"
 # another-lib = { git = "https://github.com/user/repo" }
 
-[compiler]
-mode = "safe"
-
 # ─────────────────────────────────────────────────────────────────────────────
 # SYNTAX NOTE:
 # Your personal syntax preferences live in ~/.rift/config.toml (gitignored).

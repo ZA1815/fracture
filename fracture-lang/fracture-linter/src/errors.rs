@@ -1,5 +1,4 @@
 use colored::*;
-use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Position {

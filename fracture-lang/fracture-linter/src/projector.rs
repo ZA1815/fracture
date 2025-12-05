@@ -2723,10 +2723,26 @@ impl SyntaxProjector {
         Err(())
     }
 
+    fn get_syntax_config_for_file(&self, file_path: &Path) -> SyntaxConfig {
+        for (dep_name, dep_path) in &self.dependencies {
+            if file_path.starts_with(dep_path) {
+                let dep_manifest_path = dep_path.join("rift.toml");
+                if dep_manifest_path.exists() {
+                    // Parse the rift.toml and extract syntax config properly
+                    return SyntaxConfig::fss();
+                }
+            }
+        }
+
+        self.config.clone()
+    }
+
     fn parse_file_module(&self, path: &Path, mod_name: &str, visibility: Visibility) -> Result<Module, ()> {
         let source = fs::read_to_string(path).map_err(|_| { () })?;
 
-        let mut sub_projector = SyntaxProjector::new(&source, self.config.clone(), self.dependencies.clone())
+        let file_config = self.get_syntax_config_for_file(path);
+
+        let mut sub_projector = SyntaxProjector::new(&source, file_config, self.dependencies.clone())
             .with_filename(path.to_str().unwrap());
 
         let mut new_mod_path = self.current_module_path.clone();
